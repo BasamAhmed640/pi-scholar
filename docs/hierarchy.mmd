@@ -1,0 +1,19 @@
+flowchart TB
+    HOME(["Scholar Home"])
+    BOOK(["Book title<br/>One hub per book"])
+    CHAPTER["Chapter notes"]
+    SECTION["Learn · subsections<br/>Lessons, figures and checks"]
+    EXAM["Exam notes<br/>Your selected chapters or sections"]
+    PAPER["Answer paper<br/>Complete in Obsidian"]
+    KEY["Graded answer key<br/>Score and topic feedback"]
+    TUTOR["Tutor session notes<br/>Your selected topic or scope"]
+    PRACTICE["Explanations and figures<br/>Interactive checks in Pi"]
+
+    HOME --> BOOK
+    BOOK --> CHAPTER
+    CHAPTER --> SECTION
+    BOOK --> EXAM
+    EXAM --> PAPER
+    PAPER -->|submit and grade| KEY
+    BOOK --> TUTOR
+    TUTOR --> PRACTICE

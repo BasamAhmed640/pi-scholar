@@ -1,0 +1,76 @@
+{
+  "name": "pi-scholar",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local PDF study workflows for Pi and Obsidian",
+  "type": "module",
+  "license": "UNLICENSED",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node tests/run.mjs",
+    "test:list": "node tests/run.mjs --list",
+    "test:preflight": "node tests/run.mjs --preflight",
+    "pack:check": "npm pack --dry-run --ignore-scripts"
+  },
+  "files": [
+    "appearance.ts",
+    "book-service.ts",
+    "command-syntax.ts",
+    "commands.ts",
+    "commons-images.ts",
+    "domain.ts",
+    "exam-limits.ts",
+    "exam-paper.ts",
+    "exam.ts",
+    "figure-capture.ts",
+    "figure-coverage.ts",
+    "history.ts",
+    "index.ts",
+    "ingest.ts",
+    "input-lock.ts",
+    "modes.ts",
+    "obsidian-paths.ts",
+    "obsidian.ts",
+    "outline-validation.ts",
+    "page-scope.ts",
+    "policies.ts",
+    "question-grounding-schema.ts",
+    "question-grounding.ts",
+    "quiz-contract.ts",
+    "quiz.ts",
+    "render/assessment.ts",
+    "render/common.ts",
+    "render/navigation.ts",
+    "render/section.ts",
+    "runtime-coordinator.ts",
+    "runtime-session.ts",
+    "state-schema.ts",
+    "storage.ts",
+    "tool-actions/exam.ts",
+    "tool-actions/learning.ts",
+    "tool-actions/outline.ts",
+    "tool-actions/source.ts",
+    "tool-actions/visuals.ts",
+    "tool-contract.ts",
+    "tool-controller.ts",
+    "transcript-recovery.ts",
+    "types.ts",
+    "scholar.css",
+    "README.md",
+    "docs/architecture.md",
+    "docs/hierarchy.mmd",
+    "THIRD_PARTY_NOTICES.md",
+    "tests/*.mjs",
+    "npm-shrinkwrap.json"
+  ],
+  "devDependencies": {
+    "marked": "18.0.5"
+  }
+}

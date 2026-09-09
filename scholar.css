@@ -1,0 +1,143 @@
+/* Scholar built-in note styling. Managed by Scholar; use another snippet for overrides. */
+
+.scholar-note {
+  --file-line-width: 78ch;
+  --line-height-normal: 1.65;
+  --table-border-color: var(--background-modifier-border);
+  --table-header-background: var(--background-secondary);
+  --table-header-color: var(--text-muted);
+  --table-row-background-hover: var(--background-secondary);
+  color: var(--text-normal);
+}
+
+.scholar-note :is(h2, .HyperMD-header-2) {
+  margin-block-start: 2em;
+  padding-block-end: 0.45em;
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-size: 1.12em;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.scholar-note h3 {
+  margin-block-start: 1.6em;
+  font-size: 1em;
+  font-weight: 650;
+}
+
+.scholar-note :is(p, li) { line-height: 1.65; }
+.scholar-note li + li { margin-block-start: 0.4em; }
+.scholar-note a.internal-link { text-decoration-thickness: 1px; text-underline-offset: 0.2em; }
+
+.scholar-note .callout {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 0.65rem;
+  padding: 0.85rem 1rem;
+  margin-block: 1.1rem;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  box-shadow: none;
+  overflow-wrap: anywhere;
+}
+
+.scholar-note .callout-title { color: var(--text-normal); font-weight: 650; gap: 0.6em; }
+.scholar-note .callout-content { color: var(--text-normal); }
+.scholar-note .callout-content > :last-child { margin-block-end: 0; }
+.scholar-note .callout-content > :first-child { margin-block-start: 0.6em; }
+.scholar-note .callout[data-callout="info"] { border-inline-start: 3px solid var(--interactive-accent); }
+.scholar-note .callout[data-callout="tip"] { border-inline-start: 3px solid var(--text-accent); }
+.scholar-note .callout[data-callout="success"] { border-inline-start: 3px solid var(--text-success); }
+.scholar-note .callout[data-callout="warning"] { border-inline-start: 3px solid var(--text-warning); }
+.scholar-note .callout[data-callout="question"] { border-inline-start: 3px solid var(--text-accent); }
+.scholar-note .callout[data-callout="failure"] { border-inline-start: 3px solid var(--text-error); }
+.scholar-note .callout.is-collapsible { background: transparent; }
+.scholar-note .callout.is-collapsed .callout-title { color: var(--text-muted); }
+.scholar-note .callout .callout { margin-block: 0.85rem; }
+
+.scholar-note .el-table { overflow-x: auto; }
+.scholar-note table { width: 100%; border-collapse: collapse; font-size: 0.92em; }
+.scholar-note :is(th, td) { padding: 0.7em 0.85em; vertical-align: top; border-inline: none; }
+.scholar-note th { font-size: 0.8em; font-weight: 600; letter-spacing: 0.04em; }
+.scholar-note :is(th:first-child, td:first-child) { padding-inline-start: 0.65em; }
+.scholar-note :is(th:last-child, td:last-child) { padding-inline-end: 0.65em; }
+.scholar-note :is(.table-wrapper, .cm-table-widget) { max-width: 100%; overflow-x: auto; }
+.scholar-note:is(.scholar-book, .scholar-chapter) td:first-child { color: var(--text-muted); font-size: 0.85em; white-space: nowrap; }
+.scholar-note:is(.scholar-book, .scholar-chapter) tr:has(td:first-child strong) {
+  background: color-mix(in srgb, var(--interactive-accent) 9%, var(--background-primary));
+}
+.scholar-note:is(.scholar-book, .scholar-chapter) td:first-child strong {
+  color: var(--text-accent);
+  border-radius: 0.35em;
+  padding: 0.2em 0.4em;
+  background: color-mix(in srgb, var(--interactive-accent) 10%, transparent);
+}
+
+.scholar-note img { display: block; max-width: 100%; height: auto; margin-inline: auto; }
+.scholar-note .image-embed { display: block; max-width: 100%; margin: 1.25rem auto; }
+.scholar-note:is(.scholar-section, .scholar-tutor) { --file-line-width: 74ch; }
+.scholar-note:is(.scholar-section, .scholar-tutor) .image-embed {
+  width: min(100%, 640px);
+  margin-block: 1rem;
+}
+.scholar-note:is(.scholar-section, .scholar-tutor) .image-embed img {
+  max-height: 75vh;
+  object-fit: contain;
+}
+.scholar-note:is(.scholar-section, .scholar-tutor) .callout.is-collapsible {
+  padding: 0.65rem 0.85rem;
+  font-size: 0.9em;
+}
+.scholar-note .callout[data-callout="example"] { padding: 1rem 1.2rem; }
+.scholar-note .callout[data-callout="example"] em { color: var(--text-muted); font-size: 0.9em; }
+.scholar-note :is(.math-block, .mermaid) { max-width: 100%; overflow-x: auto; padding-block: 0.75rem; }
+.scholar-note .mermaid { text-align: start; }
+.scholar-note .mermaid svg { display: block; margin-inline: 0; }
+.scholar-note pre { max-width: 100%; overflow-x: auto; border: 1px solid var(--background-modifier-border); border-radius: 0.5rem; }
+
+/* Exam choices are answers, not completed to-do items. Keep them fully readable. */
+.scholar-exam-paper { --file-line-width: 76ch; }
+.scholar-exam-paper .inline-title { display: none; }
+.scholar-exam-paper .metadata-container { display: none; }
+.scholar-exam-paper .callout[data-callout="question"] { margin-block-start: 2.4rem; }
+.scholar-exam-paper .contains-task-list { padding-inline-start: 0; }
+.scholar-exam-paper .task-list-item {
+  list-style: none;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 0.55rem;
+  padding: 0.8rem 1rem 0.8rem 2.6rem;
+  margin-block: 0.55rem;
+  background: var(--background-primary);
+}
+.scholar-exam-paper .task-list-item-checkbox { margin-inline-start: -1.7rem; margin-inline-end: 0.6rem; cursor: pointer; }
+.scholar-exam-paper .task-list-item:hover { border-color: var(--text-accent); }
+.scholar-exam-paper .task-list-item.is-checked,
+.scholar-exam-paper .task-list-item.is-checked :is(p, strong, em, span) {
+  color: var(--text-normal);
+  text-decoration: none;
+  opacity: 1;
+}
+.scholar-exam-paper .task-list-item.is-checked {
+  border-color: var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 10%, var(--background-primary));
+}
+.scholar-exam-paper .HyperMD-task-line[data-task="x"] { color: var(--text-normal); text-decoration: none; }
+
+/* Hide internal identifiers, not useful status/progress or the stored metadata. */
+.scholar-note .metadata-property:is(
+  [data-property-key="book_id"], [data-property-key="chapter_id"],
+  [data-property-key="section_id"], [data-property-key="exam_id"],
+  [data-property-key="tutor_id"], [data-property-key="type"],
+  [data-property-key="cssclasses"], [data-property-key="book_instance_id"],
+  [data-property-key="form_fingerprint"], [data-property-key="answer_format"]
+) { display: none; }
+
+@media (max-width: 640px) {
+  .scholar-note :is(th, td) { padding: 0.65em 0.5em; }
+  .scholar-note .callout { padding: 0.75rem; }
+  .scholar-note:is(.scholar-book, .scholar-chapter) td:first-child { white-space: normal; }
+}
+
+@media print {
+  .scholar-note .callout.is-collapsible .callout-content { display: block !important; }
+  .scholar-note .callout { break-inside: avoid; }
+}

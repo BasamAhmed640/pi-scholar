@@ -1,0 +1,23 @@
+# Dependencies and generated output are not project source.
+node_modules/
+coverage/
+dist/
+*.log
+*.tgz
+*.zip
+
+# Never commit libraries, vault state, local configuration, or credentials.
+*.pdf
+*.epub
+.obsidian/
+.scholar/
+.pi/
+.env
+.env.*
+*.pem
+*.key
+
+# Operating-system metadata.
+.DS_Store
+Thumbs.db
+Desktop.ini
