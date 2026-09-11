@@ -254,6 +254,9 @@ try {
       return entry;
     };
     runtime.refreshTools = () => {};
+    let activeTools = ["read", "bash"];
+    runtime.getActiveTools = () => [...activeTools];
+    runtime.setActiveTools = (names) => { activeTools = [...names]; };
     runtime.sendUserMessage = () => {};
     runtime.sendMessage = (message, options) => {
       timeline.push({ type: "send", locked: ui.isLocked(), message, options });
@@ -285,6 +288,7 @@ try {
       sent,
       branch,
       timeline,
+      runtime,
       command: extension.commands.get("scholar"),
       get aborts() { return aborts; },
       hook: globalThis[hookName],
@@ -293,6 +297,19 @@ try {
 
   const success = await harness({ draft: "keep this unsent draft" });
   assert.ok(success.command, "Scholar command must be registered");
+  await prove("ordinary Pi turns leave Scholar dormant", async () => {
+    assert.deepEqual(success.timeline, []);
+    assert.equal(success.extension.tools.size, 0);
+    await fire(success.extension, "before_agent_start", { systemPrompt: "ORDINARY" }, success.ctx);
+    await fire(success.extension, "input", { text: "hello", source: "interactive" }, success.ctx);
+    await fire(success.extension, "message_end", { message: { role: "assistant", content: [{ type: "text", text: "Hello" }] } }, success.ctx);
+    await fire(success.extension, "agent_settled", {}, success.ctx);
+    await fire(success.extension, "session_shutdown", {}, success.ctx);
+    assert.deepEqual(success.timeline, []);
+    assert.deepEqual(success.branch, []);
+    assert.deepEqual(await readdir(vault), []);
+    assert.deepEqual(await readdir(stateRoot), []);
+  }, "no editor/status changes, tools, vault files, or session writes before opening");
   await success.command.handler(`open "${sourceName}"`, success.ctx);
 
   await prove(
@@ -766,6 +783,43 @@ try {
     "a synchronous Learn kickoff failure released its lock, preserved the draft, and demoted navigation to selected",
   );
 
+  await prove("resumed lessons recover only study history after an explicit command", async () => {
+    const priorBranch = [...structuredClone(readySelected.branch), {
+      type: "message", id: "missed-study-response", timestamp: new Date().toISOString(),
+      message: { role: "assistant", content: [{ type: "text", text: "STUDY_HISTORY_TO_RECOVER" }] },
+    }];
+    const resumed = await harness({ initialBranch: priorBranch, draft: "ordinary draft" });
+    assert.deepEqual(resumed.timeline, []);
+    assert.equal(resumed.extension.tools.size, 0);
+    assert.equal(resumed.branch.at(-1).data.active, false);
+    resumed.branch.push({ type: "message", id: "ordinary-response", timestamp: new Date().toISOString(),
+      message: { role: "assistant", content: [{ type: "text", text: "ORDINARY_CHAT_MUST_STAY_OUT" }] } });
+    await fire(resumed.extension, "agent_settled", {}, resumed.ctx);
+    assert.deepEqual(resumed.timeline, []);
+    await resumed.command.handler('learn "1.1"', resumed.ctx);
+    const history = JSON.parse(await readFile(bookFiles[0], "utf8")).chapters[0].sections[0].transcript;
+    assert.ok(history.some((entry) => entry.markdown.includes("STUDY_HISTORY_TO_RECOVER")));
+    assert.ok(history.every((entry) => !entry.markdown.includes("ORDINARY_CHAT_MUST_STAY_OUT")));
+    assert.ok(resumed.runtime.getActiveTools().includes("scholar_quiz"));
+    await fire(resumed.extension, "agent_settled", {}, resumed.ctx);
+    resumed.runtime.setActiveTools([...resumed.runtime.getActiveTools(), "another_extension_tool"]);
+    await resumed.command.handler("close", resumed.ctx);
+    assert.deepEqual(resumed.runtime.getActiveTools(), ["read", "bash", "another_extension_tool"]);
+    const before = [...resumed.timeline];
+    const saved = await readFile(bookFiles[0], "utf8");
+    await fire(resumed.extension, "input", { text: "ordinary", source: "interactive" }, resumed.ctx);
+    await fire(resumed.extension, "before_agent_start", { systemPrompt: "ORDINARY" }, resumed.ctx);
+    await fire(resumed.extension, "agent_settled", {}, resumed.ctx);
+    assert.deepEqual(resumed.timeline, before);
+    assert.equal(await readFile(bookFiles[0], "utf8"), saved);
+    await resumed.command.handler('learn "1.1"', resumed.ctx);
+    assert.ok(resumed.runtime.getActiveTools().includes("scholar_quiz"));
+    assert.ok(resumed.runtime.getActiveTools().includes("another_extension_tool"));
+    assert.equal(resumed.extension.tools.size, 2);
+    await fire(resumed.extension, "agent_settled", {}, resumed.ctx);
+    await resumed.command.handler("close", resumed.ctx);
+  }, "recovery excludes intervening ordinary chat; close disables only Scholar tools and reopening reuses them");
+
   const pendingBook = JSON.parse(await readFile(bookFiles[0], "utf8"));
   pendingBook.revision += 1;
   pendingBook.outlineStatus = "pending";
@@ -792,8 +846,16 @@ try {
     }],
   });
   await prove(
-    "restored pending setup resumes under a lock",
+    "restored pending setup stays dormant until explicitly reopened",
     async () => {
+      assert.equal(restoredSetup.sent.length, 0);
+      assert.deepEqual(restoredSetup.timeline, []);
+      assert.equal(restoredSetup.extension.tools.size, 0);
+      assert.equal(restoredSetup.branch.at(-1).data.active, false);
+      assert.deepEqual(await fire(restoredSetup.extension, "before_agent_start", { systemPrompt: "ORDINARY" }, restoredSetup.ctx), [undefined]);
+      await fire(restoredSetup.extension, "agent_settled", {}, restoredSetup.ctx);
+      assert.deepEqual(restoredSetup.timeline, []);
+      await restoredSetup.command.handler(`open "${sourceName}"`, restoredSetup.ctx);
       assert.equal(restoredSetup.sent.length, 1);
       assert.notEqual(restoredSetup.ui.currentFactory, restoredSetup.ui.priorFactory);
       assert.equal(restoredSetup.timeline.find((item) => item.type === "send")?.locked, true);
@@ -803,7 +865,7 @@ try {
       assert.equal(restoredSetup.ui.currentFactory, restoredSetup.ui.priorFactory);
       assert.equal(restoredSetup.ui.currentEditor.getText(), "restored setup draft");
     },
-    "a saved pending book claimed a clean hidden setup turn before any ordinary chat could enter",
+    "a saved pending book starts no work until /scholar open, then uses the existing input lock",
   );
 
   const blankVault = join(tempRoot, "blank-vault");

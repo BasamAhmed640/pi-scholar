@@ -449,6 +449,7 @@ export async function handleScholarCommand(
       const candidate = await coordinator.chooseCandidate(parsed.value, ctx);
       if (candidate) {
         await recoverActiveOutgoingSession(coordinator, activeConfig, ctx, "outgoing");
+        await ensureScholarAppearance(activeConfig, (message) => ctx.ui.notify(message, "warning"));
         await coordinator.openCandidate(candidate, ctx);
       }
       return;
@@ -476,6 +477,8 @@ export async function handleScholarCommand(
       ctx.ui.notify(coordinator.obsidianSetupMessage, "warning");
       return;
     }
+
+    await ensureScholarAppearance(activeConfig, (message) => ctx.ui.notify(message, "warning"));
 
     if (book.outlineStatus !== "ready") {
       await coordinator.activateBook(book, ctx);

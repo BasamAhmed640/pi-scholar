@@ -112,6 +112,9 @@ function installRuntime(runtime, branch, sent) {
   runtime.sendMessage = (message, options) => sent.push({ message, options });
   runtime.sendUserMessage = (message, options) => sent.push({ message, options, user: true });
   runtime.refreshTools = () => {};
+    let activeTools = ["read", "bash"];
+    runtime.getActiveTools = () => [...activeTools];
+    runtime.setActiveTools = (names) => { activeTools = [...names]; };
 }
 
 function createContext(root, branch, notifications, uiState) {

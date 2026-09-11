@@ -5,7 +5,6 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { getScholarArgumentCompletions } from "./command-syntax.ts";
-import { ensureScholarAppearance } from "./appearance.ts";
 import { handleScholarCommand } from "./commands.ts";
 import {
   appendTranscript,
@@ -20,7 +19,6 @@ import {
 import { modeCan } from "./modes.ts";
 import { assertQuestionGrounding } from "./question-grounding.ts";
 import { assertLearnFigureCoverage } from "./figure-coverage.ts";
-import { registerScholarQuiz } from "./quiz.ts";
 import {
   parseScholarQuizDetails,
   parseScholarQuizInput,
@@ -31,15 +29,13 @@ import { createScholarInputLockController } from "./input-lock.ts";
 import { createScholarToolController } from "./tool-controller.ts";
 import { isProvisionalOutline } from "./outline-validation.ts";
 import {
-  kickoffMessage,
   ScholarRuntimeCoordinator,
   setupInstructions,
 } from "./runtime-coordinator.ts";
-import { reconcileScholarRuntimeTarget } from "./runtime-session.ts";
+import { ScholarRuntimeSession, reconcileScholarRuntimeTarget } from "./runtime-session.ts";
 import { loadBookState } from "./storage.ts";
 import { modeInstructions } from "./policies.ts";
-import { freezeRecoveryTarget, isSameVaultPath } from "./transcript-recovery.ts";
-import type { ScholarSection } from "./types.ts";
+import { freezeRecoveryTarget } from "./transcript-recovery.ts";
 
 export default function scholarExtension(pi: ExtensionAPI) {
   const { acquireInputLock, releaseAllInputLocks } = createScholarInputLockController();
@@ -58,105 +54,23 @@ export default function scholarExtension(pi: ExtensionAPI) {
   });
   coordinator.toolController = toolController;
 
-  pi.on("session_start", async (_event, ctx: ExtensionContext) => {
-    warningContext = ctx;
+  pi.on("session_start", (_event, ctx: ExtensionContext) => {
+    warningContext = undefined;
     coordinator.resetProjectionWarnings();
     coordinator.releaseAllInputLocks();
-    const hadInFlightRun = Boolean(coordinator.setupRun || coordinator.scholarTurnRun);
     coordinator.setupRun = undefined;
     coordinator.scholarTurnRun = undefined;
     coordinator.navigationRun = undefined;
-    coordinator.activeAuthority = undefined;
+    coordinator.deactivateSession();
+    coordinator.runtimeSession.reset();
     coordinator.toolController.resetTransientState();
 
-    const releaseInput = coordinator.acquireInputLock(ctx, "starting");
-    try {
-      const restored = coordinator.runtimeSession.restore(ctx.sessionManager.getBranch());
-      const activeConfig = await coordinator.loadFreshConfig();
-      await ensureScholarAppearance(activeConfig, (message) => ctx.ui.notify(message, "warning"));
-
-      // Reconcile vault note projections on startup whenever Obsidian is configured,
-      // independently of whether a mode/book is active, preserving empty-vault protection.
-      if (coordinator.hasConfiguredObsidian()) {
-        try {
-          await coordinator.renderAll();
-        } catch (error) {
-          ctx.ui.notify(`Scholar could not sync notes on startup: ${error instanceof Error ? error.message : String(error)}`, "warning");
-        }
-      }
-
-      if (!coordinator.runtimeSession.active) {
-        await coordinator.setStatus(ctx);
-        return;
-      }
-      if (!coordinator.hasConfiguredLibrary() || !coordinator.hasConfiguredObsidian()) {
-        coordinator.deactivateSession();
-        coordinator.persistSessionPointer();
-        await coordinator.setStatus(ctx);
-        return;
-      }
-      if (restored.vaultPath && !isSameVaultPath(restored.vaultPath, activeConfig.obsidianRoot)) {
-        coordinator.deactivateSession();
-        coordinator.persistSessionPointer();
-        await coordinator.setStatus(ctx);
-        return;
-      }
-      const restoredState = coordinator.runtimeSession.state;
-      const book = coordinator.runtimeSession.bookId ? await loadBookState(activeConfig, coordinator.runtimeSession.bookId) : undefined;
-      const reconciliation = reconcileScholarRuntimeTarget(restoredState, book, restored.instanceId);
-      let normalized = false;
-      if (reconciliation.kind === "invalid") {
-        if ((hadInFlightRun || coordinator.setupRun || coordinator.scholarTurnRun) && typeof ctx.abort === "function") void ctx.abort();
-        coordinator.deactivateSession();
-        coordinator.persistSessionPointer();
-        await coordinator.setStatus(ctx);
-        return;
-      }
-      if (!book) {
-        coordinator.deactivateSession();
-        coordinator.persistSessionPointer();
-        await coordinator.setStatus(ctx);
-        return;
-      }
-      coordinator.activeAuthority = { bookId: book.id, instanceId: book.instanceId };
-      if (coordinator.runtimeSession.mode && coordinator.runtimeSession.bookId) {
-        const recoveryTarget = freezeRecoveryTarget(
-          activeConfig.obsidianRoot,
-          coordinator.runtimeSession,
-          coordinator.activeAuthority,
-        );
-        if (recoveryTarget) {
-          try {
-            const outcome = await coordinator.recoverTarget(recoveryTarget, ctx, true);
-            if (outcome.kind === "error") {
-              ctx.ui.notify(`Scholar transcript recovery encountered an issue: ${outcome.error}`, "warning");
-            }
-          } catch (error) {
-            ctx.ui.notify(`Scholar could not recover transcript on startup: ${error instanceof Error ? error.message : String(error)}`, "warning");
-          }
-        }
-      }
-      if (
-        reconciliation.kind === "stale"
-        || (reconciliation.kind === "setup" && restoredState.kind !== "selected")
-        || (reconciliation.kind === "active" && reconciliation.terminal)
-      ) {
-        coordinator.runtimeSession.activate(book.id);
-        normalized = true;
-      }
-      if (normalized) coordinator.persistSessionPointer(book);
-      else if (restored.found) coordinator.runtimeSession.seedPersistedKey(book, restored.sectionId);
-
-      if (book.outlineStatus !== "ready" || coordinator.runtimeSession.mode) coordinator.toolController.ensureRegistered();
-      if (modeCan(coordinator.runtimeSession.mode, "assesses") && !coordinator.quizRegistered) {
-        registerScholarQuiz(pi);
-        coordinator.quizRegistered = true;
-      }
-      await coordinator.setStatus(ctx);
-      if (reconciliation.kind === "setup") await coordinator.startBookSetup(book, ctx);
-    } finally {
-      releaseInput();
-    }
+    // A resumed Pi conversation stays closed until an explicit Scholar command.
+    // Close its old transcript segment so ordinary chat cannot later be recovered
+    // into the old lesson (and other extensions do not see stale input ownership).
+    const previous = new ScholarRuntimeSession();
+    previous.restore(ctx.sessionManager.getBranch());
+    if (previous.active) coordinator.persistSessionPointer();
   });
 
   pi.on("before_agent_start", async (event, ctx: ExtensionContext) => {
@@ -231,6 +145,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
   });
 
   pi.on("agent_settled", async (_event, ctx: ExtensionContext) => {
+    if (!coordinator.runtimeSession.active && !coordinator.setupRun && !coordinator.scholarTurnRun) return;
     const releaseInput = coordinator.acquireInputLock(ctx, "syncing");
     try {
       coordinator.scholarTurnRun?.releaseInput();
@@ -309,6 +224,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
 
   pi.on("session_shutdown", (_event, ctx: ExtensionContext) => {
     warningContext = undefined;
+    if (!coordinator.runtimeSession.active && !coordinator.setupRun && !coordinator.scholarTurnRun && !coordinator.navigationRun) return;
     coordinator.scholarTurnRun?.releaseInput();
     coordinator.scholarTurnRun = undefined;
     coordinator.setupRun?.releaseInput();
@@ -316,6 +232,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
     coordinator.navigationRun = undefined;
     coordinator.releaseAllInputLocks();
     coordinator.toolController.resetTransientState();
+    coordinator.deactivateSession();
     ctx.ui.setWorkingMessage();
   });
 

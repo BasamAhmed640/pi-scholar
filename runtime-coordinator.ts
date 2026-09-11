@@ -131,6 +131,7 @@ export function kickoffMessage(
 export class ScholarRuntimeCoordinator {
   public runtimeSession = new ScholarRuntimeSession();
   public quizRegistered = false;
+  private scholarToolRegistered = false;
   public setupRun: RunHandle | undefined;
   public scholarTurnRun: RunHandle | undefined;
   public navigationRun: NavigationRunHandle | undefined;
@@ -228,6 +229,23 @@ export class ScholarRuntimeCoordinator {
   deactivateSession(): void {
     this.runtimeSession.deactivate();
     this.activeAuthority = undefined;
+    this.syncActiveTools();
+  }
+
+  /** Remove only our tools, preserving changes made by Pi or other extensions. */
+  private syncActiveTools(): void {
+    if (!this.scholarToolRegistered && !this.quizRegistered) return;
+    const current = this.pi.getActiveTools();
+    const next = current.filter((name) =>
+      !(this.scholarToolRegistered && name === "scholar")
+      && !(this.quizRegistered && name === "scholar_quiz"));
+    if (this.runtimeSession.active) {
+      if (this.scholarToolRegistered) next.push("scholar");
+      if (this.quizRegistered && modeCan(this.runtimeSession.mode, "assesses")) next.push("scholar_quiz");
+    }
+    if (current.length !== next.length || current.some((name) => !next.includes(name))) {
+      this.pi.setActiveTools(next);
+    }
   }
 
   getSetupRun(): RunHandle | undefined {
@@ -287,19 +305,29 @@ export class ScholarRuntimeCoordinator {
 
   async activateBook(
     book: ScholarBook,
-    ctx: { ui: { setStatus(key: string, text: string | undefined): void } },
+    ctx: { ui: { setStatus(key: string, text: string | undefined): void }; sessionManager?: ExtensionContext["sessionManager"] },
     mode?: ScholarMode,
     recordId?: string,
   ): Promise<void> {
+    // Recover only an explicitly reopened target, before its next prompt is built.
+    const target = freezeExplicitTarget(this.activeConfig.obsidianRoot, book.id, book.instanceId, mode, recordId);
+    if (target && ctx.sessionManager) {
+      const recovered = await this.recoverTarget(target, { sessionManager: ctx.sessionManager });
+      if (recovered.kind === "error") throw new Error(recovered.error);
+    }
     this.activeAuthority = { bookId: book.id, instanceId: book.instanceId };
     this.toolController.resetTransientState();
     if (mode) this.runtimeSession.activate(book.id, mode, recordId || "");
     else this.runtimeSession.activate(book.id);
-    if (book.outlineStatus !== "ready" || mode) this.toolController.ensureRegistered();
+    if (book.outlineStatus !== "ready" || mode) {
+      this.toolController.ensureRegistered();
+      this.scholarToolRegistered = true;
+    }
     if (modeCan(mode, "assesses") && !this.quizRegistered) {
       registerScholarQuiz(this.pi);
       this.quizRegistered = true;
     }
+    this.syncActiveTools();
     this.persistSessionPointer(book);
     await this.setStatus(ctx);
   }
@@ -507,7 +535,7 @@ export class ScholarRuntimeCoordinator {
 
   async recoverTarget(
     target: FrozenRecoveryTarget,
-    ctx: ExtensionCommandContext | ExtensionContext,
+    ctx: Pick<ExtensionContext, "sessionManager">,
     isAutomatic = true,
   ): Promise<RecoveryOutcome> {
     const branch = typeof ctx.sessionManager.getBranch === "function"

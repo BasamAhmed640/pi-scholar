@@ -326,12 +326,13 @@ try {
     assert.deepEqual(await readdir(pdfRoot), ["source.pdf"]);
     assert.equal(await readFile(join(pdfRoot, "source.pdf"), "utf8"), "SOURCE_BYTES");
   });
-  await check("real Pi startup installs styling even with no selected book or active mode", async () => {
+  await check("real Pi startup leaves the vault untouched; explicit setup installs styling", async () => {
     const path = await vault("startup");
     process.env.PI_SCHOLAR_OBSIDIAN_ROOT = path;
     process.env.PI_SCHOLAR_LIBRARY_ROOT = library;
     process.env.PI_SCHOLAR_STATE_ROOT = join(root, "startup-bootstrap");
     const runtime = createExtensionRuntime();
+    runtime.appendEntry = () => {};
     const loaded = await loadExtensions([extensionPath], root, undefined, runtime);
     assert.deepEqual(loaded.errors, []);
     const messages = [];
@@ -343,10 +344,15 @@ try {
     } };
     for (const handler of loaded.extensions[0].handlers.get("session_start")) await handler({}, ctx);
     assert.deepEqual(messages, []);
+    assert.equal(await exists(snippet(path)), false);
+    assert.equal(await exists(receipt(path)), false);
+    assert.equal(await exists(settings(path)), false);
+    await loaded.extensions[0].commands.get("scholar").handler(`obsidian "${path}"`, ctx);
     assert.ok((JSON.parse(await readFile(settings(path), "utf8"))).enabledCssSnippets.includes("scholar"));
     assert.ok(await exists(snippet(path)));
     assert.ok(await exists(receipt(path)));
     await writeFile(settings(path), '{"enabledCssSnippets":[]}');
+    messages.length = 0;
     const disabledBefore = await snapshots([settings(path), snippet(path), receipt(path)]);
     for (const handler of loaded.extensions[0].handlers.get("session_start")) await handler({}, ctx);
     assert.deepEqual(await snapshots([settings(path), snippet(path), receipt(path)]), disabledBefore);

@@ -62,15 +62,18 @@ const pointer = (mode) => ({ type: "custom", customType: "scholar-active-v3", da
 async function hostFor(mode) {
   const handlers = new Map();
   const tools = new Map();
+  const commands = new Map();
+  let activeTools = [];
   const branch = [pointer(mode)];
-  const pi = { on: (event, handler) => handlers.set(event, [...(handlers.get(event) || []), handler]), registerCommand() {},
+  const pi = { on: (event, handler) => handlers.set(event, [...(handlers.get(event) || []), handler]), registerCommand: (name, command) => commands.set(name, command),
+    getActiveTools: () => [...activeTools], setActiveTools: (names) => { activeTools = [...names]; },
     registerTool: (tool) => tools.set(tool.name, tool), appendEntry: (customType, data) => branch.push({ type: "custom", customType, data }),
-    sendMessage: () => { throw new Error("Fixture cannot start model turns."); },
+    sendMessage: () => {},
   };
   install(pi);
   let editorFactory;
   const context = { hasUI: true, sessionManager: { getBranch: () => branch, getEntries: () => branch },
-    ui: { notify() {}, setStatus() {},
+    ui: { notify() {}, setStatus() {}, setWorkingMessage() {},
       setEditorComponent: (factory) => { editorFactory = factory; },
       getEditorComponent: () => editorFactory,
     },
@@ -82,6 +85,8 @@ async function hostFor(mode) {
     }
   };
   await emit("session_start", {});
+  assert.equal(tools.size, 0);
+  await commands.get("scholar").handler(mode === "learn" ? "learn section-1" : "tutor", context);
   assert(tools.has("scholar_quiz"));
   return { context, emit, quiz: tools.get("scholar_quiz"), branch, pi, handlers };
 }
@@ -92,8 +97,10 @@ try {
   process.env.PI_SCHOLAR_STATE_ROOT = config.stateRoot;
   await Promise.all([mkdir(config.libraryRoot, { recursive: true }), mkdir(config.obsidianRoot, { recursive: true })]);
   await writeFile(book.source.absolutePath, "fixture");
+  book.currentTutorId = "tutor-1";
   await storage.createBookState(config, book);
-  await storage.saveConfig(config);
+  // Explicit mode commands now open study; a saved Pi pointer cannot activate it.
+  await storage.saveConfig({ ...config, currentBookId: id });
   await projection.renderScholarWorkspace(config, [book]);
 
   const gatedHost = await hostFor("learn");

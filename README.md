@@ -164,7 +164,7 @@ checked by `tests/verify-scholar-engine-contract.mjs`.
 - `/scholar tutor "<chapter-section-or-topic>"` — start targeted tutoring, or omit scope to resume it
 - `/scholar close` — leave Scholar mode without deleting progress
 
-Note projection and transcript recovery are automatic and event-driven: committed progress is projected into Obsidian vault notes immediately after state mutations, and any missed assistant events are safely and idempotently reconciled on session start, mode transitions, and turn settlement without requiring manual maintenance commands.
+Note projection and transcript recovery are automatic and event-driven: committed progress is projected into Obsidian vault notes immediately after state mutations, and any missed assistant events are safely and idempotently reconciled when a study target is explicitly reopened, on mode transitions, and at active turn settlement without requiring manual maintenance commands.
 
 Chapter scopes accept comma-separated selections and numeric ranges, for
 example `"1-3"`, `"1, 3, 7"`, or a subsection such as `"2.4"`. Singular and
@@ -299,6 +299,16 @@ follow-ups cannot alter the prompt in flight. Scholar's own quiz and submission
 confirmation remain interactive, and the prior chat draft is restored when the turn
 settles or is interrupted.
 
+Scholar stays closed when Pi starts, reloads extensions, or resumes a conversation.
+It does not read or sync the vault, install styling, change the editor or working
+indicator, or expose study tools during ordinary Pi chat. Use `/scholar open`
+to select a book, or explicitly run `/scholar learn`, `/scholar exam`, or
+`/scholar tutor` to resume study. Setup and help commands remain available.
+`/scholar close` disables its tools and background hooks again. Saved progress
+is retained; transcript recovery and styling run when you explicitly return.
+When resuming an old Pi conversation, a closed session marker separates new
+ordinary chat from the previous lesson so it cannot be saved as study history.
+
 ## Question and teaching engines
 
 Every question is designed in this order:
@@ -427,7 +437,7 @@ without repeating checkboxes and progress bars.
 
 Styling is built in and enabled on first installation, not an opt-in mode or
 extra Obsidian plugin. It adapts to light/dark themes and only affects Scholar
-notes. You can disable it using Obsidian's CSS-snippet toggle; later startups
+notes. You can disable it using Obsidian's CSS-snippet toggle; later Scholar openings
 and updates respect that choice. A tiny `.obsidian/scholar-appearance.json`
 installation receipt records the last installed CSS hash, not book information.
 Untouched styles can update automatically; customized `scholar.css` files are

@@ -75,6 +75,9 @@ function installRuntime(runtime, branch) {
   runtime.sendMessage = () => {};
   runtime.sendUserMessage = () => {};
   runtime.refreshTools = () => {};
+    let activeTools = ["read", "bash"];
+    runtime.getActiveTools = () => [...activeTools];
+    runtime.setActiveTools = (names) => { activeTools = [...names]; };
 }
 
 async function readMarkdownTree(directory) {

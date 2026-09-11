@@ -88,7 +88,10 @@ try {
 
   const pointers = [];
   let inputLocks = 0;
+  let activeTools = [];
   const coordinator = new ScholarRuntimeCoordinator({
+    getActiveTools: () => [...activeTools],
+    setActiveTools: (names) => { activeTools = [...names]; },
     appendEntry: (_type, pointer) => pointers.push(structuredClone(pointer)),
     sendMessage: () => { throw new Error("Regression test must not trigger a model turn."); },
   }, () => {

@@ -97,7 +97,8 @@ async function harness(label, options = {}) {
   await writeFile(book.source.absolutePath, "%PDF-fixture");
   await storage.createBookState(config, book);
   const notices = [], confirmations = [], sent = [], branch = [], tools = new Map(), locks = new Set();
-  const pi = { registerTool: (definition) => tools.set(definition.name, definition),
+  let activeTools = [];
+  const pi = { getActiveTools: () => [...activeTools], setActiveTools: (names) => { activeTools = [...names]; }, registerTool: (definition) => tools.set(definition.name, definition),
     appendEntry: (customType, data) => branch.push({ type: "custom", id: `entry-${branch.length}`, customType, data }),
     sendMessage: (message, sendOptions) => {
       const saved = JSON.parse(readFileSync(storage.bookStatePath(config, book), "utf8"));

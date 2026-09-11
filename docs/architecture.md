@@ -61,7 +61,10 @@ There is deliberately one definition of each engine:
 `modes.ts` defines capabilities, `types.ts` defines shared contracts, and
 `state-schema.ts` validates persisted records. Durable-history checks and
 revision checks protect committed work. `transcript-recovery.ts` reconciles
-missed assistant events automatically; users do not need sync/backfill commands.
+missed assistant events when a study target is explicitly reopened and after
+active study turns; users do not need sync/backfill commands. Pi startup leaves
+Scholar closed. Its inactive hooks do not access the vault or replace the editor.
+An inactive Pi-session marker closes any old study transcript segment on resume.
 
 ## Where information lives
 
