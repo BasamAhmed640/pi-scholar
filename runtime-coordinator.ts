@@ -6,7 +6,6 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { createBookService } from "./book-service.ts";
-import { MAX_EXAM_QUESTIONS } from "./exam-limits.ts";
 import {
   appendTranscript,
   findQuizAttempt,
@@ -116,7 +115,7 @@ export function kickoffMessage(
   }
   if (mode === "exam") {
     const exam = target as ScholarExam;
-    if (exam.status === "draft") return `Build a frozen, source-grounded exam for ${exam.scope.description}. Read the selected source ranges, then choose 1–${MAX_EXAM_QUESTIONS} questions from the concepts and evidence the scope requires: use as few or as many as are useful, and multiple distinct probes for important concepts. ${MAX_EXAM_QUESTIONS} is a ceiling, not a target. Construct the complete form and scoring contract, then call scholar action=exam_build. Do not teach or reveal feedback.`;
+    if (exam.status === "draft") return `Build a frozen, source-grounded exam for ${exam.scope.description}. Read the selected source ranges, then choose at least one question from the concepts and evidence the scope requires: use as few or as many as are useful, and multiple distinct probes for important concepts. There is no fixed question-count cap; avoid redundant questions and make any sampling limits explicit. Construct the complete form and scoring contract, then call scholar action=exam_build. Do not teach or reveal feedback.`;
     if (exam.status === "active") return `Reopen the exact frozen exam ${exam.title} with scholar action=exam_present, then end this turn. The learner answers in Obsidian and explicitly submits in Pi. Do not regenerate, reorder, teach, hint, or grade before submission.`;
     if (exam.status === "submitted") return `Resume grading the saved submission for ${exam.title}. Call scholar action=exam_present to retrieve the frozen questions, submitted responses, keys and rubrics, then call scholar action=exam_grade. Do not read edited answer-paper text or use Learn or Tutor evidence.`;
     return `Summarize the already graded exam ${exam.title} from its derived report. Do not change its form or score.`;

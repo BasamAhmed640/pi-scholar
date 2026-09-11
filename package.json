@@ -26,7 +26,6 @@
     "commands.ts",
     "commons-images.ts",
     "domain.ts",
-    "exam-limits.ts",
     "exam-paper.ts",
     "exam.ts",
     "figure-capture.ts",

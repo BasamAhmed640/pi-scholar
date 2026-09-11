@@ -247,9 +247,12 @@ hidden answer markers intact. Older text-entry papers still work without convers
 Save your edits, then run `/scholar exam "exam-001" submit` in Pi.
 Both named submission and `/scholar exam submit` show a confirmation with the
 answered/blank count. Changed files require a fresh confirmation.
-New exams may contain 1–50 questions, chosen for concept coverage rather than a
-fixed length. Important concepts can receive several distinct probes; 50 is an
-upper bound, not a target. Existing frozen exams keep their original questions.
+New exams contain at least one question, with no fixed question-count cap for
+generation or grading. Choose the length for concept coverage, using distinct
+probes for important concepts rather than redundant questions. Existing frozen
+exams keep their original questions. Model context/output limits and the 1 MiB
+answer-paper safety limit still apply; removing the count cap does not guarantee
+that an arbitrarily large exam can be generated in one turn.
 
 Question-engine standards are enforced mechanically when a form is frozen, so a
 weak exam cannot be saved: at least three genuinely plausible options per

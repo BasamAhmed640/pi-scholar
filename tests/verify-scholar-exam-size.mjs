@@ -1,9 +1,8 @@
-import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiPath as sdkJitiPath, resolvePiDependency } from "./sdk.mjs";
+import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiPath as sdkJitiPath } from "./sdk.mjs";
 // In-memory exam size gate: no vault, config, or saved bookstate is touched.
-// New forms use 1–50 questions; previously frozen longer forms remain usable.
+// Question counts are uncapped; form quality, completeness and storage guards remain.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -18,12 +17,14 @@ const jiti = createJiti(import.meta.url, { moduleCache: false, alias: {
 } });
 const extension = dirname(process.env.PI_SCHOLAR_EXTENSION || packagedExtensionPath);
 const mod = (path) => jiti.import(join(extension, path));
-const { MAX_EXAM_QUESTIONS } = await mod("exam-limits.ts");
-const { validateExamQuestions } = await mod("exam.ts");
+const { validateExamQuestions, validateExamAnswerNote, parseExamResponses, examAnswerProgress } = await mod("exam.ts");
+const { examAnswerNoteText } = await mod("render/assessment.ts");
+const { MAX_EXAM_ANSWER_NOTE_BYTES } = await mod("exam-paper.ts");
 const { ScholarParams } = await mod("tool-contract.ts");
 const { isScholarBook } = await mod("state-schema.ts");
 const { handleExamBuild, handleExamGrade } = await mod("tool-actions/exam.ts");
 const { kickoffMessage } = await mod("runtime-coordinator.ts");
+const { examInstructions } = await mod("policies.ts");
 
 const timestamp = "2026-01-01T00:00:00.000Z";
 function questions(count) {
@@ -86,16 +87,17 @@ async function check(name, run) {
   catch (error) { failed++; console.error(`[FAIL] ${name}: ${error.stack || error.message}`); }
 }
 
-await check("new-build schema advertises 1–50 with coverage-driven guidance", () => {
-  assert.equal(MAX_EXAM_QUESTIONS, 50);
+await check("build and grading schemas have no count cap, with coverage-driven guidance", () => {
   assert.equal(ScholarParams.properties.questions.minItems, 1);
-  assert.equal(ScholarParams.properties.questions.maxItems, 50);
+  assert.equal(Object.hasOwn(ScholarParams.properties.questions, "maxItems"), false);
+  assert.equal(ScholarParams.properties.itemResults.minItems, 1);
+  assert.equal(Object.hasOwn(ScholarParams.properties.itemResults, "maxItems"), false);
   assert.match(ScholarParams.properties.questions.description, /concept coverage/);
   assert.match(ScholarParams.properties.questions.description, /multiple distinct probes/);
-  assert.match(ScholarParams.properties.questions.description, /ceiling, not a target/);
+  assert.match(ScholarParams.properties.questions.description, /no fixed question-count cap/);
 });
 
-for (const count of [1, 7, 20, 21, 37, 50]) {
+for (const count of [1, 7, 20, 21, 37, 50, 51, 80, 81, 250]) {
   await check(`${count} questions pass schema, runtime, build, presentation and stored validation`, async () => {
     const h = harness(), raw = questions(count);
     assert.ok(Check(ScholarParams, { action: "exam_build", questions: raw }));
@@ -106,22 +108,32 @@ for (const count of [1, 7, 20, 21, 37, 50]) {
     assert.equal(h.book.exams[0].questions.at(-1).id, `q${count}`);
     assert.deepEqual(h.counts(), { mutations: 1, presentations: 1 });
     assert.match(built.content[0].text, new RegExp(`${count} question\\(s\\)`));
+    const config = { obsidianRoot: join(extension, "in-memory-vault") };
+    const exam = h.book.exams[0], paper = examAnswerNoteText(config, h.book, exam);
+    assert.ok(Buffer.byteLength(paper, "utf8") < MAX_EXAM_ANSWER_NOTE_BYTES);
+    validateExamAnswerNote(h.book, exam, paper);
+    const responses = parseExamResponses(exam, paper);
+    assert.equal(responses.length, count);
+    assert.equal(responses.at(-1).questionId, `q${count}`);
+    assert.deepEqual(examAnswerProgress(exam, paper), {
+      ok: true, total: count, answered: 0, blank: raw.map((question) => question.id),
+    });
   });
 }
 
-for (const count of [0, 51, 80, 81]) {
+for (const count of [0]) {
   await check(`${count} questions fail before any mutation or presentation`, async () => {
     const h = harness(), raw = questions(count), before = structuredClone(h.book);
     assert.equal(Check(ScholarParams, { action: "exam_build", questions: raw }), false);
-    assert.throws(() => validateExamQuestions(h.book.exams[0], raw), /1 to 50 questions/);
-    await assert.rejects(() => handleExamBuild(h.book, "exam-001", raw, undefined, h.mutate, h.present, result), /1 to 50 questions/);
+    assert.throws(() => validateExamQuestions(h.book.exams[0], raw), /at least one question/);
+    await assert.rejects(() => handleExamBuild(h.book, "exam-001", raw, undefined, h.mutate, h.present, result), /at least one question/);
     assert.deepEqual(h.counts(), { mutations: 0, presentations: 0 });
     assert.deepEqual(h.book, before);
   });
 }
 
-for (const count of [51, 80]) {
-  await check(`previously frozen ${count}-question forms remain readable and gradable`, async () => {
+for (const count of [51, 80, 81, 250]) {
+  await check(`frozen ${count}-question forms remain readable and gradable in full`, async () => {
     const h = harness(), exam = h.book.exams[0];
     Object.assign(exam, { status: "submitted", questions: questions(count), startedAt: timestamp, submittedAt: timestamp });
     exam.maxPoints = exam.questions.reduce((total, question) => total + question.maxPoints, 0);
@@ -137,12 +149,39 @@ for (const count of [51, 80]) {
   });
 }
 
-await check("draft kickoff chooses useful concept coverage and distinct probes within the ceiling", () => {
+await check("large forms still reject invalid questions before any mutation", async () => {
+  for (const invalid of ["scope", "duplicate", "rubric"]) {
+    const h = harness(), raw = questions(250), before = structuredClone(h.book);
+    if (invalid === "scope") raw.at(-1).sectionIds = ["out-of-scope"];
+    if (invalid === "duplicate") raw.at(-1).id = "q1";
+    if (invalid === "rubric") raw.at(-1).rubric = [];
+    await assert.rejects(() => handleExamBuild(h.book, "exam-001", raw, undefined, h.mutate, h.present, result));
+    assert.deepEqual(h.counts(), { mutations: 0, presentations: 0 });
+    assert.deepEqual(h.book, before);
+  }
+});
+
+await check("uncapped grading still rejects incomplete or duplicated results before mutation", async () => {
+  const h = harness(), exam = h.book.exams[0];
+  Object.assign(exam, { status: "submitted", questions: questions(250) });
+  const complete = exam.questions.map((question) => ({ questionId: question.id, outcome: "correct",
+    earnedPoints: question.maxPoints, maxPoints: question.maxPoints, feedback: "Valid reasoning." }));
+  for (const invalid of [complete.slice(0, -1), [...complete.slice(0, -1), complete[0]]]) {
+    await assert.rejects(() => handleExamGrade(h.book, exam.id, invalid, h.mutate, result), /exactly one unique result/);
+    assert.equal(exam.status, "submitted");
+    assert.deepEqual(h.counts(), { mutations: 0, presentations: 0 });
+  }
+});
+
+await check("draft kickoff and policy choose useful coverage without a fixed quota", () => {
   const book = fixture(), kickoff = kickoffMessage(book, "exam", book.exams[0]);
-  assert.match(kickoff, /1–50 questions/);
+  const instructions = examInstructions(book, book.exams[0]);
+  for (const text of [kickoff, instructions]) {
+    assert.match(text, /no fixed question-count cap/);
+    assert.doesNotMatch(text, /1[–-]50|50 is a ceiling|too large for 50|stop at 20/);
+  }
   assert.match(kickoff, /as few or as many as are useful/);
   assert.match(kickoff, /multiple distinct probes for important concepts/);
-  assert.match(kickoff, /50 is a ceiling, not a target/);
 });
 
 console.log(`\nScholar exam-size summary: ${passed} passed, ${failed} failed.`);

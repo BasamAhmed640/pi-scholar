@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { compactStrings, sectionLabel } from "./domain.ts";
-import { MAX_EXAM_QUESTIONS } from "./exam-limits.ts";
 import { markdownText } from "./render/common.ts";
 import { isExamQuestion } from "./state-schema.ts";
 import { findSection, type ExamBreakdown, type ExamItemResult, type ExamQuestion, type ScholarBook, type ScholarExam } from "./types.ts";
@@ -124,8 +123,8 @@ function stableIdOrThrow(value: unknown, label: string): string {
  * item, options on an open item — are reported so they can be corrected.
  */
 export function validateExamQuestions(exam: ScholarExam, questions: ExamQuestion[]): ExamQuestion[] {
-  if (!Array.isArray(questions) || questions.length < 1 || questions.length > MAX_EXAM_QUESTIONS) {
-    throw new Error(`A new exam must contain 1 to ${MAX_EXAM_QUESTIONS} questions. Choose the count from the scoped concepts and distinct evidence needed; ${MAX_EXAM_QUESTIONS} is a ceiling, not a target.`);
+  if (!Array.isArray(questions) || questions.length < 1) {
+    throw new Error("A new exam must contain at least one question. Choose the count from the scoped concepts and distinct evidence needed.");
   }
   const scoped = new Set(exam.scope.sectionIds);
   const ids = new Set<string>();

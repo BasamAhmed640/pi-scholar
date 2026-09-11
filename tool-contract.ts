@@ -1,7 +1,6 @@
 import { Type } from "typebox";
 
 import type { OutlineValidationReport } from "./outline-validation.ts";
-import { MAX_EXAM_QUESTIONS } from "./exam-limits.ts";
 import { QuestionGroundingSchema } from "./question-grounding-schema.ts";
 
 export const MAX_TOOL_PAGES = 12;
@@ -161,11 +160,10 @@ export const ScholarParams = Type.Object({
   examId: Type.Optional(Type.String()),
   questions: Type.Optional(Type.Array(ExamQuestionSchema, {
     minItems: 1,
-    maxItems: MAX_EXAM_QUESTIONS,
-    description: `Build 1–${MAX_EXAM_QUESTIONS} questions according to concept coverage, with multiple distinct probes for important concepts when useful. The maximum is a ceiling, not a target.`,
+    description: "Build at least one question according to concept coverage, with multiple distinct probes for important concepts when useful. There is no fixed question-count cap; avoid redundant questions.",
   })),
-  // Previously frozen forms may exceed the new build limit; keep them gradable.
-  itemResults: Type.Optional(Type.Array(ExamItemResultSchema, { minItems: 1, maxItems: 80 })),
+  // Runtime validation requires exactly one result per frozen question.
+  itemResults: Type.Optional(Type.Array(ExamItemResultSchema, { minItems: 1 })),
 });
 
 export type ToolDetails = {
