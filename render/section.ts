@@ -1,4 +1,4 @@
-import { latestAttemptForKind } from "../domain.ts";
+import { latestAttemptForKind, sectionCompletionBlockers } from "../domain.ts";
 import { chapterNotePath, sectionNotePath, snapshotAssetPath } from "../obsidian-paths.ts";
 import type { AssessmentAttempt, AssessmentKind, ScholarBook, ScholarChapter, ScholarConfig, ScholarSection, ScholarSnapshot, TranscriptEntry } from "../types.ts";
 import { block, collapsedRecord, frontmatter, generatedDocument, markdownText, pageRange, readableOutcome, statusLabel, tableText, titleCase, wikiEmbed, wikiLink, yaml } from "./common.ts";
@@ -9,7 +9,7 @@ export function comparableTranscriptText(value: string): string {
 
 function questionLines(attempt: AssessmentAttempt, index: number): string[] {
   return [
-    `### Question ${index + 1} · ${titleCase(attempt.kind)}`, "", markdownText(attempt.question),
+    `### Question ${index + 1} · ${titleCase(attempt.kind)}${attempt.grounding?.purpose === "practice" ? " · Practice" : ""}`, "", markdownText(attempt.question),
     ...(attempt.options?.length ? ["", ...attempt.options.map((option, optionIndex) => `${optionIndex + 1}. ${markdownText(option)}`)] : []),
   ];
 }
@@ -171,6 +171,8 @@ export function renderSection(config: ScholarConfig, book: ScholarBook, chapter:
     `status: ${yaml(section.status)}`, `current: ${current}`, `created: ${yaml(section.createdAt)}`, `updated: ${yaml(section.updatedAt)}`,
   ]), [
     `*${statusLabel(section.status)}${current ? " · Current section" : ""} · ${pageRange(section.startPage, section.endPage)}*`, "",
+    ...(section.status === "complete" ? ["**Section complete.** Reopen for practice anytime; practice does not change your earned completion.", ""]
+      : section.status !== "not-started" ? [`**Remaining to complete:** ${sectionCompletionBlockers(section).map(markdownText).join("; ")}.`, ""] : []),
     wikiLink(notePath, chapterNotePath(config, book, chapter), chapterLabel), "",
     ...(content.some((line) => line.trim()) ? content : ["This section is ready. Notes will appear as you work through it."]),
   ].join("\n"));

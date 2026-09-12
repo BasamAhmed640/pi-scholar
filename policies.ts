@@ -1,4 +1,5 @@
 import type { ScholarBook, ScholarExam, ScholarMode, ScholarSection, TutorSession } from "./types.ts";
+import { sectionProgressMessage } from "./domain.ts";
 
 function sectionName(book: ScholarBook, section: ScholarSection): string {
   const chapter = book.chapters.find((item) => item.sections.some((candidate) => candidate.id === section.id));
@@ -50,6 +51,8 @@ export function learnInstructions(book: ScholarBook, section: ScholarSection | u
   const pending = (section?.attempts || []).find((attempt) => attempt.format === "open" && attempt.outcome === "pending");
   const resume = lastAssistant ? `Last durable assistant synthesis (resume orientation only): ${lastAssistant.slice(0, 1200)}` : "No prior assistant lesson is stored for this section.";
   return `Scholar Learn mode is active for ${book.metadata.title}. ${location}
+${section ? `Authoritative progress: ${sectionProgressMessage(section)}` : ""}
+${section?.status === "complete" ? "This completed section was reopened for PRACTICE ONLY. Briefly acknowledge completion, then offer fresh practice or answer the learner's question. Do not restart the lesson, reset coverage, add completion requirements, or label practice as unfinished mastery." : "Resume saved teaching and checks. Do not restart material or required checks that are already covered and passed."}
 ${resume}
 ${pending ? `Pending approved open question ${pending.id}: ${pending.question} Resolve this exact attempt before preparing another.` : "No open question is awaiting resolution."}
 
@@ -67,7 +70,8 @@ Learn-mode contract:
 - During initial source preparation, before the first practice or mastery question, read and view every active-section page. Save a tight literal crop of every source figure, graph, table, map, or diagram by default, including vector diagrams whose captions are absent from extracted text. Use the snapshotId returned by snapshot to account for each visual in notes.figureReviews; each page needs a visual observation and its figures list. Skip only genuinely decorative, duplicate, or fully redundant visuals, with a specific skipReason; an empty figures list means visual inspection found none belonging to this section. On a shared boundary page, use the actual section headings to establish ownership. Do not use internet images in Learn.
 - Save explanations as coherent instructional paragraphs and examples under meaningful topical headings. Explain causal reasoning, source assumptions, and worked procedures well enough to learn from the note. Avoid replacing instruction with a learning-status report or summary table, and omit repeated boilerplate such as "What you established" or objective/check records; Obsidian already presents those records.
 - Teach one coherent reasoning unit at a time. Save the accumulating source-grounded notes before a practice or mastery check so its exact objective/key-point receipt can be verified; use Scholar quiz for multiple choice and the two-phase assess path for open response.
-- Multiple choice alone cannot complete a section. Completion requires a concise source-grounded synthesis, explicit objective coverage, and passing evidence for every genuinely required check.
+- Each required check can be assessed with a source-grounded multiple-choice or open-response question. Set scholar_quiz kind explicitly to conceptual, application, computation, or discrimination; difficulty is a separate rigor label. Choose open response when independent reasoning or derivation is the evidence needed. Completion still requires a concise source-grounded synthesis, complete objective and figure coverage, and passing mastery evidence for every required check.
+- Read the authoritative progress returned by notes, assess, and scholar_quiz. Never announce completion unless it says Section complete. Diagnostic and practice results cannot satisfy missing mastery checks. Once complete, all later questions are practice only and must not reset completion.
 - A miss or 'I don't know' is neutral evidence. Repair only the revealed gap and ask a fresh parallel item.
 - Stop after the current section is established. Do not silently advance multiple sections.`;
 }

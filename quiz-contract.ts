@@ -6,7 +6,7 @@
  * another or rebuilding the protocol with casts.
  */
 import { isQuestionGrounding, normalizeQuestionGrounding } from "./question-grounding.ts";
-import type { QuestionGrounding } from "./types.ts";
+import type { AssessmentKind, QuestionGrounding } from "./types.ts";
 
 export const SCHOLAR_QUIZ_TOOL_NAME = "scholar_quiz" as const;
 
@@ -72,6 +72,7 @@ export interface ObservedScholarQuizDetails {
 
 /** Fields used by Scholar when observing a quiz tool call. */
 export interface ObservedScholarQuizInput {
+  kind?: AssessmentKind;
   question?: string;
   details?: string;
   multiSelect?: boolean;
@@ -126,6 +127,8 @@ export function parseScholarQuizInput(value: unknown): ObservedScholarQuizInput 
   // silently drops grounding, and the gate reports it as simply missing.
   const grounding = normalizeQuestionGrounding(value.grounding);
   return {
+    ...(["conceptual", "application", "computation", "discrimination"].includes(value.kind as string)
+      ? { kind: value.kind as AssessmentKind } : {}),
     ...(typeof value.question === "string" ? { question: value.question } : {}),
     ...(typeof value.details === "string" ? { details: value.details } : {}),
     ...(typeof value.multiSelect === "boolean" ? { multiSelect: value.multiSelect } : {}),

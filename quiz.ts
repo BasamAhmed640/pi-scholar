@@ -43,6 +43,10 @@ const OptionSchema = Type.Object({
 });
 
 const ScholarQuizParams = Type.Object({
+  kind: Type.Optional(Type.Union([
+    Type.Literal("conceptual"), Type.Literal("application"), Type.Literal("computation"),
+    Type.Literal("discrimination"),
+  ], { description: "The understanding check this question tests. Set this explicitly; difficulty is only a rigor label." })),
   question: Type.String({ description: "Ask exactly one graded question." }),
   details: Type.Optional(
     Type.String({ description: "Optional source-bound context or instructions shown under the question." }),
@@ -466,6 +470,7 @@ export function registerScholarQuiz(pi: ExtensionAPI): void {
     promptSnippet:
       "Use scholar_quiz for Scholar's graded multiple-choice checks. Supply stable option values, the correct value(s), and a post-answer explanation.",
     promptGuidelines: [
+      "Set kind to the check being assessed (conceptual, application, computation, or discrimination). Read the saved progress in the result: stop when complete; follow-up questions are practice only.",
       "grounding is mandatory. It names the competency, observable evidence, in-scope PDF pages, and exact saved teaching basis. Scholar blocks unsupported questions before the picker opens.",
       "The guard constrains fairness, never rigor. Continue to use demanding computation, misconception discrimination, independent generation, and novel transfer when the competency supports them.",
       "correctAnswer is required and must contain option value strings, never position numbers. Invalid values are rejected before the picker opens.",

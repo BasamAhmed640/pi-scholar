@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 
-import { migrateLegacyCompletion } from "./domain.ts";
+import { migrateLegacyCompletion, migrateLearnAssessmentKinds } from "./domain.ts";
 import {
   SCHOLAR_SCHEMA_VERSION,
   type CatalogEntry,
@@ -536,7 +536,7 @@ async function readBookAuthority(config: ScholarConfig, filePath: string): Promi
   // Applied at the one place a stored book is parsed, so every in-memory book
   // is already migrated. It is pure; the flag persists on the next ordinary
   // write rather than forcing a write during a read.
-  return migrateLegacyCompletion(parsed);
+  return migrateLearnAssessmentKinds(migrateLegacyCompletion(parsed));
 }
 
 /** Reload an expected book only if the same vault-local import still exists. */

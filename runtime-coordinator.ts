@@ -5,7 +5,7 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 
-import { createBookService } from "./book-service.ts";
+import { createBookService, type MutationOutcome } from "./book-service.ts";
 import {
   appendTranscript,
   findQuizAttempt,
@@ -15,6 +15,7 @@ import {
   quoted,
   recomputeProgress,
   sectionLabel,
+  sectionProgressMessage,
   titleFor,
 } from "./domain.ts";
 import { inspectBook, scanLibrary } from "./ingest.ts";
@@ -111,7 +112,8 @@ export function kickoffMessage(
   if (mode === "learn") {
     const section = target as ScholarSection | undefined;
     if (!section) return `Report that ${titleFor(book)} has no incomplete Learn section. Do not enter Exam or Tutor automatically.`;
-    return `Begin or resume Learn at ${sectionLabel(book, section)} (PDF pages ${section.startPage}-${section.endPage}). Teach this one section from the source, persist its coverage, and run only the checks required for this material.`;
+    if (section.status === "complete") return `Reopen ${sectionLabel(book, section)} for practice only. It is already complete. Acknowledge its earned completion and offer fresh optional practice; do not restart teaching or repeat completion checks. All new questions must have purpose=practice.`;
+    return `Begin or resume Learn at ${sectionLabel(book, section)} (PDF pages ${section.startPage}-${section.endPage}). ${sectionProgressMessage(section)} Teach only uncovered material from the source, persist its coverage, and run only outstanding required checks.`;
   }
   if (mode === "exam") {
     const exam = target as ScholarExam;
@@ -143,7 +145,7 @@ export class ScholarRuntimeCoordinator {
 
   public toolController!: ScholarToolController;
   public renderAll: () => Promise<void>;
-  public mutateBook: <T>(bookId: string, mutate: (book: ScholarBook) => Promise<T> | T) => Promise<{ book: ScholarBook; result: T }>;
+  public mutateBook: <T>(bookId: string, mutate: (book: ScholarBook) => Promise<T> | T) => Promise<MutationOutcome<T>>;
   public bookService: ReturnType<typeof createBookService>;
 
   constructor(
@@ -290,7 +292,7 @@ export class ScholarRuntimeCoordinator {
       return;
     }
     const section = book && this.runtimeSession.mode === "learn" ? findSection(book, this.runtimeSession.recordId) : undefined;
-    const modeLabel = this.runtimeSession.mode ? this.runtimeSession.mode[0]!.toUpperCase() + this.runtimeSession.mode.slice(1) : "selected";
+    const modeLabel = section?.status === "complete" ? "Learn practice" : this.runtimeSession.mode ? this.runtimeSession.mode[0]!.toUpperCase() + this.runtimeSession.mode.slice(1) : "selected";
     const pendingSuffix = this.isPending() ? " · notes pending sync" : "";
     ctx.ui.setStatus("scholar", book ? `Scholar · ${modeLabel}: ${book.metadata.title}${section ? ` · ${sectionLabel(book, section)}` : ""}${pendingSuffix}` : undefined);
   }

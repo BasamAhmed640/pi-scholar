@@ -223,9 +223,24 @@ or service is used.
 It uses a short diagnostic quiz or open response only when that evidence is
 useful. Every item must first link its required evidence to in-scope PDF pages
 and exact already-taught objectives/key points (or an explicit prerequisite).
-A section cannot complete from recognition or guided practice alone: its
-objectives, synthesis, and genuinely required mastery checks must all be
-established.
+A section completes only when its declared objectives are covered, source-page
+and figure reviews are saved, substantive notes exist, and every required mastery
+check has passed. Conceptual, application, computation, and discrimination checks
+can use grounded multiple-choice or open responses. The model chooses open
+response when the required evidence is an independent explanation or derivation;
+practice and diagnostic answers never certify missing mastery.
+
+After each check, Scholar reports either completion or the exact remaining work
+to the model and updates the section and chapter notes in Obsidian. Reopening a
+completed section is **practice only**: new questions are stored as practice even
+if the model requests mastery, and a practice miss cannot reset earned completion.
+The section note labels practice questions and shows any remaining completion gates.
+
+Older multiple-choice attempts sometimes saved an explicit `difficulty: conceptual`
+label as a generic quiz. Scholar repairs those declared labels when reading saved
+progress and reconciles qualifying unfinished sections. Answers, grades, teaching
+receipts, and exam records are preserved; no credit is inferred from question text.
+The repaired state persists with the next ordinary save.
 
 ### Exam
 

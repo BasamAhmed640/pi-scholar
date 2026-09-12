@@ -10,6 +10,7 @@ import {
   findSection,
   type AssessmentAttempt,
   type AssessmentKind,
+  type QuestionGrounding,
   type ScholarBook,
   type ScholarChapter,
   type ScholarMode,
@@ -54,10 +55,9 @@ export function firstIncomplete(book: ScholarBook): ScholarSection | undefined {
 }
 
 export function latestAttemptForKind(section: ScholarSection, kind: AssessmentKind): AssessmentAttempt | undefined {
-  const candidates = section.attempts.filter((attempt) =>
+  const candidates = (section.attempts || []).filter((attempt) =>
     attempt.kind === kind
     && questionCountsTowardCompletion(attempt)
-    && (kind !== "conceptual" || attempt.format === "open")
     && attempt.outcome !== "pending"
     && attempt.outcome !== "cancelled"
     && attempt.outcome !== "unavailable",
@@ -80,11 +80,12 @@ function checksComplete(section: ScholarSection): boolean {
   );
 }
 
-function sectionIsComplete(section: ScholarSection): boolean {
-  const objectiveSet = new Set(section.objectives);
-  const coveredSet = new Set(section.coveredObjectives.filter((objective) => objectiveSet.has(objective)));
-  const coverageComplete = section.objectives.length > 0 && section.objectives.every((objective) => coveredSet.has(objective));
-  const notesComplete = Boolean(section.synthesis?.trim()) && section.keyPoints.length > 0;
+export function sectionCompletionBlockers(section: ScholarSection): string[] {
+  const objectives = section.objectives || [];
+  const objectiveSet = new Set(objectives);
+  const coveredSet = new Set((section.coveredObjectives || []).filter((objective) => objectiveSet.has(objective)));
+  const coverageComplete = objectives.length > 0 && objectives.every((objective) => coveredSet.has(objective));
+  const notesComplete = Boolean(section.synthesis?.trim()) && (section.keyPoints?.length || 0) > 0;
   // Existing results remain valid until this section enters the visual-review
   // workflow. New Learn questions require its receipt at the tool boundary.
   const figuresComplete = section.figureCoverage ? Array.from(
@@ -97,7 +98,25 @@ function sectionIsComplete(section: ScholarSection): boolean {
   // A grandfathered section keeps the completion it earned under the older
   // rule. Coverage and notes are still required: only the mastery-evidence
   // test is waived, and only for work that was already finished.
-  return coverageComplete && notesComplete && figuresComplete && (checksComplete(section) || section.legacyCompletion === true);
+  return [
+    ...(!coverageComplete ? ["teaching coverage for every declared objective"] : []),
+    ...(!notesComplete ? ["saved synthesis and key points"] : []),
+    ...(!figuresComplete ? ["source-page and figure review"] : []),
+    ...(section.legacyCompletion === true ? [] : requiredChecks(section.requiredChecks)
+      .filter((kind) => latestAttemptForKind(section, kind)?.outcome !== "pass")
+      .map((kind) => `${kind} check`)),
+  ];
+}
+
+export function sectionProgressMessage(section: ScholarSection): string {
+  if (section.status === "complete") return "Section complete. Stop this lesson here. Any later questions are practice only and do not change earned completion.";
+  const remaining = sectionCompletionBlockers(section);
+  return `Section ${section.status}. Remaining: ${remaining.join("; ") || "progress reconciliation"}. Resume only the missing work; do not repeat passed checks or claim completion yet.`;
+}
+
+/** Once completion is earned, follow-up questions are practice even if a model labels them mastery. */
+export function learnQuestionGrounding(section: ScholarSection, grounding: QuestionGrounding): QuestionGrounding {
+  return section.status === "complete" ? { ...grounding, purpose: "practice" } : grounding;
 }
 
 /**
@@ -126,6 +145,27 @@ export function migrateLegacyCompletion(book: ScholarBook): ScholarBook {
   return book;
 }
 
+/** Repair only a saved explicit kind label; never infer credit from a question's prose. */
+export function migrateLearnAssessmentKinds(book: ScholarBook): ScholarBook {
+  for (const section of allSections(book)) {
+    let changed = false;
+    for (const attempt of section.attempts) {
+      if (attempt.format !== "multiple-choice" || attempt.kind !== "quiz" || attempt.grounding?.purpose !== "mastery") continue;
+      const kind = quizKind(undefined, attempt.difficulty);
+      if (kind === "quiz") continue;
+      attempt.kind = kind;
+      changed = true;
+    }
+    // Reconcile the format-rule change too, including already correctly labeled MC checks.
+    if (section.status !== "complete" && (changed || sectionCompletionBlockers(section).length === 0)) {
+      const updatedAt = section.updatedAt;
+      recomputeProgress(book, section);
+      section.updatedAt = updatedAt;
+    }
+  }
+  return book;
+}
+
 export function recomputeProgress(book: ScholarBook, changedSection?: ScholarSection): void {
   if (changedSection) {
     // The waiver covers past work only. It ends as soon as the section can
@@ -136,7 +176,7 @@ export function recomputeProgress(book: ScholarBook, changedSection?: ScholarSec
       && (checksComplete(changedSection) || hasResolvedMasteryEvidence(changedSection))) {
       delete changedSection.legacyCompletion;
     }
-    if (sectionIsComplete(changedSection)) {
+    if (sectionCompletionBlockers(changedSection).length === 0) {
       changedSection.status = "complete";
     } else {
       const last = changedSection.attempts.at(-1);
@@ -147,9 +187,11 @@ export function recomputeProgress(book: ScholarBook, changedSection?: ScholarSec
   for (const chapter of book.chapters) chapter.status = deriveStatus(chapter.sections);
 }
 
-export function quizKind(details: unknown, difficulty: unknown, section?: ScholarSection): AssessmentKind {
-  if (typeof details === "string") {
-    const normalized = details.toLowerCase();
+export function quizKind(details: unknown, difficulty: unknown, section?: ScholarSection, declaredKind?: AssessmentKind): AssessmentKind {
+  if (declaredKind) return declaredKind;
+  for (const value of [difficulty, details]) {
+    if (typeof value !== "string") continue;
+    const normalized = value.toLowerCase();
     if (/\bconcept(?:ual)?\b/.test(normalized)) return "conceptual";
     if (/\bcomput(?:ation|ational)?\b/.test(normalized)) return "computation";
     if (/\b(?:misconception\s+)?discrimination\b/.test(normalized)) return "discrimination";

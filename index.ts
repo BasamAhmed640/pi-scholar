@@ -12,8 +12,10 @@ import {
   findSection,
   findTutorQuizAttempt,
   messageTranscriptEntry,
+  learnQuestionGrounding,
   quizKind,
   recomputeProgress,
+  sectionProgressMessage,
   titleFor,
 } from "./domain.ts";
 import { modeCan } from "./modes.ts";
@@ -275,6 +277,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
     try {
       if (coordinator.runtimeSession.mode === "learn") {
         if (!section) throw new Error("Scholar blocked this question before presentation: no Learn section is active.");
+        if (input.grounding) input.grounding = learnQuestionGrounding(section, input.grounding);
         assertQuestionGrounding(input.grounding, book, { mode: "learn", section });
         if (input.grounding.purpose !== "diagnostic") await assertLearnFigureCoverage(coordinator.getConfig(), book, section);
       } else {
@@ -291,6 +294,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
         const currentTutor = coordinator.runtimeSession.mode === "tutor" ? targetBook.tutorSessions.find((item) => item.id === coordinator.runtimeSession.recordId) : undefined;
         if (coordinator.runtimeSession.mode === "learn") {
           if (!currentSection) throw new Error("Scholar blocked this question before presentation: no Learn section is active.");
+          if (input.grounding) input.grounding = learnQuestionGrounding(currentSection, input.grounding);
           assertQuestionGrounding(input.grounding, targetBook, { mode: "learn", section: currentSection });
           if (input.grounding.purpose !== "diagnostic") await assertLearnFigureCoverage(coordinator.getConfig(), targetBook, currentSection);
         } else {
@@ -302,7 +306,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
         attempts.push({
           id: `quiz-${event.toolCallId}`,
           toolCallId: event.toolCallId,
-          kind: input.grounding!.purpose === "diagnostic" ? "quiz" : quizKind(input.details, input.difficulty, currentSection),
+          kind: input.grounding!.purpose === "diagnostic" ? "quiz" : quizKind(input.details, input.difficulty, currentSection, input.kind),
           format: "multiple-choice",
           question: input.question,
           mode: input.multiSelect === true ? "multi-select" : "single-select",
@@ -348,11 +352,11 @@ export default function scholarExtension(pi: ExtensionAPI) {
     });
   });
 
-  pi.on("tool_result", async (event) => {
+  pi.on("tool_result", async (event, ctx) => {
     if (!coordinator.hasConfiguredLibrary() || !coordinator.runtimeSession.active || !coordinator.runtimeSession.bookId || event.toolName !== SCHOLAR_QUIZ_TOOL_NAME) return;
     if (!modeCan(coordinator.runtimeSession.mode, "assesses")) return;
     const details = parseScholarQuizDetails(event.details);
-    await coordinator.mutateBook(coordinator.runtimeSession.bookId, (book) => {
+    const mutation = await coordinator.mutateBook(coordinator.runtimeSession.bookId, (book) => {
       if (!coordinator.ownsActiveAuthority(book)) throw new Error("The active book authority changed while saving this quiz.");
       const found = coordinator.runtimeSession.mode === "learn"
         ? findQuizAttempt(book, coordinator.runtimeSession.recordId, event.toolCallId)
@@ -383,6 +387,13 @@ export default function scholarExtension(pi: ExtensionAPI) {
       if ("section" in found) recomputeProgress(book, found.section);
       else found.tutor.updatedAt = new Date().toISOString();
     });
+    const section = coordinator.runtimeSession.mode === "learn"
+      ? findSection(mutation.book, coordinator.runtimeSession.recordId) : undefined;
+    if (section) {
+      await coordinator.setStatus(ctx);
+      return { content: [...(event.content || []), { type: "text" as const, text: sectionProgressMessage(section)
+        + (mutation.projectionStatus === "pending" ? " Progress is saved; the Obsidian note update is pending." : "") }] };
+    }
   });
 
   pi.registerCommand("scholar", {

@@ -2,9 +2,11 @@ import {
   appendTranscript,
   compactStrings,
   firstIncomplete,
+  learnQuestionGrounding,
   recomputeProgress,
   requiredChecks,
   sectionLabel,
+  sectionProgressMessage,
 } from "../domain.ts";
 import { assertQuestionGrounding, normalizeQuestionGrounding } from "../question-grounding.ts";
 import type { ScholarRuntimeSession } from "../runtime-session.ts";
@@ -78,6 +80,14 @@ export async function handleNotes(
   const mutation = await mutateBook(book.id, (state) => {
     const section = findSection(state, sectionId);
     if (!section) throw new Error(`Unknown Scholar section: ${sectionId}`);
+    const sameMembers = (left: string[], right: string[]) => left.length === right.length && left.every((value) => right.includes(value));
+    if (section.status === "complete" && (
+      !sameMembers(objectives, section.objectives)
+      || !sameMembers(covered, section.coveredObjectives)
+      || (params.requiredChecks !== undefined && !sameMembers(requiredChecks(params.requiredChecks), requiredChecks(section.requiredChecks)))
+    )) {
+      throw new Error("This section is complete; practice cannot change its earned objective coverage or required checks. Keep those fields unchanged when saving practice notes.");
+    }
     // Completion requires covering every declared objective, so a shrinking
     // declaration would certify the section by lowering the bar: declare five,
     // teach one, redeclare that one, complete. Once teaching has begun the
@@ -107,7 +117,7 @@ export async function handleNotes(
     recomputeProgress(state, section);
   });
   const section = findSection(mutation.book, sectionId)!;
-  return toolResult("notes", `Saved concise source-grounded notes for ${sectionLabel(mutation.book, section)}. Status: ${section.status}.`, { bookId: book.id, sectionId });
+  return toolResult("notes", `Saved concise source-grounded notes for ${sectionLabel(mutation.book, section)}. Status: ${section.status}. ${sectionProgressMessage(section)}`, { bookId: book.id, sectionId });
 }
 
 export async function handleAssess(
@@ -145,7 +155,7 @@ export async function handleAssess(
     }
 
     const question = params.question.trim();
-    const grounding = normalizeQuestionGrounding(params.grounding) as QuestionGrounding;
+    let grounding = normalizeQuestionGrounding(params.grounding) as QuestionGrounding;
     const preparedId = `assessment-${toolCallId}`;
     const now = new Date().toISOString();
     let sectionId: string | undefined;
@@ -156,6 +166,7 @@ export async function handleAssess(
       assertQuestionGrounding(grounding, book, { mode: "tutor", tutor });
     } else {
       const section = requireLearnSection(book);
+      grounding = learnQuestionGrounding(section, grounding);
       sectionId = params.sectionId || section.id;
       if (sectionId !== section.id) throw new Error("Scholar Learn assessment must target the frozen Learn section.");
       assertQuestionGrounding(grounding, book, { mode: "learn", section });
@@ -180,6 +191,8 @@ export async function handleAssess(
       if (!target) throw new Error(`The active ${session.mode} record changed while Scholar prepared the question.`);
       if (session.mode === "learn") {
         if (sectionId !== session.recordId) throw new Error("The frozen Learn target changed while Scholar prepared the question.");
+        grounding = learnQuestionGrounding(target as ScholarSection, grounding);
+        attempt.grounding = grounding;
         assertQuestionGrounding(grounding, state, { mode: "learn", section: target as ScholarSection });
       } else {
         assertQuestionGrounding(grounding, state, { mode: "tutor", tutor: target as TutorSession });
@@ -249,10 +262,14 @@ export async function handleAssess(
   if (session.mode === "tutor") {
     return toolResult("assess", `Tutor practice recorded as ${outcome}. It does not alter Learn completion or Exam evidence.`, { bookId: book.id, attemptId });
   }
-  const completed = sectionId ? findSection(mutation.book, sectionId)?.status === "complete" : false;
+  const section = sectionId ? findSection(mutation.book, sectionId) : undefined;
+  const completed = section?.status === "complete";
+  if (completed && section?.attempts.find((attempt) => attempt.id === attemptId)?.grounding?.purpose === "practice") {
+    return toolResult("assess", `Practice recorded as ${outcome}. This section remains complete; earned completion is unchanged.`, { bookId: book.id, sectionId, attemptId });
+  }
   const next = completed ? firstIncomplete(mutation.book) : findSection(mutation.book, session.recordId);
   return toolResult("assess", completed
     ? `Section complete. ${next ? `Next section: ${sectionLabel(mutation.book, next)}. Stop this lesson here.` : "All sections in the book are complete."}`
-    : `Assessment recorded as ${outcome}. The section remains ${sectionId ? findSection(mutation.book, sectionId)?.status : "active"}; repair or finish its remaining checks before advancing.`,
+    : `Assessment recorded as ${outcome}. ${sectionId ? sectionProgressMessage(findSection(mutation.book, sectionId)!) : "No Learn section is active."}`,
   { bookId: book.id, ...(sectionId ? { sectionId } : {}), attemptId });
 }
