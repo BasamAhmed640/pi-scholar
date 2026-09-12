@@ -46,14 +46,15 @@ function answerText(text, values) {
     if (region.includes("scholar:choice:")) {
       const wanted = new Set(response.split(",").map((value) => value.trim()).filter(Boolean));
       const found = new Set();
-      const edited = region.replace(/^- \[[ xX]\] \*\*([^\n]+?)\*\*(.*<!-- scholar:choice:\d+ -->)$/gm, (_row, value, rest) => {
+      const edited = region.replace(/^(> )?- \[[ xX]\] \*\*([^\n]+?)\*\*(.*<!-- scholar:choice:\d+ -->)$/gm, (_row, prefix, value, rest) => {
         if (wanted.has(value)) found.add(value);
-        return `- [${wanted.has(value) ? "x" : " "}] **${value}**${rest}`;
+        return `${prefix || ""}- [${wanted.has(value) ? "x" : " "}] **${value}**${rest}`;
       });
       assert.deepEqual(found, wanted, `fixture selected values for ${id} exist`);
       text = `${text.slice(0, first + start.length)}${edited}${text.slice(last)}`;
     } else {
-      text = `${text.slice(0, first + start.length)}\n${response}\n${text.slice(last)}`;
+      const prefix = text.slice(text.lastIndexOf("\n", first) + 1, first) === "> " ? "> " : "";
+      text = `${text.slice(0, first + start.length)}\n${response.split("\n").map(line => prefix + line).join("\n")}\n${prefix}${text.slice(last)}`;
     }
   }
   return text;
@@ -165,7 +166,7 @@ try {
     const h = await harness("render"); const exam = h.book.exams[0];
     const text = examAnswerNoteText(h.config, h.book, exam);
     assert.match(text, /^answer_format: checkboxes-v1$/m); assert.match(text, /select all/i); assert.match(text, /Click the checkboxes/);
-    assert.equal((text.match(/^- \[ \] .*<!-- scholar:choice:\d+ -->$/gm) || []).length, 6);
+    assert.equal((text.match(/^> - \[ \] .*<!-- scholar:choice:\d+ -->$/gm) || []).length, 6);
     assert.doesNotMatch(text, /^- \[[xX]\]/m);
     assert.ok(text.includes(exam.questions[2].prompt));
     assert.ok(text.includes('/scholar exam "exam-001" submit'));
@@ -183,14 +184,14 @@ try {
 
   await check("checkboxes accept uppercase X and select-all, preserve open Markdown, and unchecking restores blanks", async () => {
     const h = await harness("checkbox-roundtrip"), exam = h.book.exams[0], text = examAnswerNoteText(h.config, h.book, exam);
-    const filled = answerText(text, answers).replace(/^- \[x\]/gm, "- [X]").replace(/\n/g, "\r\n");
+    const filled = answerText(text, answers).replace(/^> - \[x\]/gm, "> - [X]").replace(/\n/g, "\r\n");
     validateExamAnswerNote(h.book, exam, filled);
     assert.deepEqual(parseExamResponses(exam, filled), Object.entries(answers).map(([questionId, response]) => ({
       questionId, response: response.replace(/\n/g, "\r\n"),
     })));
     const cleared = answerText(answerText(text, answers), { q1: "", q2: "", q3: "" });
     assert.deepEqual(examAnswerProgress(exam, cleared), { ok: true, total: 3, answered: 0, blank: ["q1", "q2", "q3"] });
-    assert.equal((cleared.match(/^- \[ \] .*<!-- scholar:choice:\d+ -->$/gm) || []).length, 6, "all unselected choices remain in the paper");
+    assert.equal((cleared.match(/^> - \[ \] .*<!-- scholar:choice:\d+ -->$/gm) || []).length, 6, "all unselected choices remain in the paper");
     const selectedAll = answerText(text, { q2: "a, b, c" });
     assert.equal(parseExamResponses(exam, selectedAll)[1].response, "a, b, c", "select-all accepts any subset, even an incorrect one");
   });
@@ -222,9 +223,9 @@ try {
     ];
     await h.show(); h.confirm();
     for (const value of damaged) {
-      assert.throws(() => parseExamResponses(exam, value), /choice|checkbox/i);
+      assert.throws(() => parseExamResponses(exam, value), /choice|checkbox|callout/i);
       assert.equal(examAnswerProgress(exam, value).ok, false);
-      await writeFile(h.paperPath, value); await assert.rejects(h.submit, /choice|checkbox/i);
+      await writeFile(h.paperPath, value); await assert.rejects(h.submit, /choice|checkbox|callout/i);
       const saved = (await h.current()).exams[0]; assert.equal(saved.status, "active"); assert.deepEqual(saved.rawResponses, []);
       assert.equal(await readFile(h.paperPath, "utf8"), value, "invalid papers remain learner-owned");
     }
@@ -246,7 +247,7 @@ try {
       const text = examAnswerNoteText(h.config, h.book, exam).replace("answer_format: checkboxes-v1", `answer_format: ${format}`);
       validateExamAnswerNote(h.book, exam, text);
       const damaged = text.replace(/(<!-- scholar:answer:q1:start -->)[\s\S]*?(<!-- \/scholar:answer:q1:end -->)/, "$1\n\n$2");
-      assert.throws(() => parseExamResponses(exam, damaged), /choice|checkbox/i);
+      assert.throws(() => parseExamResponses(exam, damaged), /choice|checkbox|callout/i);
       assert.equal(examAnswerProgress(exam, damaged).ok, false);
     }
   });
@@ -254,7 +255,7 @@ try {
   await check("legacy text papers still validate, preserve open responses and submit frozen answers", async () => {
     const h = await harness("legacy-paper"), exam = h.book.exams[0];
     // Explicit old-paper fixture: no answer-format field and no choice rows.
-    const legacyBlank = examAnswerNoteText(h.config, h.book, exam).replace(/^answer_format: checkboxes-v1\r?\n/m, "")
+    const legacyBlank = examAnswerNoteText(h.config, h.book, exam).replace(/^> ?/gm, "").replace(/^answer_format: checkboxes-v1\r?\n/m, "")
       .replace(/^- \[ \] .*<!-- scholar:choice:\d+ -->\n/gm, "");
     assert.doesNotMatch(legacyBlank, /answer_format:|scholar:choice:/);
     const legacyPlaceholder = answerText(legacyBlank, { q1: "Write your answer here.", q3: "Write your answer here." });

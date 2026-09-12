@@ -527,7 +527,7 @@ try {
   if (!sectionFile) throw new Error("Expected the active Scholar section note.");
   const sectionNotePath = join(sectionDirectory, sectionFile);
   const pendingSectionMarkdown = await readFile(sectionNotePath, "utf8");
-  const pendingQuestionIndex = pendingSectionMarkdown.indexOf("### Question 2");
+  const pendingQuestionIndex = pendingSectionMarkdown.indexOf("> [!question] Question 2");
   const pendingObjectivesIndex = pendingSectionMarkdown.indexOf("> ### Learning objectives");
   const pendingTeachingIndex = pendingSectionMarkdown.indexOf("## Lesson");
   const pendingAnswersIndex = pendingSectionMarkdown.indexOf("## Questions");
@@ -537,10 +537,10 @@ try {
       && pendingTeachingIndex < pendingObjectivesIndex
       && pendingObjectivesIndex < pendingAnswersIndex
       && pendingAnswersIndex < pendingQuestionIndex
-      && pendingSectionMarkdown.includes("### Question 1")
+      && pendingSectionMarkdown.includes("> [!question] Question 1")
       && pendingSectionMarkdown.includes(`1. ${demandingQuizInput.options[0].label}`)
       && pendingSectionMarkdown.slice(pendingQuestionIndex).includes("*Awaiting response*")
-      && /^> \[!info\]- Scholar question details/m.test(pendingSectionMarkdown.slice(pendingQuestionIndex))
+      && /^> > \[!info\]- Scholar question details/m.test(pendingSectionMarkdown.slice(pendingQuestionIndex))
       && pendingSectionMarkdown.split("Why should a compact source read avoid a padded card?").length - 1 === 1
       && pendingSectionMarkdown.includes("This teaching note deliberately separates"),
     `questions=${pendingQuestionIndex}; objectives=${pendingObjectivesIndex}; teaching=${pendingTeachingIndex}; answers=${pendingAnswersIndex}`,
@@ -664,9 +664,9 @@ try {
   check(
     "completed questions have visible paired feedback at the generated note bottom",
     projectionRefresh.details?.action === "notes"
-      && completedSectionMarkdown.includes("### Question 1")
-      && completedSectionMarkdown.includes("### Question 2")
-      && completedAnswersIndex > completedSectionMarkdown.indexOf("### Question 2")
+      && completedSectionMarkdown.includes("> [!question] Question 1")
+      && completedSectionMarkdown.includes("> [!question] Question 2")
+      && completedAnswersIndex > completedSectionMarkdown.indexOf("> [!question] Question 2")
       && completedSectionMarkdown.indexOf("## Questions") > completedSectionMarkdown.indexOf("## Lesson")
       && completedAnswersIndex < completedEndIndex
       && /> \[!info\]- Scholar question details/.test(completedSectionMarkdown.slice(completedSectionMarkdown.indexOf("## Questions"), completedEndIndex))
@@ -834,11 +834,11 @@ try {
   const originalPaper = await readFile(paperPath, "utf8");
   const answeredPaper = originalPaper
     .replace("- [ ] **A** — A compact read row without a padded card <!-- scholar:choice:0 -->", "- [x] **A** — A compact read row without a padded card <!-- scholar:choice:0 -->")
-    .replace(/(<!-- scholar:answer:q2:start -->\n)[\s\S]*?(<!-- \/scholar:answer:q2:end -->)/, `$1${privateExamResponse}\n$2`);
+    .replace(/(<!-- scholar:answer:q2:start -->\n)[\s\S]*?(<!-- \/scholar:answer:q2:end -->)/, (_, start, end) => `${start}> ${privateExamResponse}\n> ${end}`);
   check("Exam paper exposes native unchecked choices and receives a checked MCQ plus private written response",
     /^answer_format: checkboxes-v1$/m.test(originalPaper)
-      && (originalPaper.match(/^- \[ \] .*<!-- scholar:choice:\d+ -->$/gm) || []).length === 3
-      && !/^- \[[xX]\]/m.test(originalPaper)
+      && (originalPaper.match(/^> - \[ \] .*<!-- scholar:choice:\d+ -->$/gm) || []).length === 3
+      && !/^> - \[[xX]\]/m.test(originalPaper)
       && !originalPaper.includes("The source explicitly favors the compact renderer.")
       && !originalPaper.includes("Preserves source evidence")
       && answeredPaper.includes("- [x] **A**") && answeredPaper.includes(privateExamResponse),

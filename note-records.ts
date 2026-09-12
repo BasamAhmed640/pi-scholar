@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import type { AssessmentAttempt, ScholarBook, ScholarSection, TutorSession, TranscriptEntry, ScholarExam } from "./types.ts";
 import { GENERATED_START, GENERATED_END, collapsedRecord, markdownText } from "./render/common.ts";
+import { callout, unframeQuestion, FEEDBACK_START, FEEDBACK_END } from "./render/callouts.ts";
 
 export const NOTE_FORMAT = "scholar-notes-v1";
 const ENTRY_END = "<!-- scholar:entry:end -->";
@@ -36,26 +37,44 @@ function readField(text: string, name: string): string | undefined {
 }
 
 /** Full question blocks are editable/deletable units; only their visible order matters. */
-export function questionBlock(attempt: AssessmentAttempt, index: number): string {
+export function questionBlock(attempt: AssessmentAttempt, index: number, figures = ""): string {
   const { question, options, quiz, answerSummary, feedback, correctAnswer, outcome, ...metadata } = attempt;
   const quizMetadata = quiz && {
-    ...quiz, question: undefined, options: quiz.options.map(({ label, ...option }) => option),
+    ...quiz, question: undefined, context: undefined, options: quiz.options.map(({ label, ...option }) => option),
   };
-  return [
-    `### Question ${index + 1} · ${attempt.kind}${attempt.grounding?.purpose === "practice" ? " · Practice" : ""}`, "",
+  const label = { pass: "Correct", review: "Needs review", unsure: "Knowledge gap" }[outcome];
+  const answer = [field("Your answer", answerSummary), field("Correct answer", correctAnswer), field("Feedback", feedback)].filter(Boolean).join("\n");
+  const title = `Question ${index + 1} · ${attempt.kind[0]!.toUpperCase() + attempt.kind.slice(1)}${attempt.grounding?.purpose === "practice" ? " · Practice" : ""}`;
+  return callout("question", title, [
     markdownText(question), "",
+    ...(quiz?.context ? [field("Context", quiz.context)] : []),
+    ...(figures ? [field("Figure", figures)] : []),
     field("Choices", options?.map((option, i) => `${i + 1}. ${option.replace(/\n/g, "\n   ")}`).join("\n")),
-    field("Your answer", answerSummary),
-    field("Correct answer", correctAnswer),
-    field("Feedback", feedback),
-    attempt.outcome === "pending" ? "*Awaiting response*" : `*${attempt.outcome === "cancelled" ? "Cancelled" : attempt.outcome}*`, "",
-    details("question", { ...metadata, ...(quizMetadata ? { quiz: quizMetadata, formHash: contentHash(JSON.stringify([question, options])) } : {}) }), "",
-  ].join("\n");
+    ...(label ? [FEEDBACK_START, callout(outcome === "pass" ? "success" : "warning", label, answer), FEEDBACK_END, ""]
+      : [...(outcome !== "pending" && answer ? [answer] : []), outcome === "pending" ? "*Awaiting response*" : `*${outcome === "cancelled" ? "Cancelled" : outcome}*`, ""]),
+    details("question", { ...metadata, ...(quizMetadata ? { quiz: quizMetadata, formHash: contentHash(JSON.stringify([question, options])), contextHash: contentHash(markdownText(quiz?.context || "")) } : {}) }), "",
+  ].join("\n"));
 }
 
 export function questionChunks(text: string): string[] {
-  const questions = /^## Questions\r?\n([\s\S]*?)(?=^## |<!-- scholar:generated:end -->|$(?![\s\S]))/m.exec(text)?.[1] || "";
-  return questions.split(/(?=^### Question \d+\b)/m).filter((chunk) => /^### Question \d+\b/.test(chunk));
+  const chunks: string[] = [];
+  let active = false, current = "", fence = "", fenceDepth = 0;
+  for (const line of text.match(/[^\n]*(?:\n|$)/g) || []) {
+    const quoted = /^(?:> ?)+/.exec(line)?.[0] || "";
+    const depth = (quoted.match(/>/g) || []).length;
+    const delimiter = /^ {0,3}(`{3,}|~{3,})/.exec(line.slice(quoted.length))?.[1];
+    if (delimiter) {
+      if (!fence) { fence = delimiter; fenceDepth = depth; }
+      else if (depth === fenceDepth && delimiter[0] === fence[0] && delimiter.length >= fence.length) fence = "";
+    }
+    if (!fence && /^## Questions\r?\n/.test(line)) { active = true; continue; }
+    if (!active) continue;
+    if (!fence && /^(?:## |<!-- scholar:generated:end -->)/.test(line)) break;
+    if (!fence && /^(?:### |\> \[!question\] )Question \d+\b/.test(line)) { if (current) chunks.push(current); current = line; }
+    else if (current) current += line;
+  }
+  if (current) chunks.push(current);
+  return chunks;
 }
 
 function questionText(chunk: string): string {
@@ -69,13 +88,14 @@ function choices(text: string): string[] | undefined {
 
 export function readQuestions(text: string): AssessmentAttempt[] {
   const attempts: AssessmentAttempt[] = [];
-  for (const chunk of questionChunks(text)) {
+  for (const raw of questionChunks(text)) {
+    const chunk = unframeQuestion(raw);
     const question = questionText(chunk);
     if (!question) continue; // A deliberately emptied prompt is gone, even if its details remain.
     const data = readDetails(chunk, "question");
     if (!data) throw new Error("A question is missing its Scholar question details. Delete its entire block to remove it, or undo the incomplete edit.");
     const options = choices(chunk);
-    const { formHash, ...metadata } = data;
+    const { formHash, contextHash, ...metadata } = data;
     const status = /^\*(Awaiting response|Cancelled|pending|pass|review|unsure|unavailable)\*\s*$/m.exec(chunk)?.[1];
     if (!status) throw new Error("A question is missing its visible answer status. Restore the status or delete the entire question block.");
     const outcome = status === "Awaiting response" ? "pending" : status.toLowerCase();
@@ -87,7 +107,9 @@ export function readQuestions(text: string): AssessmentAttempt[] {
     if (data.quiz) {
       if (formHash !== contentHash(JSON.stringify([question, options]))) throw new Error("The saved quiz prompt or choices changed. Remove the whole question to request a new one; Scholar will not reuse an outdated grading key.");
       if (!options || options.length !== data.quiz.options?.length) throw new Error("A quiz's choices were added or removed. Delete the whole question to replace it; Scholar will not guess a grading key.");
-      attempt.quiz = { ...data.quiz, question, options: data.quiz.options.map((option: object, i: number) => ({ ...option, label: options[i]! })) };
+      const context = contextHash === undefined ? data.quiz.context : readField(chunk, "Context");
+      if (contextHash !== undefined && contextHash !== contentHash(context || "")) throw new Error("The saved quiz context changed. Restore its frozen wording or remove the whole question before continuing.");
+      attempt.quiz = { ...data.quiz, ...(context !== undefined ? { context } : {}), question, options: data.quiz.options.map((option: object, i: number) => ({ ...option, label: options[i]! })) };
     }
     if (attempts.some((item) => item.id === attempt.id)) throw new Error("Duplicate question ID in the note. Remove the duplicate question block.");
     attempts.push(attempt);
@@ -117,13 +139,13 @@ export function readTranscript(text: string): TranscriptEntry[] {
   });
 }
 
-export function studyDocument(document: string, kind: "section" | "tutor", record: ScholarSection | TutorSession): string {
+export function studyDocument(document: string, kind: "section" | "tutor", record: ScholarSection | TutorSession, figures: (question: string) => string = () => ""): string {
   const { attempts, transcript, ...metadata } = record;
   // Synthesis/coverage are explicitly inspectable in this note's details, never a second database.
   document = attachDetails(document, kind, metadata);
   document = document.replace(/^## Questions\r?\n[\s\S]*?(?=^## |<!-- scholar:generated:end -->)/m, "");
   // All questions are in note order. New questions are appended; cancellation never shuffles them.
-  if (attempts.length) document = document.replace(GENERATED_END, () => `## Questions\n\n${attempts.map(questionBlock).join("\n")}\n${GENERATED_END}`);
+  if (attempts.length) document = document.replace(GENERATED_END, () => `## Questions\n\n${attempts.map((attempt, i) => questionBlock(attempt, i, figures([attempt.question, attempt.quiz?.context].filter(Boolean).join("\n")))).join("\n")}\n${GENERATED_END}`);
   return document;
 }
 
@@ -146,22 +168,23 @@ export function blankSection(outline: any): ScholarSection {
   return { ...outline, status: "not-started", coveredObjectives: [], keyPoints: [], misconceptions: [], attempts: [], transcript: [], updatedAt: outline.createdAt };
 }
 
-export function examDocument(document: string, exam: ScholarExam): string {
+export function examDocument(document: string, exam: ScholarExam, figures: (question: string) => string = () => ""): string {
   const { questions, transcript, ...metadata } = exam;
   document = attachDetails(document, "exam", metadata);
   // The visible exam record retains its grading contract, with prompts stored only in their blocks.
-  const blocks = questions.map(({ prompt, options, ...question }, index) => [
-    `### Question ${index + 1}`, "", prompt, "",
+  const blocks = questions.map(({ prompt, options, ...question }, index) => callout("question", `Question ${index + 1}`, [
+    prompt, "", field("Figure", figures(prompt)),
     field("Choices", options?.map((option, i) => `${i + 1}. ${option.label}`).join("\n")),
     details("exam-question", { ...question, formHash: contentHash(JSON.stringify([prompt, options?.map(option => option.label)])), ...(options ? { options: options.map(({ label, ...option }) => option) } : {}) }), "",
-  ].join("\n"));
+  ].join("\n")));
   return document.replace(GENERATED_END, () => `${transcript.length ? `## Lesson\n\n${transcriptBlock(transcript)}\n` : ""}## Questions\n\n${blocks.join("\n")}\n${GENERATED_END}`);
 }
 
 export function readExamDocument(text: string): ScholarExam {
   const data = readDetails(text, "exam");
   if (!data) throw new Error("Missing Scholar exam details.");
-  const questions = questionChunks(text).flatMap((chunk) => {
+  const questions = questionChunks(text).flatMap((raw) => {
+    const chunk = unframeQuestion(raw);
     const prompt = questionText(chunk);
     if (!prompt) return [];
     const record = readDetails(chunk, "exam-question");

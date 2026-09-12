@@ -110,7 +110,7 @@ check("Markdown keeps the lesson and question-answer pairs outside collapsed adm
       ["Learn", renderSection(config, book, chapter, { ...section, attempts, transcript, snapshots: [] })],
       ["Tutor", renderTutorSession(config, book, { ...tutor, attempts, transcript })],
     ]) {
-      const parsed = callouts(note);
+      const parsed = callouts(note).filter(token => !token.text.startsWith("[!example] Figure"));
       const label = `${kind}: teaching=${hasTeaching}, history=${hasHistory}, pending=${hasPending}`;
       assert.equal(parsed.length, 2 + (hasHistory ? 2 : 0), label);
       for (const token of parsed) assert.equal((token.text.match(/^\[!\w+\]/gm) || []).length, 1, `${label}: merged callout headers`);
@@ -128,12 +128,12 @@ check("Markdown keeps the lesson and question-answer pairs outside collapsed adm
       if (hasHistory || hasPending) assert.ok(note.indexOf("## Questions") > note.indexOf("[!note]-"), label);
     }
   }
-  // Book figures are visible embeds, not oversized or collapsible callouts.
+  // Book figures remain visible inside expanded native callouts.
   const figuresOnly = { ...section, synthesis: undefined, keyPoints: [], misconceptions: [], objectives: [], requiredChecks: [], attempts: section.attempts.slice(0, 2), transcript: [section.transcript[1]], snapshots: [section.snapshots[0], { ...section.snapshots[0], id: "figure2", page: 8, assetFile: "p0008-snapshot-cccccccccccccccc.png" }] };
   const figuresNote = renderSection(config, book, chapter, figuresOnly);
-  assert.equal(callouts(figuresNote).length, 2);
-  assert.ok(callouts(figuresNote).every((token) => /^\[!(?:warning|success)\]/.test(token.text)));
-  assert.equal((figuresNote.match(/^!\[\[.*\|640\]\]$/gm) || []).length, 2);
+  assert.equal(callouts(figuresNote).length, 4);
+  assert.ok(callouts(figuresNote).every((token) => /^\[!(?:warning|success|example)\] /.test(token.text)));
+  assert.equal((figuresNote.match(/^> !\[\[.*\|640\]\]$/gm) || []).length, 2);
   assert.ok(figuresNote.indexOf("## Source figures") < figuresNote.indexOf("## Questions"));
 });
 check("navigation tables identify the current section and never link an unstarted sibling", () => {
@@ -240,17 +240,17 @@ check("open-response feedback stays open and cancellations stay quiet without an
     assert.doesNotMatch(note, /CANCELLED_KEY_MUST_NOT_APPEAR|\[!success\]-|\*\*Result:\*\*/);
   }
 });
-check("the learner-owned paper keeps question callouts separate from native unchecked task lists and open writing space", () => {
+check("the learner-owned paper groups prompts, native unchecked tasks and open writing space in question callouts", () => {
   const tokens = marked.lexer(answerPaper);
   const prompts = tokens.filter((token) => token.type === "blockquote" && /^\[!question\]/.test(token.text));
-  const choiceLists = tokens.filter((token) => token.type === "list" && token.items.some((item) => item.task));
+  const choiceLists = prompts.flatMap((prompt) => prompt.tokens.filter((token) => token.type === "list" && token.items.some((item) => item.task)));
   assert.equal(prompts.length, questions.length);
   assert.equal(choiceLists.length, 1);
   assert.equal(choiceLists[0].items.length, questions[0].options.length);
   for (const item of choiceLists[0].items) { assert.equal(item.task, true); assert.equal(item.checked, false); }
-  assert.ok(prompts.every((token) => !/scholar:choice:|Your response/.test(token.text)), "answer controls stay outside question callouts");
+  assert.ok(prompts.every((token) => /scholar:choice:|Your response/.test(token.text)), "answer controls stay with their question");
   const open = /<!-- scholar:answer:q2:start -->([\s\S]*?)<!-- \/scholar:answer:q2:end -->/.exec(answerPaper)?.[1];
-  assert.ok(open && open.trim() === "" && open.split("\n").length >= 8);
+  assert.ok(open && open.replace(/^> ?/gm, "").trim() === "" && open.split("\n").length >= 8);
   assert.ok(answerPaper.includes("**Your response** · Write below in Live Preview."));
   assert.doesNotMatch(answerPaper, /scholar:generated|PRIVATE_RESPONSE_DO_NOT_PROJECT|GENERATION_TRANSCRIPT_PRIVATE_KEY|Correct answer|Rubric/);
   for (const question of questions) assert.ok(!answerPaper.includes(question.explanation));
@@ -269,7 +269,8 @@ check("graded receipt is concise and key preserves every prompt, option, correct
   const receipt = samples["exam-graded"], key = samples["answer-key"];
   assert.ok(receipt.includes("Exam graded · 3/7 · 42.8571%") && receipt.includes("## Answer key"));
   assert.doesNotMatch(receipt, /## Questions|Which model applies|Used the simplified expression/);
-  assert.ok(key.indexOf("### Question 2") < key.indexOf("### Question 1"), "weak item first, original numbering retained");
+  assert.ok(key.indexOf("> [!question] Question 2") < key.indexOf("> [!question] Question 1"), "weak item first, original numbering retained");
+  assert.match(key, /^> > \[!warning\] Partial credit/m);
   for (const question of questions) { assert.ok(key.includes(question.prompt)); assert.ok(key.includes(question.explanation)); for (const option of question.options || []) assert.ok(key.includes(option.label)); }
   assert.ok(key.includes("First decisive error") && key.includes("Correct reasoning") && key.includes("Transferable lesson"));
   for (const note of [receipt, key]) assert.ok(note.includes("| Reasoning \\| assumptions | 0.0714286/0.142857 | 50% |"));

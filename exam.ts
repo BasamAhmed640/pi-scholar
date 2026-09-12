@@ -403,7 +403,13 @@ export function parseExamResponses(exam: ScholarExam, text: string): Array<{ que
   return spans.map((span, index) => {
     // Older frozen forms seeded a placeholder sentence; blank space replaced it.
     // Treat either as unanswered so a resumed exam grades consistently.
-    const response = text.slice(span.contentStart, span.end).trim();
+    const openingPrefix = text.slice(text.lastIndexOf("\n", span.start) + 1, span.start);
+    const closingPrefix = text.slice(text.lastIndexOf("\n", span.end) + 1, span.end);
+    const framed = /^> ?$/.test(openingPrefix);
+    if ((openingPrefix && !framed) || (closingPrefix && !/^> ?$/.test(closingPrefix))) throw new Error(`The answer callout for ${span.questionId} has an unsupported quote prefix. Restore its single-level frame before submitting.`);
+    if (framed !== /^> ?$/.test(closingPrefix)) throw new Error(`The answer callout for ${span.questionId} has a damaged boundary. Restore its matching frame before submitting.`);
+    const raw = text.slice(span.contentStart, span.end);
+    const response = (framed ? raw.replace(/^> ?/gm, "") : raw).trim();
     const question = exam.questions[index]!;
     if (question.format === "multiple-choice" && (checkboxPaper || response.includes("scholar:choice:"))) {
       return { questionId: span.questionId, response: checkboxResponse(question, response) };

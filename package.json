@@ -1,6 +1,6 @@
 {
   "name": "pi-scholar",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Local PDF study workflows for Pi and Obsidian",
   "type": "module",
@@ -45,6 +45,7 @@
     "quiz-contract.ts",
     "quiz.ts",
     "render/assessment.ts",
+    "render/callouts.ts",
     "render/common.ts",
     "render/navigation.ts",
     "render/section.ts",

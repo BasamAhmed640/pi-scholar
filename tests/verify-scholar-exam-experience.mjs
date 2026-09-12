@@ -87,8 +87,8 @@ check("each question shows its points and format",
   /> \[!question\] Question 1 · 2 points[\s\S]*?> \*Select one answer\.\*/.test(form)
     && /> \[!question\] Question 2 · 5 points[\s\S]*?> \*Written response · Show your reasoning\.\*/.test(form), "labelled");
 check("multiple-choice options are native unchecked tasks with frozen indices",
-  /^- \[ \] \*\*b\*\* — Transmission line <!-- scholar:choice:1 -->$/m.test(form)
-    && (form.match(/^- \[ \] .*<!-- scholar:choice:\d+ -->$/gm) || []).length === 3
+  /^> - \[ \] \*\*b\*\* — Transmission line <!-- scholar:choice:1 -->$/m.test(form)
+    && (form.match(/^> - \[ \] .*<!-- scholar:choice:\d+ -->$/gm) || []).length === 3
     && /^answer_format: checkboxes-v1$/m.test(form), "three selectable options rendered");
 check("the editable paper reveals no pregrading key, rubric or distractor explanation",
   questions.every((question) => !form.includes(question.explanation))
@@ -98,7 +98,7 @@ check("the editable paper reveals no pregrading key, rubric or distractor explan
 
 const openBlock = /<!-- scholar:answer:q2:start -->([\s\S]*?)<!-- \/scholar:answer:q2:end -->/.exec(form)?.[1] || "";
 check("open questions get real blank space to write in",
-  openBlock.split("\n").length >= 8 && openBlock.trim() === "",
+  openBlock.split("\n").length >= 8 && openBlock.replace(/^> ?/gm, "").trim() === "",
   `${openBlock.split("\n").length - 2} blank line(s), no placeholder text to delete`);
 check("form ends with a submit block",
   /## Submit/.test(form) && form.includes('/scholar exam "exam-001" submit') && /save/i.test(form),
@@ -110,7 +110,7 @@ check("an untouched form parses as entirely unanswered",
 
 const answered = form
   .replace("- [ ] **b** — Transmission line <!-- scholar:choice:1 -->", "- [x] **b** — Transmission line <!-- scholar:choice:1 -->")
-  .replace(/(<!-- scholar:answer:q2:start -->\n)[\s\S]*?(<!-- \/scholar:answer:q2:end -->)/, `$1${PRIVATE_RESPONSE}\n$2`);
+  .replace(/(<!-- scholar:answer:q2:start -->\n)[\s\S]*?(<!-- \/scholar:answer:q2:end -->)/, (_, start, end) => `${start}> ${PRIVATE_RESPONSE}\n> ${end}`);
 const parsedAnswered = parseExamResponses(exam, answered);
 check("checked MCQ and written answers round-trip through the markers",
   parsedAnswered[0].response === "b" && parsedAnswered[1].response === PRIVATE_RESPONSE,

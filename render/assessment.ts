@@ -8,6 +8,7 @@ import {
   tutorNotePath,
 } from "../obsidian-paths.ts";
 import { EXAM_PAPER_COMPLETE, examAnswerRegionLines, examFormFingerprint, examQuestionLines } from "../exam.ts";
+import { callout } from "./callouts.ts";
 export { examQuestionLines } from "../exam.ts";
 import type {
   ScholarBook,
@@ -29,7 +30,7 @@ import {
   wikiLink,
   yaml,
 } from "./common.ts";
-import { assessmentQuestionBlock, sourceFigureLines, teachingRecordLines, uniqueSupplementLines } from "./section.ts";
+import { assessmentQuestionBlock, referencedFigureLines, sourceFigureLines, teachingRecordLines, uniqueSupplementLines } from "./section.ts";
 import { transcriptBlock } from "../note-records.ts";
 
 export type ExamQuestion = ScholarExam["questions"][number];
@@ -40,6 +41,14 @@ function recordSourceFigures(owned: ScholarSnapshot[] | undefined, legacy: Schol
   const byId = new Map<string, ScholarSnapshot>();
   for (const snapshot of [...(owned || []), ...legacy]) if (!byId.has(snapshot.id)) byId.set(snapshot.id, snapshot);
   return [...byId.values()];
+}
+
+export function tutorSourceFigures(book: ScholarBook, session: TutorSession): ScholarSnapshot[] {
+  return recordSourceFigures(session.snapshots, book.chapters.flatMap(chapter => chapter.sections.flatMap(section => {
+    const selected = session.scope.sectionIds.length ? session.scope.sectionIds.includes(section.id)
+      : session.scope.chapterIds.length ? session.scope.chapterIds.includes(chapter.id) : true;
+    return selected ? section.snapshots || [] : [];
+  })));
 }
 
 /** Keep weighted fractions readable without rounding tiny nonzero credit to zero. */
@@ -116,9 +125,10 @@ export function examAnswerNoteText(config: ScholarConfig, book: ScholarBook, exa
       "", `> [!question] Question ${index + 1} · ${breakdownPoints(question.maxPoints)} ${question.maxPoints === 1 ? "point" : "points"}`,
       ">",
       ...markdownText(question.prompt).split("\n").map((line) => `> ${line}`), ">",
+      ...referencedFigureLines(config, book, notePath, question.prompt, recordSourceFigures(exam.snapshots, snapshots)).split("\n").map(line => `> ${line}`), ">",
       `> *${question.format === "open" ? "Written response · Show your reasoning."
         : Array.isArray(question.correctAnswer) && question.correctAnswer.length > 1 ? "Select all that apply." : "Select one answer."}*`,
-      ...examAnswerRegionLines(question), "",
+      ...examAnswerRegionLines(question).map(line => line ? `> ${line}` : ">"), "",
     ]), "", "---", "", "## Submit", "",
     "Save your changes in Obsidian, then run this exact command in Pi:", "",
     "```text", `/scholar exam ${JSON.stringify(exam.id)} submit`, "```", "",
@@ -133,10 +143,9 @@ export function displayedCorrectAnswer(question: ExamQuestion): string {
   return values.map((value) => question.options?.find((option) => option.value === value)?.label ?? value).map(markdownText).filter(Boolean).join(", ");
 }
 
-export function gradedQuestionLines(question: ExamQuestion, result: ExamItemResult | undefined, index: number): string[] {
+export function gradedQuestionLines(question: ExamQuestion, result: ExamItemResult | undefined, index: number, figures = ""): string[] {
   const correctAnswer = displayedCorrectAnswer(question);
   const lines = [
-    ...examQuestionLines(question, index), "",
     ...(result ? [`**Score:** ${breakdownPoints(result.earnedPoints)}/${breakdownPoints(result.maxPoints)} · ${markdownText(result.outcome)}`, ""] : []),
     ...(correctAnswer ? [`**Correct answer:** ${correctAnswer}`, ""] : []),
     ...(question.explanation ? [`**Explanation:** ${markdownText(question.explanation)}`, ""] : []),
@@ -153,7 +162,11 @@ export function gradedQuestionLines(question: ExamQuestion, result: ExamItemResu
   if (result?.firstDecisiveError) lines.push("", `**First decisive error:** ${markdownText(result.firstDecisiveError)}`);
   if (result?.correctReasoning) lines.push("", `**Correct reasoning:** ${markdownText(result.correctReasoning)}`);
   if (result?.transferableLesson) lines.push("", `**Transferable lesson:** ${markdownText(result.transferableLesson)}`);
-  return lines;
+  const title = result?.outcome === "correct" ? "Correct" : result?.outcome === "partial" ? "Partial credit" : result?.outcome === "unanswered" ? "Unanswered" : "Needs review";
+  return [callout("question", `Question ${index + 1}`, [
+    ...examQuestionLines(question, index).slice(1), "", figures, "",
+    callout(result?.outcome === "correct" ? "success" : "warning", title, lines.join("\n")),
+  ].join("\n"))];
 }
 
 function competencyTable(exam: ScholarExam): string[] {
@@ -193,7 +206,7 @@ export function renderExamAnswerKey(config: ScholarConfig, book: ScholarBook, ex
     ...block("## Source figures", sourceFigureLines(config, book, notePath, exam.snapshots || [])),
     ...block("## Visual references", referenceImageLines(config, book, notePath, exam.images)),
     ...block("## Every question", ordered.flatMap(({ question, index }, position) => [
-      ...(position ? ["", "---", ""] : []), ...gradedQuestionLines(question, byId.get(question.id), index),
+      ...(position ? [""] : []), ...gradedQuestionLines(question, byId.get(question.id), index, referencedFigureLines(config, book, notePath, question.prompt, exam.snapshots || [])),
     ])),
   ].join("\n"));
 }

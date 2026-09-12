@@ -4,8 +4,8 @@ import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { safePathWithinRoot, writeTextFileAtomic, ScholarRevisionConflictError } from "./storage.ts";
 import { bookHomePath, bookNoteDirectory, sectionNotePath, tutorNotePath, examNotePath } from "./obsidian-paths.ts";
 import { renderBook } from "./render/navigation.ts";
-import { renderSection } from "./render/section.ts";
-import { renderExam, renderTutorSession } from "./render/assessment.ts";
+import { referencedFigureLines, renderSection } from "./render/section.ts";
+import { renderExam, renderTutorSession, tutorSourceFigures } from "./render/assessment.ts";
 import { GENERATED_END, isSectionMaterialized } from "./render/common.ts";
 import { isScholarBook, scholarBookIssues } from "./state-schema.ts";
 import { migrateLegacyCompletion, migrateLearnAssessmentKinds } from "./domain.ts";
@@ -90,10 +90,17 @@ function documents(config: ScholarConfig, book: ScholarBook): Map<string, string
     result.set(path, text);
   };
   for (const chapter of book.chapters) for (const section of chapter.sections) {
-    if (isSectionMaterialized(book, section)) add(sectionNotePath(config, book, chapter, section), studyDocument(renderSection(config, book, chapter, section), "section", section));
+    const note = sectionNotePath(config, book, chapter, section);
+    if (isSectionMaterialized(book, section)) add(note, studyDocument(renderSection(config, book, chapter, section), "section", section, question => referencedFigureLines(config, book, note, question, section.snapshots || [])));
   }
-  for (const exam of book.exams) add(examNotePath(config, book, exam), examDocument(renderExam(config, book, exam), exam));
-  for (const tutor of book.tutorSessions) add(tutorNotePath(config, book, tutor), studyDocument(renderTutorSession(config, book, tutor), "tutor", tutor));
+  for (const exam of book.exams) {
+    const note = examNotePath(config, book, exam);
+    add(note, examDocument(renderExam(config, book, exam), exam, question => referencedFigureLines(config, book, note, question, exam.snapshots || [])));
+  }
+  for (const tutor of book.tutorSessions) {
+    const note = tutorNotePath(config, book, tutor);
+    add(note, studyDocument(renderTutorSession(config, book, tutor), "tutor", tutor, question => referencedFigureLines(config, book, note, question, tutorSourceFigures(book, tutor))));
+  }
   // Publish the book revision after its changed records.
   add(bookHomePath(config, book), attachDetails(renderBook(config, book), "book", bookMetadata(book)));
   return result;

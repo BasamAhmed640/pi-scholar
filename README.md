@@ -41,6 +41,25 @@ selected PDF library contains the source books, not your learning history.
 
 ## Installation
 
+### Native note presentation (0.2.1)
+
+Learn and Tutor group each question, its explicitly referenced figures, and its
+eventual feedback in native Obsidian callouts. New exam papers keep their
+checkboxes or writing area inside the question; graded answer keys use the same
+question and feedback framing. Existing answer papers are never rewritten for
+styling. Older notes remain readable and adopt the new frames on their next
+normal Scholar save.
+
+Presentation guidance asks the teaching model to put a section's central
+equation in an expanded **Key equation** callout with definitions, assumptions,
+and meaning. Small, source-grounded Mermaid schematics are optional when they
+help explain a relationship. They supplement the lesson and original figures.
+Obsidian renders the diagrams and mathematics itself; no extra plugin, agent,
+service, or runtime dependency is needed. The teaching sequence, mastery checks,
+exam difficulty, and grading rules are unchanged.
+
+### Setup
+
 The tested compatibility baseline is Pi `0.85.1` with Node.js `22.23.2` on
 Windows. Pi requires Node.js `22.19.0` or newer. Linux and macOS have not been
 tested. Install Pi separately, then check `pi --version` and `node --version`.

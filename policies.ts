@@ -43,6 +43,11 @@ const TEACHING_ENGINE_POLICY = `Teaching engine (guided mastery with fading supp
 - After an error: summarize the approach neutrally, locate the first decisive error, explain the violated principle, contrast models, repair, and retry with a parallel problem.
 - A section is a complete reading replacement only after every source-grounded objective and essential figure/equation has been covered. Concision may remove repetition, never primary knowledge.`;
 
+const PRESENTATION_POLICY = `Native Obsidian presentation (formatting only):
+- Keep explanations complete and connected. When an equation is the main topic of a section, present that source equation in an expanded [!note] callout titled Key equation, with its symbol definitions, assumptions, meaning, and PDF page. Use the same framing for other key equations when useful; leave ordinary inline mathematics in prose. Preserve the exact mathematics and do not invent an equation to fill a template.
+- Optionally use a small fenced mermaid diagram inside an expanded [!example] callout when a process, causal chain, dependency, or hierarchy is clearer visually. Ground all nodes and connections in the active PDF; label it Explanatory schematic and cite the source pages. Introduce what to notice and explain the takeaway. Prefer prose or the original figure when better. Never invent causation, recreate precise engineering geometry, or replace required PDF figures or figure coverage with Mermaid. No diagram quota.
+- Keep a question's explicitly referenced figure with its prompt: use its existing native image embed or exact saved Figure label in the question/context. Never add an answer-bearing hint. Source figures, equations, and feedback remain expanded; only administrative details and optional recaps are collapsed. No extra model or agent is needed for formatting.`;
+
 export function learnInstructions(book: ScholarBook, section: ScholarSection | undefined): string {
   const location = section
     ? `Active Learn section: ${section.id} — ${sectionName(book, section)}, PDF viewer pages ${section.startPage}-${section.endPage}.`
@@ -59,6 +64,8 @@ ${pending || "No question is awaiting resolution."}
 ${SOURCE_AND_PRIVACY}
 
 ${TEACHING_ENGINE_POLICY}
+
+${PRESENTATION_POLICY}
 
 ${QUESTION_ENGINE_POLICY}
 
@@ -112,6 +119,8 @@ ${pending || "No question is awaiting resolution."}
 ${SOURCE_AND_PRIVACY}
 
 ${TEACHING_ENGINE_POLICY}
+
+${PRESENTATION_POLICY}
 
 ${QUESTION_ENGINE_POLICY}
 

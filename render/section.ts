@@ -1,5 +1,6 @@
 import { latestAttemptForKind, sectionCompletionBlockers } from "../domain.ts";
 import { transcriptBlock } from "../note-records.ts";
+import { callout } from "./callouts.ts";
 import { chapterNotePath, sectionNotePath, snapshotAssetPath } from "../obsidian-paths.ts";
 import type { AssessmentAttempt, AssessmentKind, ScholarBook, ScholarChapter, ScholarConfig, ScholarSection, ScholarSnapshot, TranscriptEntry } from "../types.ts";
 import { block, collapsedRecord, frontmatter, generatedDocument, markdownText, pageRange, readableOutcome, statusLabel, tableText, titleCase, wikiEmbed, wikiLink, yaml } from "./common.ts";
@@ -95,13 +96,24 @@ export function sourceFigureLines(config: ScholarConfig, book: ScholarBook, note
     .flatMap((snapshot) => {
       if (seen.has(snapshot.assetFile)) return [];
       seen.add(snapshot.assetFile);
-      return [
-        `**Figure · PDF page ${snapshot.page}**`, "",
+      return [callout("example", `Figure · PDF page ${snapshot.page}`, [
         wikiEmbed(notePath, snapshotAssetPath(config, book, snapshot), 640), "",
         markdownText(snapshot.caption), "",
         `*Source: ${markdownText(book.source.fileName).replace(/\n/g, " ")} · PDF viewer page ${snapshot.page}.*`, "",
-      ];
+      ].join("\n")), ""];
     });
+}
+
+/** Only explicit source figure labels establish association; page proximity does not. */
+export function referencedFigureLines(config: ScholarConfig, book: ScholarBook, notePath: string, text: string, snapshots: ScholarSnapshot[]): string {
+  const labels = new Set([...text.matchAll(/\b(?:Figure|Fig\.)\s+(\d+(?:[.\-–]\d+)*[a-z]?)(?!\w|[.\-–]\d)/gi)].map(match => match[1]!.toLowerCase().replace(/–/g, "-")));
+  const seen = new Set<string>();
+  return snapshots.flatMap(snapshot => {
+    const label = /\b(?:Figure|Fig\.)\s+(\d+(?:[.\-–]\d+)*[a-z]?)(?!\w|[.\-–]\d)/i.exec(snapshot.caption)?.[1]?.toLowerCase().replace(/–/g, "-");
+    if (!label || !labels.has(label) || seen.has(snapshot.assetFile) || text.includes(snapshot.assetFile)) return [];
+    seen.add(snapshot.assetFile);
+    return [wikiEmbed(notePath, snapshotAssetPath(config, book, snapshot), 640), "", markdownText(snapshot.caption), "", `*Source: ${markdownText(book.source.fileName)} · PDF viewer page ${snapshot.page}.*`, ""];
+  }).join("\n");
 }
 
 export function assessmentSummaryLine(attempt: AssessmentAttempt): string {
