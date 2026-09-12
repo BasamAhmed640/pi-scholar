@@ -28,9 +28,10 @@ export function isFrozenScholarQuiz(value: unknown): value is FrozenScholarQuiz 
   if (typeof value.question !== "string" || !value.question.trim() || typeof value.explanation !== "string" || !value.explanation.trim()
     || (value.context !== undefined && typeof value.context !== "string") || !["single-select", "multi-select"].includes(value.mode as string)
     || !Array.isArray(value.options) || value.options.length < 2 || !Array.isArray(value.correctValues) || !value.correctValues.length) return false;
-  if (!value.options.every((option) => isRecord(option) && Object.keys(option).every((key) => ["label", "value", "description"].includes(key))
+  if (!value.options.every((option) => isRecord(option) && Object.keys(option).every((key) => ["label", "value", "description", "misconception"].includes(key))
     && typeof option.label === "string" && option.label.trim() && typeof option.value === "string" && option.value.trim()
-    && (option.description === undefined || typeof option.description === "string"))) return false;
+    && (option.description === undefined || typeof option.description === "string")
+    && (option.misconception === undefined || (typeof option.misconception === "string" && !!option.misconception.trim())))) return false;
   const values = value.options.map((option) => option.value);
   return new Set(values).size === values.length
     && new Set(value.options.map((option) => option.label.toLowerCase())).size === values.length
@@ -43,6 +44,19 @@ export interface ScholarQuizOption {
   label: string;
   value: string;
   description?: string;
+  /** Authoring-only diagnosis; never included in pre-answer UI details. Optional for old saved forms. */
+  misconception?: string;
+}
+
+/** Apply to new forms only. Previously frozen unanswered questions remain resumable unchanged. */
+export function assertScholarQuizDistractors(options: ScholarQuizOption[], correctValues: string[]): void {
+  const catchAll = options.find((option) => /\b(all|none|both|any|either|neither)\s+of\s+(the\s+)?(above|these|them|the\s+others)\b/i.test(option.label));
+  if (catchAll) throw new Error(`scholar_quiz forbids catch-all options such as ${JSON.stringify(catchAll.label)}; ask for a specific decision.`);
+  const distractors = options.filter((option) => !correctValues.includes(option.value));
+  if (!distractors.length) throw new Error("scholar_quiz needs at least one plausible wrong option.");
+  if (distractors.some((option) => !option.misconception?.trim())) throw new Error("Every wrong scholar_quiz option must declare the specific misconception it targets.");
+  const diagnoses = distractors.map((option) => option.misconception!.trim().replace(/\s+/g, " ").toLowerCase());
+  if (new Set(diagnoses).size !== diagnoses.length) throw new Error("Each wrong scholar_quiz option must target a distinct misconception.");
 }
 
 export interface ScholarQuizAnswer {

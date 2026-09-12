@@ -11,6 +11,7 @@ import { Type } from "typebox";
 import { QuestionGroundingSchema } from "./question-grounding-schema.ts";
 import {
   SCHOLAR_QUIZ_TOOL_NAME,
+  assertScholarQuizDistractors,
   toScholarQuizDisplayedOptions,
   type ScholarQuizAnswer as OptionAnswer,
   type ScholarQuizMode as QuizMode,
@@ -41,6 +42,7 @@ const OptionSchema = Type.Object({
   description: Type.Optional(
     Type.String({ description: "Optional neutral clarification shown before the learner answers." }),
   ),
+  misconception: Type.Optional(Type.String({ description: "Required for each wrong option: the distinct misconception it diagnoses. Hidden from the learner before answering." })),
 });
 
 const NewScholarQuizParams = Type.Object({
@@ -97,7 +99,7 @@ function isManualUncertainty(label: string, value: string): boolean {
 }
 
 function normalizeOptions(
-  options: Array<{ label: string; value?: string; description?: string }> | undefined,
+  options: Array<{ label: string; value?: string; description?: string; misconception?: string }> | undefined,
 ): QuizOption[] {
   const values = new Set<string>();
   const labels = new Set<string>();
@@ -105,6 +107,7 @@ function normalizeOptions(
     const label = raw.label.trim();
     const value = raw.value?.trim() || label;
     const description = raw.description?.trim() || undefined;
+    const misconception = raw.misconception?.trim() || undefined;
     if (!label) throw new Error(`option ${position + 1} has an empty label`);
     if (!value) throw new Error(`option ${position + 1} has an empty value`);
     if (isManualUncertainty(label, value)) {
@@ -115,7 +118,7 @@ function normalizeOptions(
     if (labels.has(labelKey)) throw new Error(`duplicate option label "${label}"`);
     values.add(value);
     labels.add(labelKey);
-    return { label, value, ...(description ? { description } : {}) };
+    return { label, value, ...(description ? { description } : {}), ...(misconception ? { misconception } : {}) };
   });
 }
 
@@ -488,6 +491,7 @@ export function prepareScholarQuiz(params: any, displayedLabels?: string[]): Fro
   } else if (params.shuffle !== false) options = shuffleOptions(options);
   const resolved = resolveCorrect(params.correctAnswer, options, mode);
   if (resolved.error) throw new Error(`scholar_quiz ${resolved.error}`);
+  assertScholarQuizDistractors(options, resolved.indices.map((index) => options[index - 1]!.value));
   const context = typeof params.details === "string" ? params.details.trim() : "";
   return { question, ...(context ? { context } : {}), mode, options, correctValues: resolved.indices.map((index) => options[index - 1]!.value), explanation };
 }
@@ -508,6 +512,7 @@ export function registerScholarQuiz(pi: ExtensionAPI, loadSaved?: (toolCallId: s
       "correctAnswer is required and must contain option value strings, never position numbers. Invalid values are rejected before the picker opens.",
       "explanation is required and is hidden until the learner submits.",
       "Provide only real gradable choices. Scholar adds I don't know automatically; never add an uncertainty or opt-out choice.",
+      "For each wrong option, set misconception to the specific distinct error it diagnoses. Do not use all/none-of-the-above or other catch-all options. This authoring metadata is never displayed before answering.",
       "Use multiSelect only when two or more choices are jointly correct; grading requires an exact set match.",
       "Options shuffle by default. Set shuffle false only when their order is substantively meaningful.",
       // Question construction and adaptation live only in the

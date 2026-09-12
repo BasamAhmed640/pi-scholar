@@ -5,6 +5,7 @@ import { homedir, tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { saveFixtureLesson } from './lesson-fixture.mjs';
 
 const extension = dirname(packagedExtensionPath);
 const packageRoot = sdkRoot;
@@ -23,6 +24,7 @@ const { renderScholarWorkspace } = await mod('obsidian.ts');
 const { sectionNotePath, tutorNotePath, bookNoteDirectory } = await mod('obsidian-paths.ts');
 const { learnInstructions, tutorInstructions } = await mod('policies.ts');
 const { handleNotes } = await mod('tool-actions/learning.ts');
+const lesson = await mod('lesson.ts');
 
 const root = await mkdtemp(join(tmpdir(), 'scholar-durable-history-'));
 const now = new Date().toISOString();
@@ -144,6 +146,8 @@ try {
   const notesParams = { synthesis: 'A substantive account of the causal model and its limits.', keyPoints: ['Cause leads to effect'], objectives: ['Explain cause'], coveredObjectives: ['Explain cause'] };
   const learn = { mode: 'learn', recordId: 's1' };
   const mutate = (id, update) => service.mutateBook(id, update);
+  await service.mutateBook(initial.id, book => saveFixtureLesson(lesson, book, sectionOf(book)));
+  saved = await storage.loadBookState(config, initial.id);
   await handleNotes(saved, learn, notesParams, sectionOf, mutate, () => ({}));
   saved = await storage.loadBookState(config, initial.id);
   assert.deepEqual(sectionOf(saved).requiredChecks, ['conceptual', 'application']);

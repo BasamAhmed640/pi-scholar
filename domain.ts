@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { scopedPageRanges, type PageRange } from "./page-scope.ts";
 import { isProvisionalOutline } from "./outline-validation.ts";
 import { questionCountsTowardCompletion } from "./question-grounding.ts";
+import { lessonReady, isObjectiveChecks } from "./lesson.ts";
 import {
   allSections,
   deriveStatus,
@@ -115,10 +116,29 @@ export function sectionCompletionBlockers(section: ScholarSection): string[] {
     ...(!coverageComplete ? ["teaching coverage for every declared objective"] : []),
     ...(!notesComplete ? ["saved synthesis and key points"] : []),
     ...(!figuresComplete ? ["source-page and figure review"] : []),
+    ...(section.legacyLessonCompletion ? [] : [
+      ...(!lessonReady(section) ? ["complete saved instructional lesson"] : []),
+      ...objectiveMasteryBlockers(section),
+    ]),
     ...(section.legacyCompletion === true ? [] : requiredChecks(section.requiredChecks)
       .filter((kind) => latestAttemptForKind(section, kind)?.outcome !== "pass")
       .map((kind) => `${kind} check`)),
   ];
+}
+
+/** A pass for one objective never replaces a miss or missing evidence for another. */
+export function objectiveMasteryBlockers(section: ScholarSection): string[] {
+  if (!isObjectiveChecks(section.objectiveChecks) || section.objectives.some(objective => !section.objectiveChecks!.some(item => item.objective === objective))) return ["mastery plan for every objective"];
+  return section.objectiveChecks.flatMap(({ objective, checks }) => checks.filter(kind => {
+    const last = latestAttemptForObjectiveCheck(section, objective, kind);
+    return last?.outcome !== "pass";
+  }).map(kind => `${kind} evidence for: ${objective}`));
+}
+
+export function latestAttemptForObjectiveCheck(section: ScholarSection, objective: string, kind: AssessmentKind): AssessmentAttempt | undefined {
+  return section.attempts.filter(attempt => attempt.kind === kind && questionCountsTowardCompletion(attempt)
+    && !["pending", "cancelled", "unavailable"].includes(attempt.outcome)
+    && attempt.grounding!.basis.some(basis => basis.kind === "objective" && basis.value === objective)).at(-1);
 }
 
 export function sectionProgressMessage(section: ScholarSection): string {
@@ -151,6 +171,7 @@ export function learnQuestionGrounding(section: ScholarSection, grounding: Quest
 export function migrateLegacyCompletion(book: ScholarBook): ScholarBook {
   for (const chapter of book.chapters) {
     for (const section of chapter.sections) {
+      if (section.status === "complete" && !section.lessonCommit) section.legacyLessonCompletion = true;
       if (section.legacyCompletion === true) continue;
       if (section.status !== "complete" || checksComplete(section)) continue;
       const relies = section.attempts.some((attempt) => attempt.grounding === undefined && attempt.outcome === "pass");
@@ -307,6 +328,7 @@ export function appendTranscript(
   incoming: TranscriptEntry,
 ): boolean {
   if (entries.some((entry) => entry.id === incoming.id)) return false;
+  if (!incoming.lesson && entries.some(entry => entry.lesson && entry.markdown.replace(/\s+/g, " ").trim() === incoming.markdown.replace(/\s+/g, " ").trim())) return false;
   entries.push(incoming);
   // This is the vault's durable lesson record, not a model context window.
   // Resume prompts select a short recent synthesis without deleting history.

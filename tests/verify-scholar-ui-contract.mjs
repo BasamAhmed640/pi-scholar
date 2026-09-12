@@ -109,6 +109,11 @@ async function runToolCallPreflight(extension, event, context) {
   }
   return undefined;
 }
+async function learnerResponse(extension, context, text) {
+  for (const handler of extension.handlers.get("agent_settled") || []) await handler({}, context);
+  for (const handler of extension.handlers.get("input") || []) await handler({ type: "input", text, source: "interactive" }, context);
+  for (const handler of extension.handlers.get("before_agent_start") || []) await handler({ systemPrompt: "base", prompt: text }, context);
+}
 
 const environmentNames = [
   "PI_SCHOLAR_LIBRARY_ROOT",
@@ -366,6 +371,11 @@ try {
       keyPoints: ["Compact source reads remain visible without redundant framing."],
       misconceptions: [],
       figureReviews: [{ page: 1, observation: "Rendered page contains only the source paragraphs; no figures or tables.", figures: [] }],
+      objectiveChecks: [{ objective: "Explain why the compact renderer avoids padded cards.", checks: ["conceptual"] }],
+      lesson: { id: "compact-explanation", title: "Keep information, remove repeated framing", objectives: ["Explain why the compact renderer avoids padded cards."],
+        keyPoints: ["Compact source reads remain visible without redundant framing."], sourcePages: [1],
+        markdown: "### Keep information, remove repeated framing\n\nA source read is one bounded passage fetched from the PDF. The learner needs that passage and its page reference. Extra nested cards repeat visual boundaries without adding evidence. Keep one informative row so the passage stays visible while repeated padding disappears." },
+      lessonComplete: true,
     },
     undefined,
     undefined,
@@ -374,7 +384,7 @@ try {
   const notesText = notesResult.content?.map((item) => item.type === "text" ? item.text : "").join("\n") || "";
   check(
     "Learn notes persist through the extracted tool controller",
-    !notesText.startsWith("Scholar error:") && notesText.includes("Saved concise source-grounded notes"),
+    !notesText.startsWith("Scholar error:") && notesText.includes("Saved instructional explanation") && notesText.includes("Full lesson committed"),
     JSON.stringify(notesText),
   );
 
@@ -443,8 +453,8 @@ try {
     },
     options: [
       { label: "Keep one informative row and remove per-read padded containers", value: "compact" },
-      { label: "Add nested padded containers to separate every read", value: "nested" },
-      { label: "Hide the source-read information entirely", value: "hide" },
+      { label: "Add nested padded containers to separate every read", value: "nested", misconception: "Equates extra framing with additional information" },
+      { label: "Hide the source-read information entirely", value: "hide", misconception: "Confuses removing repetition with removing evidence" },
     ],
     correctAnswer: "compact",
     explanation: "The changed context is harder, but the same information invariant governs the design.",
@@ -491,6 +501,8 @@ try {
       kind: "conceptual",
       format: "open",
       question: "Why should a compact source read avoid a padded card?",
+      expectedAnswer: "The passage remains informative in one row; repeated padding adds no information.",
+      criteria: ["Explain that repeated padding adds no information."],
       outcome: "pending",
       grounding: {
         purpose: "mastery",
@@ -508,11 +520,12 @@ try {
     undefined,
     context,
   );
+  const beforeAmbient = (await readFixtureBook(bookStatePath)).chapters[0].sections[0].transcript;
   for (const handler of extension.handlers.get("message_end") || []) {
     await handler({
       message: {
         role: "assistant",
-        content: [{ type: "text", text: "This teaching note deliberately separates the stored question from its transport echo." }],
+        content: [{ type: "text", text: "Saved the lesson to Obsidian. Preparing the next question." }],
       },
     }, context);
     await handler({
@@ -521,7 +534,21 @@ try {
         content: [{ type: "text", text: "Why should a compact source read avoid a padded card?" }],
       },
     }, context);
+    await handler({ message: { role: "assistant", content: [{ type: "text", text:
+      "A source read is one bounded passage fetched from the PDF. The learner needs that passage and its page reference. Extra nested cards repeat visual boundaries without adding evidence. Keep one informative row so the passage stays visible while repeated padding disappears." }] } }, context);
   }
+  const afterAmbient = (await readFixtureBook(bookStatePath)).chapters[0].sections[0].transcript;
+  check("ambient progress and body-only lesson echoes do not append after explicit lesson delivery",
+    JSON.stringify(beforeAmbient) === JSON.stringify(afterAmbient), `entries=${beforeAmbient.length}/${afterAmbient.length}`);
+  const clarification = await definition.execute("learn-explicit-followup", { action: "notes", lesson: {
+    id: "compact-clarification", title: "Why the passage still matters", objectives: ["Explain why the compact renderer avoids padded cards."],
+    keyPoints: ["Compact source reads remain visible without redundant framing."], sourcePages: [1],
+    markdown: "### Why the passage still matters\n\nRemoving a card does not mean removing the source passage. The passage carries evidence; the repeated border and padding only separate areas visually. This distinction lets the layout become smaller while its meaning remains available.",
+  } }, undefined, undefined, context);
+  check("substantive follow-up explanations remain available through explicit lesson writes",
+    clarification.details?.action === "notes"
+      && (await readFixtureBook(bookStatePath)).chapters[0].sections[0].transcript.some(entry => entry.id === "lesson-compact-clarification"),
+    clarification.content?.[0]?.text || "no saved clarification");
   const sectionDirectory = join(obsidian, "Scholar", "Books", bookDirectories[0].name, "Sections");
   const sectionFile = (await readdir(sectionDirectory)).find((name) => name.endsWith(".md"));
   if (!sectionFile) throw new Error("Expected the active Scholar section note.");
@@ -542,7 +569,8 @@ try {
       && pendingSectionMarkdown.slice(pendingQuestionIndex).includes("*Awaiting response*")
       && /^> > \[!info\]- Scholar question details/m.test(pendingSectionMarkdown.slice(pendingQuestionIndex))
       && pendingSectionMarkdown.split("Why should a compact source read avoid a padded card?").length - 1 === 1
-      && pendingSectionMarkdown.includes("This teaching note deliberately separates"),
+      && pendingSectionMarkdown.includes("Removing a card does not mean removing the source passage.")
+      && !pendingSectionMarkdown.includes("Saved the lesson to Obsidian. Preparing"),
     `questions=${pendingQuestionIndex}; objectives=${pendingObjectivesIndex}; teaching=${pendingTeachingIndex}; answers=${pendingAnswersIndex}`,
   );
   const duplicateOpen = await definition.execute(
@@ -553,6 +581,8 @@ try {
       kind: "conceptual",
       format: "open",
       question: "A second question must not replace the pending one.",
+      expectedAnswer: "The passage remains informative in one row; repeated padding adds no information.",
+      criteria: ["Explain that repeated padding adds no information."],
       outcome: "pending",
       grounding: {
         purpose: "mastery",
@@ -611,6 +641,15 @@ try {
       && afterTamper.chapters[0].sections[0].attempts.find((attempt) => attempt.id === preparedAssessment.details?.attemptId)?.outcome === "pending",
     tamperedResolution.content?.[0]?.text || "no rejection",
   );
+  const withoutResponse = await definition.execute("grade-without-input", {
+    action: "assess", attemptId: preparedAssessment.details.attemptId, outcome: "pass", feedback: "A claimed answer without user input.",
+    evaluation: { criteria: [{ criterionIndex: 1, met: true, evidence: "Repeated padding adds no information" }] },
+  }, undefined, undefined, context);
+  check("the real tool controller rejects a passing grade before actual user input",
+    /no learner response/.test(withoutResponse.content?.[0]?.text || "")
+      && (await readFixtureBook(bookStatePath)).chapters[0].sections[0].attempts.at(-1)?.outcome === "pending",
+    withoutResponse.content?.[0]?.text || "missing rejection");
+  await learnerResponse(extension, context, "Repeated padding adds no information, so retain the informative row.");
   const assessmentResult = await definition.execute(
     "learn-assess-resolve-ui-contract",
     {
@@ -618,6 +657,7 @@ try {
       attemptId: preparedAssessment.details?.attemptId,
       outcome: "pass",
       feedback: "The response correctly connects compact presentation with removing redundant framing.",
+      evaluation: { criteria: [{ criterionIndex: 1, met: true, evidence: "Repeated padding adds no information" }] },
     },
     undefined,
     undefined,
@@ -679,6 +719,7 @@ try {
     `answers=${completedAnswersIndex}; end=${completedEndIndex}; transcript=${afterProjection.chapters[0].sections[0].transcript.length}`,
   );
 
+  for (const handler of extension.handlers.get("agent_settled") || []) await handler({}, context);
   await command.handler('tutor "1.1"', context);
   const tutorNotesResult = await definition.execute(
     "tutor-notes-ui-contract",
@@ -686,6 +727,8 @@ try {
       action: "notes",
       synthesis: "The grounded principle connects its governing model to the nearby application and exposes the relevant boundary conditions.",
       keyPoints: ["Connect the governing model to its application."],
+      lesson: { id: "tutor-explanation", title: "Choose a governing relation", objectives: [], keyPoints: ["Connect the governing model to its application."], sourcePages: [1],
+        markdown: "### Choose a governing relation\n\nA governing model states which quantities depend on one another and under which assumptions. Check those assumptions against the case before using the relation. Then substitute the case's inputs to predict its result." },
     },
     undefined,
     undefined,
@@ -698,6 +741,7 @@ try {
       kind: "application",
       format: "open",
       question: "Use Learn's objective directly.",
+      expectedAnswer: "Use the relation whose assumptions match the case.", criteria: ["Choose a relation with matching assumptions."],
       outcome: "pending",
       grounding: {
         purpose: "mastery",
@@ -727,6 +771,7 @@ try {
       kind: "application",
       format: "open",
       question: "Apply the principle.",
+      expectedAnswer: "Use the relation whose assumptions match the case.", criteria: ["Choose a relation with matching assumptions."],
       outcome: "pending",
       grounding: {
         purpose: "practice",
@@ -744,6 +789,7 @@ try {
     undefined,
     context,
   );
+  await learnerResponse(extension, context, "I choose the relation whose assumptions match this case.");
   const tutorAssessmentResult = await definition.execute(
     "tutor-assess-resolve-ui-contract",
     {
@@ -751,6 +797,7 @@ try {
       attemptId: preparedTutorAssessment.details?.attemptId,
       outcome: "pass",
       feedback: "The response selected and applied the governing model correctly.",
+      evaluation: { criteria: [{ criterionIndex: 1, met: true, evidence: "relation whose assumptions match this case" }] },
     },
     undefined,
     undefined,

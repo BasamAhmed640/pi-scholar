@@ -1,6 +1,8 @@
 import { basename, extname, isAbsolute } from "node:path";
 import { isQuestionGrounding } from "./question-grounding.ts";
 import { isFrozenScholarQuiz } from "./quiz-contract.ts";
+import { isLessonReceipt, isLessonCommit, isObjectiveChecks } from "./lesson.ts";
+import { isOpenAssessmentContract, isOpenAssessmentEvaluation, isOpenAssessmentSubmission } from "./open-assessment.ts";
 import { pageInRanges, scopedPageRanges } from "./page-scope.ts";
 
 import {
@@ -140,7 +142,7 @@ function isAttempt(value: unknown): value is AssessmentAttempt {
   if (!hasOnlyKeys(
     value,
     ["id", "kind", "format", "question", "outcome", "createdAt"],
-    ["toolCallId", "resumeToolCallIds", "quiz", "options", "mode", "note", "difficulty", "grounding", "answerSummary", "correctAnswer", "feedback"],
+    ["toolCallId", "resumeToolCallIds", "quiz", "options", "mode", "note", "difficulty", "grounding", "answerSummary", "correctAnswer", "feedback", "openAssessment", "submission", "evaluation"],
   )) return false;
   const common = (
     isStableId(value.id) &&
@@ -157,6 +159,9 @@ function isAttempt(value: unknown): value is AssessmentAttempt {
     (value.note === undefined || typeof value.note === "string") &&
     (value.difficulty === undefined || typeof value.difficulty === "string") &&
     (value.grounding === undefined || isQuestionGrounding(value.grounding)) &&
+    (value.openAssessment === undefined || (value.format === "open" && isOpenAssessmentContract(value.openAssessment))) &&
+    (value.submission === undefined || (value.format === "open" && isOpenAssessmentSubmission(value.submission))) &&
+    (value.evaluation === undefined || (value.format === "open" && isOpenAssessmentEvaluation(value.evaluation))) &&
     (value.outcome === "pending" ||
       value.outcome === "pass" ||
       value.outcome === "review" ||
@@ -176,10 +181,11 @@ function isAttempt(value: unknown): value is AssessmentAttempt {
 
 function isTranscriptEntry(value: unknown): value is TranscriptEntry {
   return isRecord(value) &&
-    hasOnlyKeys(value, ["id", "kind", "markdown", "createdAt"]) &&
+    hasOnlyKeys(value, ["id", "kind", "markdown", "createdAt"], ["lesson"]) &&
     isStableId(value.id) &&
     (value.kind === "assistant" || value.kind === "question" || value.kind === "result") &&
     isNonEmptyString(value.markdown) &&
+    (value.lesson === undefined || (value.kind === "assistant" && isLessonReceipt(value.lesson))) &&
     isTimestamp(value.createdAt);
 }
 
@@ -311,7 +317,7 @@ function isSection(value: unknown): value is ScholarSection {
       "requiredChecks", "status", "keyPoints", "misconceptions", "attempts", "transcript",
       "createdAt", "updatedAt",
     ],
-    ["number", "synthesis", "snapshots", "figureCoverage", "legacyCompletion"],
+    ["number", "synthesis", "snapshots", "figureCoverage", "legacyCompletion", "legacyLessonCompletion", "lessonCommit", "lessonEntryIds", "objectiveChecks"],
   )) return false;
   const valid = (
     isStableId(value.id) &&
@@ -321,6 +327,10 @@ function isSection(value: unknown): value is ScholarSection {
     isNonNegativeInteger(value.startPage) && value.startPage >= 1 &&
     isNonNegativeInteger(value.endPage) && value.endPage >= value.startPage &&
     (value.legacyCompletion === undefined || value.legacyCompletion === true) &&
+    (value.lessonCommit === undefined || isLessonCommit(value.lessonCommit)) &&
+    (value.lessonEntryIds === undefined || isStringArray(value.lessonEntryIds, { nonEmpty: true, unique: true })) &&
+    (value.legacyLessonCompletion === undefined || value.legacyLessonCompletion === true) &&
+    (value.objectiveChecks === undefined || isObjectiveChecks(value.objectiveChecks)) &&
     isStringArray(value.objectives, { nonEmpty: true, unique: true }) &&
     isStringArray(value.coveredObjectives, { nonEmpty: true, unique: true }) &&
     Array.isArray(value.requiredChecks) &&
@@ -569,12 +579,13 @@ function isTutorSession(value: unknown): value is TutorSession {
   if (!isRecord(value) || !hasOnlyKeys(
     value,
     ["id", "title", "scope", "status", "keyPoints", "attempts", "transcript", "createdAt", "updatedAt"],
-    ["synthesis", "closedAt", "images", "snapshots"],
+    ["synthesis", "closedAt", "images", "snapshots", "lessonEntryIds"],
   )) return false;
   const valid = isStableId(value.id) &&
     isNonEmptyString(value.title) &&
     isScope(value.scope) &&
     (value.status === "active" || value.status === "closed") &&
+    (value.lessonEntryIds === undefined || isStringArray(value.lessonEntryIds, { nonEmpty: true, unique: true })) &&
     (value.synthesis === undefined || isNonEmptyString(value.synthesis)) &&
     isStringArray(value.keyPoints, { nonEmpty: true }) &&
     Array.isArray(value.attempts) && value.attempts.every(isAttempt) && hasUniqueIds(value.attempts) &&

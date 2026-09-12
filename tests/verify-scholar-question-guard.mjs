@@ -3,6 +3,7 @@ import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiP
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { saveFixtureLesson } from "./lesson-fixture.mjs";
 
 const extensionPath = resolve(
   process.env.PI_SCHOLAR_EXTENSION
@@ -15,6 +16,7 @@ const { createJiti } = await import(pathToFileURL(jitiPath).href);
 const jiti = createJiti(import.meta.url, { moduleCache: false });
 const groundingModule = await jiti.import(join(extensionDirectory, "question-grounding.ts"));
 const domain = await jiti.import(join(extensionDirectory, "domain.ts"));
+const lesson = await jiti.import(join(extensionDirectory, "lesson.ts"));
 
 const { questionGroundingIssues } = groundingModule;
 const { migrateLegacyCompletion, recomputeProgress } = domain;
@@ -115,6 +117,9 @@ function check(name, passed, detail) {
 
 const learnSection = section();
 const testBook = book(learnSection);
+const summaryOnly = questionGroundingIssues(grounding(), testBook, { mode: "learn", section: learnSection });
+check("summary and coverage labels alone cannot authorize a question", summaryOnly.some(issue => /save and commit/.test(issue)) && summaryOnly.some(issue => /not already covered/.test(issue)), summaryOnly.join("; "));
+saveFixtureLesson(lesson, testBook, learnSection);
 const validIssues = questionGroundingIssues(grounding(), testBook, { mode: "learn", section: learnSection });
 check("demanding grounded mastery is admitted", validIssues.length === 0, validIssues.join("; ") || "no difficulty cap");
 
@@ -153,6 +158,7 @@ check("source-tied diagnostics are admitted", sourcedDiagnostic.length === 0, so
 
 const tutorSession = tutor();
 const tutorBook = book(section(), [tutorSession]);
+saveFixtureLesson(lesson, tutorBook, tutorSession, { sourcePages: [12] });
 const tutorLeak = questionGroundingIssues(grounding(), tutorBook, { mode: "tutor", tutor: tutorSession });
 check("Tutor cannot borrow Learn objectives", tutorLeak.some((issue) => /cannot borrow Learn objectives/.test(issue)), tutorLeak.join("; "));
 
@@ -180,6 +186,7 @@ check("free-topic Tutor diagnostics still require a concrete book page", freeDia
 
 const progressSection = section();
 const progressBook = book(progressSection, []);
+saveFixtureLesson(lesson, progressBook, progressSection);
 progressSection.attempts.push({
   id: "practice-001",
   kind: "conceptual",
@@ -280,6 +287,8 @@ legacySection.attempts.push({
   id: "mastery-003", kind: "conceptual", format: "open",
   question: "Properly grounded retry", grounding: grounding(), outcome: "pass", createdAt: now,
 });
+saveFixtureLesson(lesson, legacyBook, legacySection);
+legacySection.figureCoverage = structuredClone(progressSection.figureCoverage);
 recomputeProgress(legacyBook, legacySection);
 check(
   "the waiver is cleared once the section earns completion outright",

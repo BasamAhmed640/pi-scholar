@@ -6,6 +6,7 @@ import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiP
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
+import { saveFixtureLesson } from "./lesson-fixture.mjs";
 
 const piPackageRoot = sdkRoot;
 const jitiPath = sdkJitiPath;
@@ -25,6 +26,7 @@ const { buildExamBreakdown } = await mod("exam.ts");
 const { handleExamGrade } = await mod("tool-actions/exam.ts");
 const { handleNotes } = await mod("tool-actions/learning.ts");
 const { isScholarBook } = await mod("state-schema.ts");
+const lesson = await mod("lesson.ts");
 
 let pass = 0, fail = 0;
 const check = (name, ok, detail) => {
@@ -120,6 +122,7 @@ const appendMessage = await threw(() => runNotes(learnSection(), {
   synthesis: "A synthesis long enough to satisfy the minimum length requirement.",
   keyPoints: ["kp"], sectionId: "c1s1",
   objectives: ["Alpha", "Beta", "Gamma", "Delta"], coveredObjectives: ["Alpha", "Beta"],
+  lesson: { id: "alpha-beta", title: "Alpha and Beta", markdown: "### Alpha and Beta\n\nAlpha names the input in this synthetic source model. Beta names the resulting output. The source relationship connects a change in Alpha to the corresponding change in Beta, so explaining the output requires identifying both the changed input and the relationship between them.", objectives: ["Alpha", "Beta"], keyPoints: ["kp"], sourcePages: [31] },
 }));
 check("BUG-04 appending a new objective is still allowed", appendMessage === "", appendMessage || "accepted");
 
@@ -175,7 +178,7 @@ const attempt = (index, overrides = {}) => ({
   createdAt: new Date(Date.UTC(2026, 0, 2, 0, 0, index)).toISOString(), ...overrides,
 });
 const flooded = [
-  attempt(0, { id: "conceptual-pass", kind: "conceptual", format: "open", outcome: "pass", grounding: { purpose: "mastery", competency: "Demonstrates the section competency", requiredEvidence: ["shows the reasoning"], sourcePages: [1], basis: [{ kind: "key-point", value: "kp", supports: [1] }] } }),
+  attempt(0, { id: "conceptual-pass", kind: "conceptual", format: "open", outcome: "pass", grounding: { purpose: "mastery", competency: "Demonstrates the section competency", requiredEvidence: ["shows the reasoning"], sourcePages: [31], basis: [{ kind: "objective", value: "Alpha", supports: [1] }] } }),
   ...Array.from({ length: 120 }, (_, index) => attempt(index + 1)),
 ];
 check("BUG-09 historic pending attempts are not silently discarded",
@@ -195,7 +198,9 @@ const completed = sec("c1s1", "1.1", 31, 33, {
     boundaryChecked: 33,
   },
 });
-recomputeProgress({ chapters: [{ id: "c1", sections: [completed] }] }, completed);
+const completedBook = notesBook(completed);
+saveFixtureLesson(lesson, completedBook, completed);
+recomputeProgress(completedBook, completed);
 check("BUG-09 a section still completes after a pending flood",
   latestAttemptForKind(completed, "conceptual")?.outcome === "pass" && completed.status === "complete",
   `status=${completed.status}`);

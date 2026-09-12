@@ -13,6 +13,7 @@ import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiP
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
+import { saveFixtureLesson } from "./lesson-fixture.mjs";
 
 const piPackageRoot = sdkRoot;
 const jitiPath = sdkJitiPath;
@@ -30,6 +31,7 @@ const {
   appendTranscript, latestAttemptForKind, recomputeProgress,
 } = await mod("domain.ts");
 const { scholarBookIssues } = await mod("state-schema.ts");
+const lesson = await mod("lesson.ts");
 
 let pass = 0, fail = 0;
 const check = (name, ok, detail) => {
@@ -126,14 +128,16 @@ const section = {
   },
   // Completion evidence must now be a declared mastery attempt: an ungrounded
   // one no longer certifies, which is what a real attempt looks like today.
-  attempts: [attempt(0, { id: "conceptual-pass", kind: "conceptual", format: "open", outcome: "pass", grounding: { purpose: "mastery", competency: "Demonstrates the section competency", requiredEvidence: ["shows the reasoning"], sourcePages: [1], basis: [{ kind: "key-point", value: "kp", supports: [1] }] } })],
+  attempts: [attempt(0, { id: "conceptual-pass", kind: "conceptual", format: "open", outcome: "pass", grounding: { purpose: "mastery", competency: "Demonstrates the section competency", requiredEvidence: ["shows the reasoning"], sourcePages: [1], basis: [{ kind: "objective", value: "Define SI", supports: [1] }] } })],
   createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
 };
 const pending = attempt(1, { id: "open-pending", kind: "application", format: "open", outcome: "pending" });
 section.attempts.push(pending);
 for (let index = 2; index < 230; index += 1) section.attempts.push(attempt(index));
 
-recomputeProgress({ chapters: [{ id: "c1", sections: [section] }] }, section);
+const historyBook = { ...bookWithOutline, chapters: [{ ...built[0], sections: [section] }] };
+saveFixtureLesson(lesson, historyBook, section);
+recomputeProgress(historyBook, section);
 check("section is complete with long history", section.status === "complete", `status=${section.status}`);
 
 check("all attempts survive progress recomputation", section.attempts.length === 230,
@@ -148,7 +152,7 @@ check("attempts stay in chronological order",
   section.attempts.every((item, index, all) => index === 0 || all[index - 1].createdAt <= item.createdAt),
   "order preserved");
 
-recomputeProgress({ chapters: [{ id: "c1", sections: [section] }] }, section);
+recomputeProgress(historyBook, section);
 check("the section is STILL complete after recomputation", section.status === "complete",
   `status=${section.status} — old completion evidence remains available`);
 

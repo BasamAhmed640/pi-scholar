@@ -1,6 +1,7 @@
 // Exercise real quiz UI, extension events, schema, storage, and Learn/Tutor projection.
 // Only the Pi host is stubbed; all book state and notes use a disposable vault.
 import assert from "node:assert/strict";
+import { saveFixtureLesson } from "./lesson-fixture.mjs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
@@ -21,6 +22,8 @@ const projection = await jiti.import(join(extension, "obsidian.ts"));
 const schema = await jiti.import(join(extension, "state-schema.ts"));
 const contract = await jiti.import(join(extension, "quiz-contract.ts"));
 const { handleAssess } = await jiti.import(join(extension, "tool-actions/learning.ts"));
+const { OpenResponseGate } = await jiti.import(join(extension, "open-assessment.ts"));
+const lessonModule = await jiti.import(join(extension, "lesson.ts"));
 const { ScholarRuntimeCoordinator } = await jiti.import(join(extension, "runtime-coordinator.ts"));
 const { default: install } = await jiti.import(join(extension, "index.ts"));
 const temporaryParent = resolve(tmpdir());
@@ -47,6 +50,8 @@ const book = { schemaVersion: 3, revision: 0, id, instanceId: "answer-feedback-f
   noteDirectory: "Answer Feedback Fixture", createdAt: now, updatedAt: now };
 const grounding = { purpose: "practice", competency: "Explain a causal mechanism", requiredEvidence: ["Connect assumptions and prediction"],
   sourcePages: [1], basis: [{ kind: "key-point", value: keyPoint, supports: [1] }] };
+saveFixtureLesson(lessonModule, book, book.chapters[0].sections[0]);
+saveFixtureLesson(lessonModule, book, book.tutorSessions[0]);
 let checks = 0;
 const passed = (name) => { checks++; console.log(`[PASS] ${name}`); };
 const load = () => storage.loadBookState(config, id);
@@ -109,10 +114,11 @@ try {
   uncovered.revision++;
   await storage.saveBookState(config, uncovered, uncovered.revision - 1);
   const gateInput = { question: "Can this quiz start before figure review?", grounding,
-    options: [{ label: "First", value: "first" }, { label: "Second", value: "second" }], correctAnswer: "second", explanation: "A test explanation.", shuffle: false };
+    options: [{ label: "First", value: "first", misconception: "Confuses preparation with completed source review" }, { label: "Second", value: "second" }], correctAnswer: "second", explanation: "A test explanation.", shuffle: false };
   for (const purpose of ["practice", "mastery"]) {
     for (const handler of gatedHost.handlers.get("tool_call")) {
-      const response = await handler({ toolName: "scholar_quiz", toolCallId: `missing-figures-${purpose}`, input: { ...gateInput, grounding: { ...grounding, purpose } } }, gatedHost.context);
+      const response = await handler({ toolName: "scholar_quiz", toolCallId: `missing-figures-${purpose}`, input: { ...gateInput, grounding: { ...grounding, purpose,
+        ...(purpose === "mastery" ? { basis: [{ kind: "objective", value: "Explain a prediction", supports: [1] }] } : {}) } } }, gatedHost.context);
       assert.equal(response?.block, true);
       assert.match(response.reason, /source figures|read\/view/);
     }
@@ -132,7 +138,7 @@ try {
       const toolCallId = `${mode}-${outcome}`;
       const explanation = `Explanation for ${toolCallId}: the mechanism supplies a testable prediction.`;
       const input = { question: `Which claim explains ${toolCallId}?`, grounding, options: [
-        { label: "Repeat the label", value: "PRIVATE_SELECTED_VALUE" },
+        { label: "Repeat the label", value: "PRIVATE_SELECTED_VALUE", misconception: "Repeats a name without explaining its mechanism" },
         { label: "Connect the mechanism to the prediction", value: "causal" },
       ], correctAnswer: "causal", explanation, shuffle: false };
       await host.emit("tool_call", { toolName: "scholar_quiz", toolCallId, input });
@@ -222,12 +228,15 @@ try {
     const toolResult = (action, summary, details) => ({ content: [{ type: "text", text: summary }], details: { action, summary, ...details } });
     const openId = `${mode}-open`;
     const prepared = await handleAssess(await load(), coordinator.runtimeSession, openId,
-      { outcome: "pending", kind: "conceptual", question: `Explain the mechanism in ${mode}.`, grounding },
+      { outcome: "pending", kind: "conceptual", question: `Explain the mechanism in ${mode}.`, grounding,
+        expectedAnswer: "Trace how the assumption produces a testable prediction.", criteria: ["Connect the assumption to the prediction through the mechanism."] },
       (state) => state.chapters[0].sections[0], coordinator.mutateBook, toolResult);
     const feedback = `Open ${mode} feedback: identify the assumption, trace the mechanism, and justify its predicted observation.`;
+    const gate = new OpenResponseGate(), submitted = await load(), answer = "The label alone is sufficient.";
+    gate.capture(submitted, coordinator.runtimeSession, answer, "interactive"); gate.beginTurn(submitted, coordinator.runtimeSession, answer);
     await handleAssess(await load(), coordinator.runtimeSession, `${openId}-resolve`,
-      { attemptId: prepared.details.attemptId, outcome: "review", feedback },
-      (state) => state.chapters[0].sections[0], coordinator.mutateBook, toolResult);
+      { attemptId: prepared.details.attemptId, outcome: "review", feedback, evaluation: { criteria: [{ criterionIndex: 1, met: false }] } },
+      (state) => state.chapters[0].sections[0], coordinator.mutateBook, toolResult, gate);
     const attempt = target(await load(), mode).attempts.find((item) => item.id === prepared.details.attemptId);
     assert.equal(attempt.correctAnswer, undefined);
     assert.equal(attempt.feedback, feedback);

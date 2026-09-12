@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { extensionPath, piPackageRoot, jitiPath, loaderPath, resolvePiDependency } from "./sdk.mjs";
+import { saveFixtureLesson } from "./lesson-fixture.mjs";
 
 const { createJiti } = await import(pathToFileURL(jitiPath).href);
 const jiti = createJiti(import.meta.url, { moduleCache: false, alias: {
@@ -14,6 +15,8 @@ const jiti = createJiti(import.meta.url, { moduleCache: false, alias: {
 } });
 const mod = (file) => jiti.import(join(dirname(extensionPath), file));
 const domain = await mod("domain.ts");
+const lesson = await mod("lesson.ts");
+const { OpenResponseGate } = await mod("open-assessment.ts");
 const storage = await mod("storage.ts");
 const paths = await mod("obsidian-paths.ts");
 const { renderScholarWorkspace } = await mod("obsidian.ts");
@@ -35,7 +38,7 @@ const attempt = (id, kind, outcome = "pass", extra = {}) => ({ id, kind, outcome
 const section = (book) => book.chapters[0].sections[0];
 const result = (action, summary, details = {}) => ({ content: [{ type: "text", text: summary }], details: { action, summary, ...details } });
 function fixture() {
-  return {
+  const book = {
     schemaVersion: 3, revision: 0, id: "a".repeat(64), instanceId: "completion-fixture",
     source: { absolutePath: join(config.libraryRoot, "fixture.pdf"), relativePath: "fixture.pdf", fileName: "fixture.pdf", format: "pdf", fingerprint: { sha256: "a".repeat(64), size: 1, mtimeMs: 1 } },
     metadata: { title: "Completion fixture", authors: [], pageCount: 1 }, outlineStatus: "ready",
@@ -54,6 +57,8 @@ function fixture() {
       createdAt: now, startedAt: now, submittedAt: now, updatedAt: now,
     }], currentSectionId: "s1", tutorSessions: [], noteDirectory: "Completion fixture", createdAt: now, updatedAt: now,
   };
+  saveFixtureLesson(lesson, book, section(book));
+  return book;
 }
 let passed = 0;
 function pass(name) { passed++; console.log(`[PASS] ${name}`); }
@@ -64,7 +69,7 @@ try {
   const before = structuredClone(book);
   domain.migrateLearnAssessmentKinds(book);
   assert.equal(section(book).attempts[0].kind, "conceptual");
-  assert.deepEqual(domain.sectionCompletionBlockers(section(book)), ["discrimination check"]);
+  assert.deepEqual(domain.sectionCompletionBlockers(section(book)), [`discrimination evidence for: ${objective}`, "discrimination check"]);
   assert.deepEqual(book.exams, before.exams);
   assert.deepEqual(section(book).attempts.map(({ kind, ...rest }) => rest), section(before).attempts.map(({ kind, ...rest }) => rest));
   assert.equal(section(book).updatedAt, now);
@@ -125,7 +130,7 @@ try {
   };
   const read = () => storage.loadBookState(config, book.id);
   async function quiz(id, kind, correct) {
-    const calls = await fire("tool_call", { toolName: "scholar_quiz", toolCallId: id, input: { question: `Predict the result for ${id}.`, kind, difficulty: "easy", grounding: grounding() } });
+    const calls = await fire("tool_call", { toolName: "scholar_quiz", toolCallId: id, input: { question: `Predict the result for ${id}.`, kind, difficulty: "easy", grounding: grounding(), options: [{ value: "change", label: "The output changes according to the source relation." }, { value: "fixed", label: "The output stays fixed despite the input change.", misconception: "Treating the output as independent of its governing input." }], correctAnswer: "change", explanation: "The saved model relates the changed input to the output." } });
     assert.ok(!calls.some((value) => value?.block), JSON.stringify(calls));
     return fire("tool_result", { toolName: "scholar_quiz", toolCallId: id, content: [{ type: "text", text: "Quiz result" }], details: { status: "answered", correct, explanation: "The saved model supports the prediction." } });
   }
@@ -147,11 +152,14 @@ try {
   assert.equal(section(saved).attempts.at(-1).grounding.purpose, "practice");
   assert.equal(section(saved).status, "complete");
   assert.deepEqual(section(saved).attempts.slice(0, earned.length), earned);
-  const practiceInput = { outcome: "pending", kind: "application", question: "Explain a fresh prediction.", grounding: grounding() };
+  const practiceInput = { outcome: "pending", kind: "application", question: "Explain a fresh prediction.", grounding: grounding(), expectedAnswer: "Name the relation and justify how the changed input affects the output.", criteria: ["Names the source relation and connects it to the prediction."] };
   const prepared = await handleAssess(saved, coordinator.runtimeSession, "open-practice", practiceInput, section, coordinator.mutateBook, result);
   saved = await read();
   assert.equal(section(saved).attempts.at(-1).grounding.purpose, "practice");
-  const resolved = await handleAssess(saved, coordinator.runtimeSession, "resolve", { attemptId: prepared.details.attemptId, outcome: "review", feedback: "The practice explanation omitted the governing relation." }, section, coordinator.mutateBook, result);
+  const responseGate = new OpenResponseGate();
+  responseGate.capture(saved, coordinator.runtimeSession, "I predict a change, but I cannot explain the relation.", "interactive");
+  responseGate.beginTurn(saved, coordinator.runtimeSession, "I predict a change, but I cannot explain the relation.");
+  const resolved = await handleAssess(saved, coordinator.runtimeSession, "resolve", { attemptId: prepared.details.attemptId, outcome: "review", feedback: "The practice explanation omitted the governing relation.", evaluation: { criteria: [{ criterionIndex: 1, met: false }] } }, section, coordinator.mutateBook, result, responseGate);
   assert.match(resolved.details.summary, /remains complete/);
   saved = await read();
   assert.equal(saved.chapters[0].status, "complete");

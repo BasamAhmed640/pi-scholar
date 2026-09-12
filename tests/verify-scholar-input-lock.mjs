@@ -606,7 +606,7 @@ try {
     question: "Which component owns chat input during this Scholar response?",
     options: [
       { label: "The Scholar locked editor", value: "locked" },
-      { label: "The ordinary editor", value: "ordinary" },
+      { label: "The ordinary editor", value: "ordinary", misconception: "Assumes the ordinary editor remains active during an owned turn" },
     ],
     correctAnswer: "locked",
     explanation: "Scholar temporarily owns the main editor while its response is running.",

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { saveFixtureLesson } from "./lesson-fixture.mjs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -18,6 +19,8 @@ const { createBookService } = await mod("book-service.ts");
 const { renderScholarWorkspace, sectionNotePath, tutorNotePath } = await mod("obsidian.ts");
 const { recoverTranscriptTarget } = await mod("transcript-recovery.ts");
 const { handleAssess } = await mod("tool-actions/learning.ts");
+const { OpenResponseGate } = await mod("open-assessment.ts");
+const lessonModule = await mod("lesson.ts");
 const { ScholarRuntimeSession } = await mod("runtime-session.ts");
 const { kickoffMessage } = await mod("runtime-coordinator.ts");
 const root = await mkdtemp(join(tmpdir(), "scholar-question-resume-"));
@@ -38,6 +41,9 @@ const book = { schemaVersion: 3, revision: 0, id: "b".repeat(64), instanceId: "r
   currentSectionId: "s1", currentTutorId: "t1", noteDirectory: "Resume fixture", createdAt: now, updatedAt: now,
 };
 const grounding = { purpose: "practice", competency: basis, requiredEvidence: ["Predict the outcome"], sourcePages: [1], basis: [{ kind: "key-point", value: basis, supports: [1] }] };
+saveFixtureLesson(lessonModule, book, book.chapters[0].sections[0]);
+saveFixtureLesson(lessonModule, book, book.tutorSessions[0]);
+const openContract = { expectedAnswer: "The governing relation connects the mechanism to its measurable outcome.", criteria: ["Connect the mechanism to the predicted outcome."] };
 const read = () => storage.loadBookState(config, book.id);
 const target = (state, mode) => mode === "learn" ? state.chapters[0].sections[0] : state.tutorSessions[0];
 const service = createBookService({ getConfig: () => config, load: storage.loadBookState, save: storage.saveBookState, list: storage.listBookStates, project: renderScholarWorkspace, onSave() {}, librarySetupMessage: "Missing source" });
@@ -99,7 +105,7 @@ try {
     const h = await host(mode);
     const id = `${mode}-original`;
     const input = { question: `Which mechanism predicts ${mode}?`, details: "Use the taught relation.", kind: "conceptual", grounding,
-      options: [{ value: "a", label: "Mechanism A" }, { value: "b", label: "Mechanism B", description: "Assume steady conditions." }, { value: "c", label: "Mechanism C" }],
+      options: [{ value: "a", label: "Mechanism A", misconception: "Confuses the assumption with the mechanism" }, { value: "b", label: "Mechanism B", description: "Assume steady conditions." }, { value: "c", label: "Mechanism C", misconception: "Reverses the predicted causal direction" }],
       correctAnswer: "b", explanation: "PRIVATE_EXPLANATION: The governing relation selects B.", shuffle: true };
     assert.ok(!(await h.call(id, input)).some((item) => item?.block));
     let saved = await read();
@@ -109,7 +115,7 @@ try {
     assert.match(replacement.find((item) => item?.block).reason, /resumeAttemptId/);
     const active = new ScholarRuntimeSession(); active.activate(book.id, mode, mode === "learn" ? "s1" : "t1");
     await assert.rejects(handleAssess(await read(), active, `${mode}-replace-with-open`,
-      { outcome: "pending", kind: "conceptual", question: "Replace the pending quiz with an explanation?", grounding },
+      { outcome: "pending", kind: "conceptual", question: "Replace the pending quiz with an explanation?", grounding, ...openContract },
       (state) => target(state, "learn"), service.mutateBook, toolResult), /resume the saved quiz/);
     await h.execute(id, input, "escape");
     saved = await read();
@@ -144,7 +150,7 @@ try {
   }
 
   const h = await host("learn");
-  const input = { question: "Question saved just before a process exits?", kind: "conceptual", grounding, options: [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }], correctAnswer: "yes", explanation: "The original key is preserved.", shuffle: false };
+  const input = { question: "Question saved just before a process exits?", kind: "conceptual", grounding, options: [{ value: "yes", label: "Yes" }, { value: "no", label: "No", misconception: "Assumes persisted data vanishes with a process" }], correctAnswer: "yes", explanation: "The original key is preserved.", shuffle: false };
   await h.call("crash-before-ui", input); // No execute or result event: simulate process termination.
   const saved = await read(), pending = target(saved, "learn").attempts.at(-1);
   const restart = await host("learn");
@@ -162,15 +168,17 @@ try {
   pass("crash before UI preserves the form; history cannot override the note; a live answer resolves it");
 
   const session = new ScholarRuntimeSession(); session.activate(book.id, "learn", "s1");
-  const prepared = await handleAssess(await read(), session, "open-first", { outcome: "pending", kind: "conceptual", question: "Explain the original mechanism in your own words.", grounding },
+  const prepared = await handleAssess(await read(), session, "open-first", { outcome: "pending", kind: "conceptual", question: "Explain the original mechanism in your own words.", grounding, ...openContract },
     (state) => target(state, "learn"), service.mutateBook, toolResult);
   const next = await host("learn");
   assert.match(next.sent.at(-1).content, /Explain the original mechanism in your own words/);
   assert.ok((await next.call("replace-open-with-mc", input)).some((item) => item?.block));
-  await assert.rejects(handleAssess(await read(), session, "open-replacement", { outcome: "pending", kind: "conceptual", question: "A different open question?", grounding },
+  await assert.rejects(handleAssess(await read(), session, "open-replacement", { outcome: "pending", kind: "conceptual", question: "A different open question?", grounding, ...openContract },
     (state) => target(state, "learn"), service.mutateBook, toolResult), /existing open question/);
-  await handleAssess(await read(), session, "resolve-open", { attemptId: prepared.details.attemptId, outcome: "pass", feedback: "The explanation establishes the relation." },
-    (state) => target(state, "learn"), service.mutateBook, toolResult);
+  const gate = new OpenResponseGate(), answeredBook = await read(), answer = "The relation predicts the outcome from the mechanism.";
+  gate.capture(answeredBook, session, answer, "interactive"); gate.beginTurn(answeredBook, session, answer);
+  await handleAssess(await read(), session, "resolve-open", { attemptId: prepared.details.attemptId, outcome: "pass", feedback: "The explanation establishes the relation.", evaluation: { criteria: [{ criterionIndex: 1, met: true, evidence: "predicts the outcome from the mechanism" }] } },
+    (state) => target(state, "learn"), service.mutateBook, toolResult, gate);
   assert.equal(domain.unansweredQuestion(target(await read(), "learn").attempts), undefined);
   pass("an unanswered open question survives reopening and blocks both kinds of replacement until resolved");
 

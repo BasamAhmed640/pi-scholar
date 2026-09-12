@@ -1,4 +1,5 @@
-import { latestAttemptForKind, sectionCompletionBlockers } from "../domain.ts";
+import { relative, resolve } from "node:path";
+import { latestAttemptForKind, latestAttemptForObjectiveCheck, sectionCompletionBlockers } from "../domain.ts";
 import { transcriptBlock } from "../note-records.ts";
 import { callout } from "./callouts.ts";
 import { chapterNotePath, sectionNotePath, snapshotAssetPath } from "../obsidian-paths.ts";
@@ -104,6 +105,38 @@ export function sourceFigureLines(config: ScholarConfig, book: ScholarBook, note
     });
 }
 
+/** Collect rendered native embeds, not filenames mentioned in prose or code examples. */
+function nativeEmbedTargets(markdown: string): Set<string> {
+  let fence: { marker: string; length: number } | undefined;
+  const visible = markdown.split(/\r?\n/).filter(line => {
+    const unquoted = line.replace(/^(?: {0,3}> ?)+/, "");
+    const delimiter = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(unquoted);
+    if (fence) {
+      if (delimiter && delimiter[1]![0] === fence.marker && delimiter[1]!.length >= fence.length && !delimiter[2]!.trim()) fence = undefined;
+      return false;
+    }
+    if (delimiter) { fence = { marker: delimiter[1]![0]!, length: delimiter[1]!.length }; return false; }
+    return true;
+  }).join("\n").replace(/(`+)([^\n]*?)\1/g, "");
+  return new Set([...visible.matchAll(/!\[\[([^\]\n|]+)(?:\|[^\]\n]*)?\]\]/g)].map(match => embedTargetKey(match[1]!)));
+}
+
+function embedTargetKey(value: string): string {
+  try { value = decodeURIComponent(value); } catch { /* Keep literal percent signs in asset names. */ }
+  return value.replace(/\\/g, "/").replace(/^\.\//, "").normalize("NFC").toLowerCase();
+}
+
+/** Figures placed in the lesson stay there; remaining captures are optional references. */
+export function supplementalSourceFigureLines(config: ScholarConfig, book: ScholarBook, notePath: string, snapshots: ScholarSnapshot[], lesson: string): string[] {
+  const embedded = nativeEmbedTargets(lesson);
+  const supplemental = snapshots.filter(snapshot => {
+    const assetPath = snapshotAssetPath(config, book, snapshot);
+    const candidates = [snapshot.assetFile, relative(resolve(notePath, ".."), assetPath), relative(config.obsidianRoot, assetPath)];
+    return !candidates.some(candidate => embedded.has(embedTargetKey(candidate)));
+  });
+  return collapsedRecord("Source references", sourceFigureLines(config, book, notePath, supplemental));
+}
+
 /** Only explicit source figure labels establish association; page proximity does not. */
 export function referencedFigureLines(config: ScholarConfig, book: ScholarBook, notePath: string, text: string, snapshots: ScholarSnapshot[]): string {
   const labels = new Set([...text.matchAll(/\b(?:Figure|Fig\.)\s+(\d+(?:[.\-–]\d+)*[a-z]?)(?!\w|[.\-–]\d)/gi)].map(match => match[1]!.toLowerCase().replace(/–/g, "-")));
@@ -151,24 +184,37 @@ export function renderSection(config: ScholarConfig, book: ScholarBook, chapter:
   const chapterLabel = chapter.number ? `Chapter ${chapter.number}: ${chapter.title}` : chapter.title;
   const covered = new Set(section.coveredObjectives);
   const passed = passedCheckKinds(section);
+  const remaining = section.status === "complete" || section.status === "not-started" ? [] : sectionCompletionBlockers(section);
+  const pendingChecks = section.objectiveChecks?.length
+    ? section.objectiveChecks.reduce((count, { objective, checks }) => count + checks.filter(kind => latestAttemptForObjectiveCheck(section, objective, kind)?.outcome !== "pass").length, 0)
+    : section.requiredChecks.filter(kind => !passed.has(kind)).length;
+  const lessonProgress = remaining.includes("complete saved instructional lesson") ? "Lesson in progress" : "Lesson saved";
+  // The objective/check table already identifies missing assessment evidence.
+  // Keep any other blockers inspectable without repeating long objectives above the lesson.
+  const otherRemaining = remaining.filter(item => !/^(?:conceptual|application|computation|discrimination) evidence for: /.test(item));
   const objectives = section.objectives.length ? [
     "| Objective | Teaching coverage |", "| --- | --- |",
     ...section.objectives.map((objective) => `| ${tableText(objective)} | ${covered.has(objective) ? "Taught" : "Not yet taught"} |`),
   ] : [];
-  const checks = section.requiredChecks.length ? [
+  const checks = section.objectiveChecks?.length ? [
+    "| Objective | Understanding check | Result |", "| --- | --- | --- |",
+    ...section.objectiveChecks.flatMap(({ objective, checks }) => checks.map(kind =>
+      `| ${tableText(objective)} | ${tableText(titleCase(kind))} | ${latestAttemptForObjectiveCheck(section, objective, kind)?.outcome === "pass" ? "Demonstrated" : "Not yet demonstrated"} |`)),
+  ] : section.requiredChecks.length ? [
     "| Understanding check | Result |", "| --- | --- |",
     ...section.requiredChecks.map((kind) => `| ${tableText(titleCase(kind))} | ${passed.has(kind) ? "Demonstrated" : "Not yet demonstrated"} |`),
   ] : [];
   const authored = transcriptBlock(section.transcript || [], section.attempts).trim();
-  const teaching = authored ? authored.split("\n") : [];
-  const lesson = teaching.length ? teaching : section.synthesis?.trim() ? [markdownText(section.synthesis)] : [];
+  const lesson = authored ? authored.split("\n") : [];
   const summary = uniqueSupplementLines(section.synthesis ? [section.synthesis] : [], lesson);
   const keyPoints = uniqueSupplementLines(section.keyPoints, [...lesson, ...summary]);
   const pitfalls = uniqueSupplementLines(section.misconceptions, [...lesson, ...summary, ...keyPoints]);
   const current = book.currentSectionId === section.id;
   const content = [
-    ...(lesson.length ? block("## Lesson", lesson) : ["This section is ready. The lesson will appear as you work through it.", ""]),
-    ...block("## Source figures", sourceFigureLines(config, book, notePath, section.snapshots || [])),
+    ...(lesson.length ? block("## Lesson", lesson) : [section.synthesis?.trim()
+      ? "A recap is saved below. The full explanation has not been saved yet."
+      : "This section is ready. The lesson will appear as you work through it.", ""]),
+    ...supplementalSourceFigureLines(config, book, notePath, section.snapshots || [], authored),
     ...collapsedRecord("Recap and pitfalls", [
       ...block("### Section summary", summary),
       ...block("### Key points", keyPoints.map((point) => `- ${point}`)),
@@ -177,6 +223,7 @@ export function renderSection(config: ScholarConfig, book: ScholarBook, chapter:
     ...collapsedRecord("Learning record", [
       ...block("### Learning objectives", objectives),
       ...block("### Understanding checks", checks),
+      ...block("### Remaining work", otherRemaining.map(item => `- ${markdownText(item)}`)),
     ]),
     ...assessmentQuestionBlock(section.attempts),
   ];
@@ -186,7 +233,7 @@ export function renderSection(config: ScholarConfig, book: ScholarBook, chapter:
   ]), [
     `*${statusLabel(section.status)}${current ? " · Current section" : ""} · ${pageRange(section.startPage, section.endPage)}*`, "",
     ...(section.status === "complete" ? ["**Section complete.** Reopen for practice anytime; practice does not change your earned completion.", ""]
-      : section.status !== "not-started" ? [`**Remaining to complete:** ${sectionCompletionBlockers(section).map(markdownText).join("; ")}.`, ""] : []),
+      : section.status !== "not-started" ? [`**Progress:** ${lessonProgress}${pendingChecks ? ` · ${pendingChecks} understanding ${pendingChecks === 1 ? "check" : "checks"} remaining` : ""}. Details are in the Learning record below.`, ""] : []),
     wikiLink(notePath, chapterNotePath(config, book, chapter), chapterLabel), "",
     ...(content.some((line) => line.trim()) ? content : ["This section is ready. Notes will appear as you work through it."]),
   ].join("\n"));

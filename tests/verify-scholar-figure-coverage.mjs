@@ -19,7 +19,7 @@ const jiti = createJiti(import.meta.url, { moduleCache: false, alias: {
   typebox: piRequire.resolve("typebox"),
 } });
 const coverage = await jiti.import(join(extension, "figure-coverage.ts"));
-const { recomputeProgress } = await jiti.import(join(extension, "domain.ts"));
+const { migrateLegacyCompletion, recomputeProgress } = await jiti.import(join(extension, "domain.ts"));
 const storage = await jiti.import(join(extension, "storage.ts"));
 const { snapshotAssetPath } = await jiti.import(join(extension, "obsidian-paths.ts"));
 const { ScholarRuntimeSession } = await jiti.import(join(extension, "runtime-session.ts"));
@@ -80,7 +80,10 @@ try {
   let call = 0;
   const execute = (params) => tool.execute(`figure-fixture-${++call}`, params, undefined, undefined, { hasUI: false });
   const successful = (result) => assert.ok(!["error", "retry", "review"].includes(result.details.tone), result.content[0].text);
-  const notes = (figureReviews) => ({ action: "notes", synthesis: "The physical model connects each design choice to the resulting source behavior through a clear causal chain.", objectives: ["Explain the physical model"], coveredObjectives: ["Explain the physical model"], keyPoints: ["The model connects physical causes to observable behavior."], requiredChecks: ["conceptual"], ...(figureReviews ? { figureReviews } : {}) });
+  const notes = (figureReviews) => ({ action: "notes", synthesis: "The physical model connects each design choice to the resulting source behavior through a clear causal chain.", objectives: ["Explain the physical model"], coveredObjectives: ["Explain the physical model"], keyPoints: ["The model connects physical causes to observable behavior."], requiredChecks: ["conceptual"],
+    objectiveChecks: [{ objective: "Explain the physical model", checks: ["conceptual"] }],
+    lesson: { id: "physical-model", title: "Following causes through a model", markdown: "### Following causes through a model\n\nA physical model represents how changes in a design affect observable behavior. Begin at the input of the source diagram and follow each connection to its output. Each connection expresses a relationship, so changing an input can change the outcome through the intermediate steps.\n\nTo explain the model, name the changing input and trace the relationships to the measured result. The direction of each arrow tells you which step supplies the next one.", objectives: ["Explain the physical model"], keyPoints: ["The model connects physical causes to observable behavior."], sourcePages: session.recordId === "section-3" ? [3] : [1, 2] },
+    lessonComplete: true, ...(figureReviews ? { figureReviews } : {}) });
   const noFigures = (page) => ({ page, observation: "Visual inspection confirms this portion contains only text and no source figures.", figures: [] });
 
   await check("caption detection excludes inline and line-wrapped Figure references", async () => {
@@ -162,7 +165,7 @@ try {
   });
   await check("new completion requires figures while previously completed legacy work stays complete", async () => {
     const book = await load(), section = active(book);
-    section.attempts = [{ id: "passed-mastery", kind: "conceptual", format: "open", question: "Explain the model.", outcome: "pass", grounding: { purpose: "mastery" }, createdAt: now }];
+    section.attempts = [{ id: "passed-mastery", kind: "conceptual", format: "open", question: "Explain the model.", outcome: "pass", grounding: { purpose: "mastery", competency: "Explain the physical model", requiredEvidence: ["Trace the cause through the source model to an observable effect."], sourcePages: [1], basis: [{ kind: "objective", value: "Explain the physical model", supports: [1] }] }, createdAt: now }];
     recomputeProgress(book, section);
     assert.equal(section.status, "complete", "a fully reviewed section can complete");
     delete section.figureCoverage;
@@ -170,6 +173,8 @@ try {
     recomputeProgress(book, section);
     assert.notEqual(section.status, "complete", "new completion cannot bypass a missing receipt");
     section.status = "complete";
+    delete section.lessonCommit;
+    migrateLegacyCompletion(book);
     recomputeProgress(book, section);
     assert.equal(section.status, "complete", "a previously earned result remains stable");
   });

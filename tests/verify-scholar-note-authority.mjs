@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { saveFixtureLesson } from "./lesson-fixture.mjs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -20,6 +21,7 @@ const { recoverTranscriptTarget } = await mod("transcript-recovery.ts");
 const { handleAssess } = await mod("tool-actions/learning.ts");
 const { ScholarRuntimeSession } = await mod("runtime-session.ts");
 const { kickoffMessage } = await mod("runtime-coordinator.ts");
+const lesson = await mod("lesson.ts");
 const root = await mkdtemp(join(tmpdir(), "scholar-question-resume-"));
 const now = "2026-01-01T00:00:00.000Z";
 const config = { schemaVersion: 3, libraryRoot: join(root, "lib"), obsidianRoot: join(root, "vault"), stateRoot: join(root, "state"), updatedAt: now };
@@ -38,6 +40,8 @@ const book = { schemaVersion: 3, revision: 0, id: "b".repeat(64), instanceId: "r
   currentSectionId: "s1", currentTutorId: "t1", noteDirectory: "Resume fixture", createdAt: now, updatedAt: now,
 };
 const grounding = { purpose: "practice", competency: basis, requiredEvidence: ["Predict the outcome"], sourcePages: [1], basis: [{ kind: "key-point", value: basis, supports: [1] }] };
+saveFixtureLesson(lesson, book, book.chapters[0].sections[0]);
+saveFixtureLesson(lesson, book, book.tutorSessions[0]);
 const read = () => storage.loadBookState(config, book.id);
 const target = (state, mode) => mode === "learn" ? state.chapters[0].sections[0] : state.tutorSessions[0];
 const service = createBookService({ getConfig: () => config, load: storage.loadBookState, save: storage.saveBookState, list: storage.listBookStates, project: renderScholarWorkspace, onSave() {}, librarySetupMessage: "Missing source" });
@@ -94,7 +98,7 @@ const { questionChunks, readDetails, questionBlock, migrateVisibleQuestions, exa
 const { readNoteBook } = await mod("note-storage.ts");
 const { readdir } = await import("node:fs/promises");
 const quizInput = { question: "Which saved mechanism should be resumed?", kind: "conceptual", grounding,
-  options: [{ value: "a", label: "First mechanism" }, { value: "b", label: "Second mechanism" }], correctAnswer: "b", explanation: "The evidence supports the second mechanism.", shuffle: false };
+  options: [{ value: "a", label: "First mechanism", misconception: "Treats a plausible label as evidence" }, { value: "b", label: "Second mechanism" }], correctAnswer: "b", explanation: "The evidence supports the second mechanism.", shuffle: false };
 async function fileList(path) { const files=[]; for (const e of await readdir(path,{withFileTypes:true})) { const p=join(path,e.name); files.push(p); if(e.isDirectory()) files.push(...await fileList(p)); } return files; }
 try {
   await Promise.all([mkdir(config.libraryRoot), mkdir(config.obsidianRoot), mkdir(config.stateRoot)]);

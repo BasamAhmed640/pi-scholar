@@ -63,10 +63,12 @@ try {
   const finalQuestion=notes.questionChunks(text)[1];assert.ok(finalQuestion.includes(snapshots[0].assetFile));assert.ok(!finalQuestion.includes(snapshots[1].assetFile));
   const blocks=marked.lexer(text).filter(t=>t.type==="blockquote");
   assert.ok(blocks.some(t=>t.text.startsWith("[!question] Question 2")&&t.text.includes(snapshots[0].assetFile)));
-  assert.equal(blocks.filter(t=>t.text.startsWith("[!example] Figure")).length,2);
+  assert.equal(blocks.filter(t=>t.text.startsWith("[!example] Figure")).length,0);
+  const references=blocks.find(t=>t.text.startsWith("[!note]- Source references"));
+  assert.ok(references);assert.equal((references.text.match(/\[!example\] Figure/g)||[]).length,2);
   assert.ok(text.includes("> $$t_d = \\frac{\\ell}{v}$$"));assert.ok(text.includes("> ```mermaid"));
   for(let i=0;i<snapshots.length;i++)assert.equal(hash(await readFile(paths.snapshotAssetPath(config,book,snapshots[i]))),snapshots[i].sha256);
-  pass("explicit question figures share the question frame; original figures, equations and Mermaid stay expanded");
+  pass("explicit question figures share the question frame; equations and Mermaid stay expanded, supplemental captures stay collapsed");
   const legacy=text.replace(finalQuestion,unframeQuestion(finalQuestion));await writeFile(path,legacy);
   assert.deepEqual((await storage.loadBookState(config,book.id)).chapters[0].sections[0].attempts,section.attempts);
   await writeFile(path,text.replace(finalQuestion,""));assert.equal((await storage.loadBookState(config,book.id)).chapters[0].sections[0].attempts.length,1);

@@ -41,6 +41,31 @@ selected PDF library contains the source books, not your learning history.
 
 ## Installation
 
+### Explained lessons and grounded assessment (0.3.0)
+
+Learn now saves the full section explanation before its confirmation questions.
+It introduces unfamiliar terms through their meaning, explains the consequential
+reasoning steps, and connects equations, worked examples, and source figures.
+Central equations keep their callouts and `symbol → definition` notation; Mermaid
+remains optional. The author performs one focused editorial review.
+
+Figures appear beside the explanation that uses them. Extra source captures stay
+in a collapsed reference area. A recap is labeled as a recap and cannot count as
+a delivered lesson. Tutor remains interactive and saves explanations for its own
+topic without requiring a whole Learn section.
+
+Mastery is tracked against each objective's planned checks. Open questions have
+frozen expected reasoning and criteria; grading requires an actual typed or image
+response to that question. Source support and mathematical correctness still need
+model judgment: the code checks delivery and assessment integrity, not semantic
+truth. No additional runtime agent, service, or dependency was added.
+
+Existing completed sections retain their earned completion. Unanswered questions
+remain resumable. An older open question may need its missing scoring contract
+prepared first; after a restart, submit its answer again if grading was interrupted.
+Deleted note content is never restored from conversation history. New question
+contracts remain inspectable in the same note's collapsed details.
+
 ### Native note presentation (0.2.1)
 
 Learn and Tutor group each question, its explicitly referenced figures, and its
@@ -55,8 +80,8 @@ equation in an expanded **Key equation** callout with definitions, assumptions,
 and meaning. Small, source-grounded Mermaid schematics are optional when they
 help explain a relationship. They supplement the lesson and original figures.
 Obsidian renders the diagrams and mathematics itself; no extra plugin, agent,
-service, or runtime dependency is needed. The teaching sequence, mastery checks,
-exam difficulty, and grading rules are unchanged.
+service, or runtime dependency is needed. The 0.2.1 update changed presentation;
+the 0.3.0 changes above also strengthen lesson delivery and assessment.
 
 ### Setup
 

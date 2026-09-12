@@ -131,13 +131,18 @@ export default function scholarExtension(pi: ExtensionAPI) {
     const title = coordinator.runtimeSession.mode
       ? `${coordinator.runtimeSession.mode[0]!.toUpperCase()}${coordinator.runtimeSession.mode.slice(1)} response`
       : "book setup";
+    coordinator.toolController.bindOpenResponseTurn(book, event.prompt, event.images);
     if (coordinator.runtimeSession.mode) coordinator.ensureScholarTurnInputLock(book, ctx, title);
     return { systemPrompt: `${event.systemPrompt}\n\n${instructions}` };
   });
 
-  pi.on("input", (event, ctx: ExtensionContext) => {
+  pi.on("input", async (event, ctx: ExtensionContext) => {
     const busyRun = coordinator.setupRun || coordinator.scholarTurnRun || coordinator.navigationRun;
-    if (!busyRun) return;
+    if (!busyRun) {
+      try { await coordinator.toolController.captureOpenResponse(event.text, event.source, event.images); }
+      catch (error) { ctx.ui.notify(`Scholar could not bind this response to its saved question: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
+      return;
+    }
     if (event.source === "interactive") ctx.ui.setEditorText(event.text);
     if (!busyRun.warned) {
       busyRun.warned = true;
@@ -252,9 +257,13 @@ export default function scholarExtension(pi: ExtensionAPI) {
         if (!coordinator.ownsActiveAuthority(book)) throw new Error("The active book authority changed before this response could be saved.");
         if (coordinator.runtimeSession.mode === "learn") {
           const section = findSection(book, coordinator.runtimeSession.recordId);
+          // Explicit lesson writes own the note once adopted. Ambient progress
+          // and transport echoes must not become extra instructional content.
+          if (section?.lessonEntryIds?.length || section?.transcript.some(item => item.lesson)) return;
           if (section && appendTranscript(section.transcript, entry)) section.updatedAt = new Date().toISOString();
         } else if (coordinator.runtimeSession.mode === "tutor") {
           const tutor = book.tutorSessions.find((item) => item.id === coordinator.runtimeSession.recordId);
+          if (tutor?.lessonEntryIds?.length || tutor?.transcript.some(item => item.lesson)) return;
           if (tutor && appendTranscript(tutor.transcript, entry)) tutor.updatedAt = new Date().toISOString();
         } else {
           const exam = book.exams.find((item) => item.id === coordinator.runtimeSession.recordId);
@@ -288,9 +297,9 @@ export default function scholarExtension(pi: ExtensionAPI) {
           if (coordinator.runtimeSession.mode === "learn") {
             const current = findSection(state, target!.id)!;
             attempt.grounding = learnQuestionGrounding(current, attempt.grounding!);
-            assertQuestionGrounding(attempt.grounding, state, { mode: "learn", section: current });
+            assertQuestionGrounding(attempt.grounding, state, { mode: "learn", section: current }, { resume: true });
           } else {
-            assertQuestionGrounding(attempt.grounding, state, { mode: "tutor", tutor: state.tutorSessions.find((item) => item.id === target!.id)! });
+            assertQuestionGrounding(attempt.grounding, state, { mode: "tutor", tutor: state.tutorSessions.find((item) => item.id === target!.id)! }, { resume: true });
           }
           const prior = coordinator.runtimeSession.mode === "learn" ? findQuizAttempt(state, target!.id, event.toolCallId)
             : findTutorQuizAttempt(state, target!.id, event.toolCallId);
@@ -310,6 +319,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
         if (!section) throw new Error("Scholar blocked this question before presentation: no Learn section is active.");
         if (input.grounding) input.grounding = learnQuestionGrounding(section, input.grounding);
         assertQuestionGrounding(input.grounding, book, { mode: "learn", section });
+        if (input.grounding.purpose === "mastery" && input.grounding.basis.filter(basis => basis.kind === "objective").length !== 1) throw new Error("A mastery multiple-choice question must assess one focused objective. Use separate probes or an open multi-step question for multiple competencies.");
         if (input.grounding.purpose !== "diagnostic") await assertLearnFigureCoverage(coordinator.getConfig(), book, section);
       } else {
         if (!tutor || tutor.status !== "active") throw new Error("Scholar blocked this question before presentation: no Tutor session is active.");
@@ -321,8 +331,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
     try {
       // Invalid forms still receive the quiz tool's field-level error. Only a
       // validated form can be shown or become a resumable unanswered question.
-      let frozen: ReturnType<typeof prepareScholarQuiz> | undefined;
-      try { frozen = prepareScholarQuiz(event.input); } catch { /* execution reports the invalid form */ }
+      const frozen = prepareScholarQuiz(event.input);
       await coordinator.mutateBook(coordinator.runtimeSession.bookId, async (targetBook) => {
         if (!coordinator.ownsActiveAuthority(targetBook)) throw new Error("Scholar blocked this question because the active book authority changed.");
         const currentSection = coordinator.runtimeSession.mode === "learn" ? findSection(targetBook, coordinator.runtimeSession.recordId) : undefined;
@@ -331,6 +340,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
           if (!currentSection) throw new Error("Scholar blocked this question before presentation: no Learn section is active.");
           if (input.grounding) input.grounding = learnQuestionGrounding(currentSection, input.grounding);
           assertQuestionGrounding(input.grounding, targetBook, { mode: "learn", section: currentSection });
+          if (input.grounding.purpose === "mastery" && input.grounding.basis.filter(basis => basis.kind === "objective").length !== 1) throw new Error("A mastery multiple-choice question must assess one focused objective.");
           if (input.grounding.purpose !== "diagnostic") await assertLearnFigureCoverage(coordinator.getConfig(), targetBook, currentSection);
         } else {
           if (!currentTutor || currentTutor.status !== "active") throw new Error("Scholar blocked this question before presentation: no Tutor session is active.");

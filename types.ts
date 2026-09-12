@@ -82,6 +82,9 @@ export type AssessmentAttempt = {
   /** Verified displayed answer key, retained only after a multiple-choice response is submitted. */
   correctAnswer?: string;
   feedback?: string;
+  openAssessment?: import("./open-assessment.ts").OpenAssessmentContract;
+  submission?: import("./open-assessment.ts").OpenAssessmentSubmission;
+  evaluation?: import("./open-assessment.ts").OpenAssessmentEvaluation;
   createdAt: string;
 };
 
@@ -95,6 +98,8 @@ export type TranscriptEntry = {
   kind: TranscriptEntryKind;
   markdown: string;
   createdAt: string;
+  /** Associations only; the instructional text exists once, in this visible entry. */
+  lesson?: import("./lesson.ts").LessonReceipt;
 };
 
 export type ScholarSnapshot = {
@@ -173,6 +178,12 @@ export type ScholarSection = {
   transcript: TranscriptEntry[];
   snapshots?: ScholarSnapshot[];
   figureCoverage?: FigureCoverage;
+  lessonCommit?: import("./lesson.ts").LessonCommit;
+  /** IDs only, so a retry cannot restore a lesson entry deleted from this note. */
+  lessonEntryIds?: string[];
+  /** Preserves completion earned before explicit instructional delivery was required. */
+  legacyLessonCompletion?: true;
+  objectiveChecks?: import("./lesson.ts").ObjectiveCheck[];
   /**
    * Set only by migration, on a section that was already complete under the
    * pre-grounding rule where an ungrounded attempt could certify mastery.
@@ -286,6 +297,7 @@ export type ScholarExam = {
 };
 
 export type TutorSession = {
+  lessonEntryIds?: string[];
   id: string;
   title: string;
   scope: ScholarScope;

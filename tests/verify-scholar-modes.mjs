@@ -1,4 +1,5 @@
 import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiPath as sdkJitiPath, resolvePiDependency } from "./sdk.mjs";
+import { saveFixtureLesson } from "./lesson-fixture.mjs";
 // Scholar mode-capability gate.
 //
 // Modes differ in capability, not merely in name. Those differences used to be
@@ -25,6 +26,7 @@ const mod = (rel) => jiti.import(join(EXT, rel));
 const { MODE_CAPABILITIES, SCHOLAR_MODES, isScholarMode, modeCan } = await mod("modes.ts");
 const { modeInstructions } = await mod("policies.ts");
 const { questionGroundingIssues } = await mod("question-grounding.ts");
+const lesson = await mod("lesson.ts");
 
 let pass = 0, fail = 0;
 const check = (name, ok, detail) => {
@@ -50,6 +52,7 @@ check("modeCan tolerates no active mode", modeCan(undefined, "assesses") === fal
 // Exam intentionally does not teach: policies.ts must reflect that, and does so
 // by omitting the teaching engine from the exam prompt.
 const book = {
+  source: { fingerprint: { sha256: "a".repeat(64) } },
   metadata: { title: "Probe Book", authors: ["A"] },
   chapters: [{
     id: "chapter-001", number: "1", title: "One", order: 1, startPage: 1, endPage: 9, status: "not-started",
@@ -78,7 +81,8 @@ for (const mode of SCHOLAR_MODES) {
 
 // citesLearnObjectives is the rule that keeps Tutor evidence from borrowing
 // what Learn certified. It must hold for exactly the modes that declare it.
-const taughtSection = { ...section, coveredObjectives: ["Explain skin effect"], keyPoints: [] };
+const taughtSection = { ...section, objectives: ["Explain skin effect"], coveredObjectives: ["Explain skin effect"], keyPoints: ["Explain skin effect"], synthesis: "A source-grounded recap of the current distribution and its frequency dependence." };
+saveFixtureLesson(lesson, book, taughtSection);
 const groundingCitingObjective = {
   purpose: "practice",
   competency: "Apply the taught objective",

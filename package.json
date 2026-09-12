@@ -1,6 +1,6 @@
 {
   "name": "pi-scholar",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "description": "Local PDF study workflows for Pi and Obsidian",
   "type": "module",
@@ -70,7 +70,10 @@
     "tests/*.mjs",
     "npm-shrinkwrap.json",
     "note-records.ts",
-    "note-storage.ts"
+    "note-storage.ts",
+    "lesson.ts",
+    "open-assessment.ts",
+    "lesson-figures.ts"
   ],
   "devDependencies": {
     "marked": "18.0.5"

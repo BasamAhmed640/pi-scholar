@@ -9,6 +9,7 @@ import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiP
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
+import { saveFixtureLesson } from "./lesson-fixture.mjs";
 
 const piPackageRoot = sdkRoot;
 const jitiPath = sdkJitiPath;
@@ -22,6 +23,7 @@ const EXT = dirname(process.env.PI_SCHOLAR_EXTENSION || packagedExtensionPath);
 const mod = (rel) => jiti.import(join(EXT, rel));
 const { isQuestionGrounding, normalizeQuestionGrounding, questionGroundingIssues, questionGroundingShapeIssues } = await mod("question-grounding.ts");
 const { isScholarBook, scholarBookIssues } = await mod("state-schema.ts");
+const lesson = await mod("lesson.ts");
 
 let pass = 0, fail = 0;
 const check = (name, ok, detail) => {
@@ -33,11 +35,12 @@ const check = (name, ok, detail) => {
 const KEY_POINT = "A short rise time forces a transmission-line model";
 const target = {
   mode: "learn",
-  section: { id: "s1", startPage: 1, endPage: 999, coveredObjectives: [], keyPoints: [KEY_POINT] },
+  section: { id: "s1", startPage: 1, endPage: 999, objectives: ["Select an interconnect model"], requiredChecks: ["conceptual"], synthesis: "A recap of the model and its applicable time scales.", transcript: [], coveredObjectives: [], keyPoints: [KEY_POINT] },
 };
-const book = { chapters: [] };
+const book = { chapters: [], source: { fingerprint: { sha256: "a".repeat(64) } } };
+saveFixtureLesson(lesson, book, target.section);
 const base = () => ({
-  purpose: "mastery",
+  purpose: "practice",
   competency: "Select the right interconnect model",
   requiredEvidence: ["names the governing model"],
   sourcePages: [31],

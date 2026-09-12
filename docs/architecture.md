@@ -27,6 +27,35 @@ does not use Learn or Tutor performance to alter the test.
 
 ## Code boundaries
 
+Explicit lesson delivery uses `lesson.ts` and `lesson-figures.ts`. `notes.lesson`
+saves instructional Markdown once in the visible section or Tutor note; its small
+receipt associates that text with objectives, key points and source pages. Stable
+entry IDs prevent duplicate retries. IDs of deleted entries remain in the same
+note's details solely to reject stale retries; they contain no lesson text.
+An intentional revision first reads `status` with `lessonId`, then supplies the
+current `expectedContentHash`. User edits cannot be overwritten by a stale save.
+
+Learn's `lessonComplete` commit fingerprints the saved explanation and objective
+check plan. Editing or deleting its explanation invalidates readiness for new
+confirmation questions. Both question formats use this gate. Source inspection
+and source-figure files are checked on commitment; this step does not award mastery.
+The per-objective checks require evidence for that objective and kind, rather than
+borrowing a passing conceptual answer from another topic. One mastery MCQ targets
+one objective; integrated open questions may assess several with explicit evidence.
+
+`open-assessment.ts` binds a response to the current book, mode, question, scoring
+contract and input turn. Typed evidence must occur in the actual response; image
+references must name an attached image. These checks cannot judge whether a quote
+or drawing demonstrates the claimed concept. The model evaluates that meaning.
+Raw responses, attachment bytes and evidence excerpts are not copied into Scholar
+notes. Only the submission fingerprint, criterion outcomes and derived feedback
+are retained. On restart, unanswered questions resume; an ungraded answer must be
+submitted again. Exam continues to use its own explicit submission and frozen form.
+
+Prompt policies are authoring guidance. Code verifies state, source scope, saved
+content, references and response binding; a real generated lesson still needs
+review for accuracy, understandable terminology and connected reasoning.
+
 ```mermaid
 flowchart TB
     PI(["Pi host"])

@@ -1,4 +1,5 @@
 import { MODE_CAPABILITIES } from "./modes.ts";
+import { taughtLessonBasis, lessonReady } from "./lesson.ts";
 import { pageInRanges, scopedPageRanges, type PageRange } from "./page-scope.ts";
 import {
   allSections,
@@ -208,6 +209,7 @@ export function questionGroundingIssues(
   value: unknown,
   book: ScholarBook,
   target: GroundingTarget,
+  options: { resume?: boolean } = {},
 ): string[] {
   const shapeIssues = questionGroundingShapeIssues(value);
   if (shapeIssues.length > 0) return shapeIssues;
@@ -215,8 +217,17 @@ export function questionGroundingIssues(
 
   const issues: string[] = [];
   const ranges = groundingRanges(book, target);
-  const objectives = new Set(target.mode === "learn" ? target.section.coveredObjectives : []);
-  const keyPoints = new Set(target.mode === "learn" ? target.section.keyPoints : target.tutor.keyPoints);
+  const record = target.mode === "learn" ? target.section : target.tutor;
+  const saved = taughtLessonBasis(record, book.source.fingerprint.sha256);
+  const objectives = options.resume ? new Set(target.mode === "learn" ? target.section.coveredObjectives : []) : saved.objectives;
+  const keyPoints = options.resume ? new Set(record.keyPoints) : saved.keyPoints;
+  if (!options.resume && value.purpose !== "diagnostic" && target.mode === "learn"
+    && target.section.status !== "complete" && !lessonReady(target.section, book.source.fingerprint.sha256)) {
+    issues.push("save and commit the complete Learn explanation before confirmation questions (notes.lesson, then lessonComplete=true)");
+  }
+  if (!options.resume && target.mode === "learn" && value.purpose === "mastery" && !value.basis.some(basis => basis.kind === "objective")) {
+    issues.push("mastery evidence must name the exact taught objective it assesses");
+  }
 
   for (const page of value.sourcePages) {
     if (!pageAllowed(page, ranges)) issues.push(`source page ${page} is outside the active ${target.mode} scope`);
@@ -306,8 +317,9 @@ export function assertQuestionGrounding(
   value: unknown,
   book: ScholarBook,
   target: GroundingTarget,
+  options: { resume?: boolean } = {},
 ): asserts value is QuestionGrounding {
-  const issues = questionGroundingIssues(value, book, target);
+  const issues = questionGroundingIssues(value, book, target, options);
   if (issues.length > 0) {
     throw new Error(`Scholar blocked this question before presentation: ${issues.join("; ")}. Teach the missing basis or correct the grounding metadata, then retry at the same rigor.`);
   }

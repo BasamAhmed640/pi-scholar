@@ -1,5 +1,6 @@
 /** Visible Markdown records. No prompt or transcript is duplicated in metadata. */
 import { createHash } from "node:crypto";
+import { openQuestionFingerprint } from "./open-assessment.ts";
 import type { AssessmentAttempt, ScholarBook, ScholarSection, TutorSession, TranscriptEntry, ScholarExam } from "./types.ts";
 import { GENERATED_START, GENERATED_END, collapsedRecord, markdownText } from "./render/common.ts";
 import { callout, unframeQuestion, FEEDBACK_START, FEEDBACK_END } from "./render/callouts.ts";
@@ -52,7 +53,7 @@ export function questionBlock(attempt: AssessmentAttempt, index: number, figures
     field("Choices", options?.map((option, i) => `${i + 1}. ${option.replace(/\n/g, "\n   ")}`).join("\n")),
     ...(label ? [FEEDBACK_START, callout(outcome === "pass" ? "success" : "warning", label, answer), FEEDBACK_END, ""]
       : [...(outcome !== "pending" && answer ? [answer] : []), outcome === "pending" ? "*Awaiting response*" : `*${outcome === "cancelled" ? "Cancelled" : outcome}*`, ""]),
-    details("question", { ...metadata, ...(quizMetadata ? { quiz: quizMetadata, formHash: contentHash(JSON.stringify([question, options])), contextHash: contentHash(markdownText(quiz?.context || "")) } : {}) }), "",
+    details("question", { ...metadata, ...(attempt.openAssessment ? { openFormHash: openQuestionFingerprint(attempt) } : {}), ...(quizMetadata ? { quiz: quizMetadata, formHash: contentHash(JSON.stringify([question, options])), contextHash: contentHash(markdownText(quiz?.context || "")) } : {}) }), "",
   ].join("\n"));
 }
 
@@ -95,7 +96,7 @@ export function readQuestions(text: string): AssessmentAttempt[] {
     const data = readDetails(chunk, "question");
     if (!data) throw new Error("A question is missing its Scholar question details. Delete its entire block to remove it, or undo the incomplete edit.");
     const options = choices(chunk);
-    const { formHash, contextHash, ...metadata } = data;
+    const { formHash, contextHash, openFormHash, ...metadata } = data;
     const status = /^\*(Awaiting response|Cancelled|pending|pass|review|unsure|unavailable)\*\s*$/m.exec(chunk)?.[1];
     if (!status) throw new Error("A question is missing its visible answer status. Restore the status or delete the entire question block.");
     const outcome = status === "Awaiting response" ? "pending" : status.toLowerCase();
@@ -111,6 +112,7 @@ export function readQuestions(text: string): AssessmentAttempt[] {
       if (contextHash !== undefined && contextHash !== contentHash(context || "")) throw new Error("The saved quiz context changed. Restore its frozen wording or remove the whole question before continuing.");
       attempt.quiz = { ...data.quiz, ...(context !== undefined ? { context } : {}), question, options: data.quiz.options.map((option: object, i: number) => ({ ...option, label: options[i]! })) };
     }
+    if (openFormHash !== undefined && openFormHash !== openQuestionFingerprint(attempt)) throw new Error("The saved open question or its scoring contract changed. Restore its frozen wording or remove the whole question; Scholar will not guess a grade.");
     if (attempts.some((item) => item.id === attempt.id)) throw new Error("Duplicate question ID in the note. Remove the duplicate question block.");
     attempts.push(attempt);
   }
@@ -122,7 +124,7 @@ export function transcriptBlock(entries: TranscriptEntry[], attempts: Assessment
   const prompts = new Set(attempts.map((attempt) => compare(attempt.question)));
   return entries.filter((entry) => entry.kind === "assistant").flatMap(({ markdown, ...metadata }) => {
     const paragraphs = markdownText(markdown).split(/\n\s*\n/);
-    if (prompts.has(compare(paragraphs.at(-1)!))) paragraphs.pop();
+    if (!metadata.lesson && prompts.has(compare(paragraphs.at(-1)!))) paragraphs.pop();
     if (!paragraphs.length) return [];
     return [`${details("entry", metadata)}\n\n${paragraphs.join("\n\n").replaceAll(ENTRY_END, "&lt;!-- scholar:entry:end --&gt;")}\n${ENTRY_END}\n`];
   }).join("\n");

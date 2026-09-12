@@ -76,9 +76,9 @@ check("all notes have scoped classes, no duplicate H1, no placeholder sections o
     assert.doesNotMatch(note, /PRIVATE_RESPONSE_DO_NOT_PROJECT|GENERATION_TRANSCRIPT_PRIVATE_KEY|PENDING_ANSWER_MUST_STAY_PRIVATE/, name);
   }
 });
-check("Learn puts the full visible lesson first, figures next, admin below reading, and paired questions last", () => {
+check("Learn puts the full visible lesson first, optional source references next, and paired questions last", () => {
   const note = samples.section;
-  const order = ["## Lesson", synthesis, longExplanation, "## Source figures", "> [!note]- Recap and pitfalls", "> ### Key points", "> ### Common pitfalls", "> [!note]- Learning record", "> ### Learning objectives", "> ### Understanding checks", "## Questions", "### Question 1", section.attempts[0].question, "**Correct answer:** 1.", section.attempts[0].feedback, "### Question 2", section.attempts[1].question, section.attempts[1].feedback, "### Question 3", section.attempts[2].question, "*Awaiting response*"];
+  const order = ["## Lesson", synthesis, longExplanation, "> [!note]- Source references", "> [!note]- Recap and pitfalls", "> ### Key points", "> ### Common pitfalls", "> [!note]- Learning record", "> ### Learning objectives", "> ### Understanding checks", "## Questions", "### Question 1", section.attempts[0].question, "**Correct answer:** 1.", section.attempts[0].feedback, "### Question 2", section.attempts[1].question, section.attempts[1].feedback, "### Question 3", section.attempts[2].question, "*Awaiting response*"];
   const positions = order.map((text) => note.indexOf(text));
   assert.ok(positions.every((value, index) => value >= 0 && (index === 0 || value > positions[index - 1])), JSON.stringify(positions));
   assert.equal(note.split(synthesis).length - 1, 1);
@@ -110,7 +110,7 @@ check("Markdown keeps the lesson and question-answer pairs outside collapsed adm
       ["Learn", renderSection(config, book, chapter, { ...section, attempts, transcript, snapshots: [] })],
       ["Tutor", renderTutorSession(config, book, { ...tutor, attempts, transcript })],
     ]) {
-      const parsed = callouts(note).filter(token => !token.text.startsWith("[!example] Figure"));
+      const parsed = callouts(note).filter(token => !token.text.startsWith("[!note]- Source references"));
       const label = `${kind}: teaching=${hasTeaching}, history=${hasHistory}, pending=${hasPending}`;
       assert.equal(parsed.length, 2 + (hasHistory ? 2 : 0), label);
       for (const token of parsed) assert.equal((token.text.match(/^\[!\w+\]/gm) || []).length, 1, `${label}: merged callout headers`);
@@ -128,13 +128,15 @@ check("Markdown keeps the lesson and question-answer pairs outside collapsed adm
       if (hasHistory || hasPending) assert.ok(note.indexOf("## Questions") > note.indexOf("[!note]-"), label);
     }
   }
-  // Book figures remain visible inside expanded native callouts.
+  // Supplemental figures remain available together without an expanded gallery.
   const figuresOnly = { ...section, synthesis: undefined, keyPoints: [], misconceptions: [], objectives: [], requiredChecks: [], attempts: section.attempts.slice(0, 2), transcript: [section.transcript[1]], snapshots: [section.snapshots[0], { ...section.snapshots[0], id: "figure2", page: 8, assetFile: "p0008-snapshot-cccccccccccccccc.png" }] };
   const figuresNote = renderSection(config, book, chapter, figuresOnly);
   assert.equal(callouts(figuresNote).length, 4);
-  assert.ok(callouts(figuresNote).every((token) => /^\[!(?:warning|success|example)\] /.test(token.text)));
-  assert.equal((figuresNote.match(/^> !\[\[.*\|640\]\]$/gm) || []).length, 2);
-  assert.ok(figuresNote.indexOf("## Source figures") < figuresNote.indexOf("## Questions"));
+  assert.ok(callouts(figuresNote)[0].text.startsWith("[!note]- Source references"));
+  assert.ok(callouts(figuresNote)[1].text.startsWith("[!note]- Learning record"));
+  assert.ok(callouts(figuresNote).slice(2).every((token) => /^\[!(?:warning|success)\] /.test(token.text)));
+  assert.equal((figuresNote.match(/^> > !\[\[.*\|640\]\]$/gm) || []).length, 2);
+  assert.ok(figuresNote.indexOf("[!note]- Source references") < figuresNote.indexOf("## Questions"));
 });
 check("navigation tables identify the current section and never link an unstarted sibling", () => {
   assert.ok(samples.chapter.includes("| **Current · In progress** | [["));
@@ -145,7 +147,7 @@ check("navigation tables identify the current section and never link an unstarte
 });
 check("Tutor keeps assisted practice distinct and preserves teaching and active question", () => {
   assert.ok(samples.tutor.includes("*Tutor · In progress · Assisted practice*") && samples.tutor.includes("does not change Exam scores or Learn completion"));
-  const order = ["## Lesson", longExplanation, "## Source figures", "> [!note]- Recap", "> ### Key points", "> [!note]- Practice scope", "## Questions", "### Question 1", section.attempts[0].feedback, "### Question 2", section.attempts[1].feedback, "### Question 3", "*Awaiting response*"];
+  const order = ["## Lesson", longExplanation, "> [!note]- Source references", "> [!note]- Recap", "> ### Key points", "> [!note]- Practice scope", "## Questions", "### Question 1", section.attempts[0].feedback, "### Question 2", section.attempts[1].feedback, "### Question 3", "*Awaiting response*"];
   assert.ok(order.every((text, index) => samples.tutor.includes(text) && (index === 0 || samples.tutor.indexOf(text) > samples.tutor.indexOf(order[index - 1]))));
   assert.ok(samples.tutor.includes("p0007-snapshot-bbbbbbbbbbbbbbbb.png|640]]"));
   assert.doesNotMatch(samples.tutor, /Teaching record|Practice record|## The model|\[!question\]-/);
@@ -206,10 +208,11 @@ check("Tutor and Learn render identical question blocks for both formats and eve
     }
   }
 });
-check("summary-only notes get a visible lesson and exact duplicate teaching or supplements appear once", () => {
+check("summary-only notes label the missing explanation honestly and exact duplicate supplements appear once", () => {
   const onlySummary = renderSection(config, book, chapter, { ...section, transcript: [], keyPoints: [synthesis, ...section.keyPoints, section.keyPoints[0]], misconceptions: [section.keyPoints[0]] });
-  assert.ok(onlySummary.indexOf("## Lesson") < onlySummary.indexOf(synthesis));
-  assert.doesNotMatch(onlySummary, /### Section summary|### Common pitfalls/);
+  assert.doesNotMatch(onlySummary, /## Lesson|### Common pitfalls/);
+  assert.match(onlySummary, /full explanation has not been saved yet/);
+  assert.ok(onlySummary.indexOf("### Section summary") < onlySummary.indexOf(synthesis));
   assert.equal(onlySummary.split(synthesis).length - 1, 1);
   assert.equal(onlySummary.split(section.keyPoints[0]).length - 1, 1);
   const duplicate = { ...section.transcript[1], id: "duplicate" };

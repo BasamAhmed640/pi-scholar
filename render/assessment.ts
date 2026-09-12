@@ -30,7 +30,7 @@ import {
   wikiLink,
   yaml,
 } from "./common.ts";
-import { assessmentQuestionBlock, referencedFigureLines, sourceFigureLines, teachingRecordLines, uniqueSupplementLines } from "./section.ts";
+import { assessmentQuestionBlock, referencedFigureLines, sourceFigureLines, supplementalSourceFigureLines, uniqueSupplementLines } from "./section.ts";
 import { transcriptBlock } from "../note-records.ts";
 
 export type ExamQuestion = ScholarExam["questions"][number];
@@ -252,8 +252,7 @@ export function renderTutorSession(config: ScholarConfig, book: ScholarBook, ses
   const notePath = tutorNotePath(config, book, session);
   const images = referenceImageLines(config, book, notePath, session.images);
   const authored = transcriptBlock(session.transcript || [], session.attempts).trim();
-  const teaching = authored ? authored.split("\n") : [];
-  const lesson = teaching.length ? teaching : session.synthesis?.trim() ? [markdownText(session.synthesis)] : [];
+  const lesson = authored ? authored.split("\n") : [];
   const summary = uniqueSupplementLines(session.synthesis ? [session.synthesis] : [], lesson);
   const keyPoints = uniqueSupplementLines(session.keyPoints, [...lesson, ...summary]);
   const snapshots = book.chapters.flatMap((chapter) => chapter.sections.flatMap((section) => {
@@ -262,8 +261,10 @@ export function renderTutorSession(config: ScholarConfig, book: ScholarBook, ses
     return selected ? section.snapshots || [] : [];
   }));
   const content = [
-    ...(lesson.length ? block("## Lesson", lesson) : ["This session is ready. The lesson and practice will appear as you work.", ""]),
-    ...block("## Source figures", sourceFigureLines(config, book, notePath, recordSourceFigures(session.snapshots, snapshots))),
+    ...(lesson.length ? block("## Lesson", lesson) : [session.synthesis?.trim()
+      ? "A recap is saved below. The full explanation has not been saved yet."
+      : "This session is ready. The lesson and practice will appear as you work.", ""]),
+    ...supplementalSourceFigureLines(config, book, notePath, recordSourceFigures(session.snapshots, snapshots), authored),
     ...block("## Visual references", images),
     ...collapsedRecord("Recap", [
       ...block("### Session summary", summary),
