@@ -44,7 +44,6 @@ import {
   freezeRecoveryTarget,
   freezeExplicitTarget,
   isSameVaultPath,
-  recoverTranscriptTarget,
   type FrozenRecoveryTarget,
   type RecoveryOutcome,
 } from "./transcript-recovery.ts";
@@ -552,30 +551,7 @@ export class ScholarRuntimeCoordinator {
     ctx: Pick<ExtensionContext, "sessionManager">,
     isAutomatic = true,
   ): Promise<RecoveryOutcome> {
-    const branch = typeof ctx.sessionManager.getBranch === "function"
-      ? ctx.sessionManager.getBranch()
-      : (ctx.sessionManager as any).getEntries();
-
-    const boundConfig = structuredClone(this.activeConfig);
-    boundConfig.obsidianRoot = target.vaultPath;
-
-    return recoverTranscriptTarget({
-      target,
-      branch,
-      loadBook: async (id) => {
-        if (!isSameVaultPath(this.activeConfig.obsidianRoot, target.vaultPath)) {
-          return undefined;
-        }
-        return loadBookState(boundConfig, id);
-      },
-      mutateBook: async (id, mutator) => {
-        if (!isSameVaultPath(this.activeConfig.obsidianRoot, target.vaultPath)) {
-          throw new Error("The active Obsidian vault changed during transcript recovery.");
-        }
-        return this.mutateBook(id, mutator);
-      },
-      isAutomatic,
-    });
+    return { kind: "noop", message: "Scholar reads the visible Obsidian note. Pi history backfill is disabled so deleted content stays deleted." };
   }
 
   async backfillActiveBranch(ctx: ExtensionCommandContext | ExtensionContext): Promise<RecoveryOutcome> {

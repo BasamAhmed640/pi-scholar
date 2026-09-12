@@ -4,7 +4,7 @@ import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiP
 // Every write and cleanup is confined to this verifier's fresh temporary root.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile, rename } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -30,6 +30,7 @@ const { handleScholarCommand } = await mod("commands.ts");
 const { parseScholarCommand, getScholarArgumentCompletions } = await mod("command-syntax.ts");
 const { createBookService } = await mod("book-service.ts");
 const storage = await mod("storage.ts");
+const { readExamDocument } = await mod("note-records.ts");
 const { freezeRecoveryTarget } = await mod("transcript-recovery.ts");
 
 const root = await mkdtemp(join(tmpdir(), "scholar-obsidian-exam-"));
@@ -101,7 +102,7 @@ async function harness(label, options = {}) {
   const pi = { getActiveTools: () => [...activeTools], setActiveTools: (names) => { activeTools = [...names]; }, registerTool: (definition) => tools.set(definition.name, definition),
     appendEntry: (customType, data) => branch.push({ type: "custom", id: `entry-${branch.length}`, customType, data }),
     sendMessage: (message, sendOptions) => {
-      const saved = JSON.parse(readFileSync(storage.bookStatePath(config, book), "utf8"));
+      const saved = { exams: [readExamDocument(readFileSync(examNotePath(config, book, book.exams[0]), "utf8"))] };
       sent.push({ message, options: sendOptions, savedStatus: saved.exams[0].status });
       if (options.failSend) throw new Error("simulated model transport failure");
     },
@@ -288,7 +289,7 @@ try {
     await h.coordinator.recoverTarget(target, h.context, true);
     assert.equal(await readFile(h.paperPath, "utf8"), filled);
     assert.equal((await h.current()).exams[0].status, "active"); assert.equal(h.sent.length, 0);
-    assert.doesNotMatch(await readFile(examNotePath(h.config, h.book, h.book.exams[0]), "utf8"), /LEARNER_OWNED_ANSWER|Which model applies/);
+    assert.doesNotMatch(await readFile(examNotePath(h.config, h.book, h.book.exams[0]), "utf8"), /LEARNER_OWNED_ANSWER/);
     const fresh = await h.restart(); await handleScholarCommand('exam "exam-001"', h.context, fresh); await fresh.renderAll();
     assert.equal(await readFile(h.paperPath, "utf8"), filled); assert.equal(h.sent.length, 0);
   });
@@ -345,6 +346,7 @@ try {
     const bytes = examAnswerNoteText(h.config, h.book, exam), outsideDir = join(root, "outside-papers");
     await mkdir(outsideDir); const outside = join(outsideDir, basename(h.paperPath)); await writeFile(outside, bytes);
     await mkdir(dirname(dirname(h.paperPath)), { recursive: true });
+    await rename(dirname(h.paperPath), dirname(h.paperPath) + "-safe-fixture");
     await symlink(outsideDir, dirname(h.paperPath), process.platform === "win32" ? "junction" : "dir");
     await assert.rejects(() => readExamAnswerNote(h.config, h.book, exam));
     await assert.rejects(() => ensureExamAnswerNote(h.config, h.book, exam)); assert.equal(await readFile(outside, "utf8"), bytes);

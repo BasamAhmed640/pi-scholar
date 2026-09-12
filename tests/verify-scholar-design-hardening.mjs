@@ -169,82 +169,31 @@ try {
   const config = storage.resolveScholarConfig();
   let book = baseBook();
   book.source.absolutePath = join(libraryRoot, "fixture.pdf");
-  const primary = storage.bookStatePath(config, book);
-  const previous = join(dirname(primary), "book.prev.json");
-  await test("first authority creation makes no backup", async () => {
-    await storage.createBookState(config, book);
+  await storage.createBookState(config, book);
+  let primary = storage.bookStatePath(config, book);
+  await test("visible records replace hidden authority and backup files", async () => {
     assert.equal(await exists(primary), true);
-    assert.equal(await exists(previous), false);
+    assert.equal(await exists(join(dirname(primary), ".scholar")), false);
   });
-  await test("successive revisions keep exactly the preceding authority bytes", async () => {
+  await test("note revisions and title changes reject stale writers", async () => {
     for (let revision = 1; revision <= 3; revision++) {
-      const oldBytes = await readFile(primary);
-      book = { ...book, revision, metadata: { ...book.metadata, title: `Revision ${revision}` } };
+      book = { ...book, revision, metadata: { ...book.metadata, title: "Revision " + revision } };
       await storage.saveBookState(config, book, revision - 1);
-      assert.deepEqual(await readFile(previous), oldBytes);
-      assert.equal(JSON.parse(await readFile(primary, "utf8")).revision, revision);
-      assert.deepEqual((await readdir(dirname(primary))).sort(), ["book.json", "book.prev.json"]);
+      primary = storage.bookStatePath(config, book);
+      assert.equal((await storage.loadBookState(config, book.id)).revision, revision);
     }
-    assert.deepEqual(await readdir(stateRoot), [], "no backup or book state outside the vault");
-  });
-  await test("stale revision and wrong-instance saves leave primary and backup untouched", async () => {
-    const before = await Promise.all([readFile(primary), readFile(previous)]);
+    const bytes = await readFile(primary);
     await assert.rejects(storage.saveBookState(config, { ...book, revision: 10 }, 0), { name: "ScholarRevisionConflictError" });
-    await assert.rejects(storage.saveBookState(config, { ...book, instanceId: "different-instance" }, 3), /authority changed/);
-    assert.deepEqual(await Promise.all([readFile(primary), readFile(previous)]), before);
+    await assert.rejects(storage.saveBookState(config, { ...book, instanceId: "different-instance" }, 3), /authority.*changed/);
+    assert.deepEqual(await readFile(primary), bytes);
+    assert.deepEqual(await readdir(stateRoot), []);
   });
-  await test("corrupt backups and other backup-looking names are ignored by discovery", async () => {
-    await writeFile(previous, "not valid JSON");
-    await writeFile(join(dirname(primary), "book.json.bak"), "not valid JSON");
-    assert.equal((await storage.listBookStates(config)).length, 1);
-    assert.equal((await storage.loadBookState(config, book.id)).revision, 3);
-    await rm(join(dirname(primary), "book.json.bak"));
-    const oldBytes = await readFile(primary);
-    book = { ...book, revision: 4 };
-    await storage.saveBookState(config, book, 3);
-    assert.deepEqual(await readFile(previous), oldBytes);
-  });
-  await test("failed backup publication fails the save and preserves the live authority", async () => {
-    const oldBytes = await readFile(primary);
-    await rm(previous);
-    await mkdir(previous);
-    const sentinel = join(previous, "preserve.txt");
-    await writeFile(sentinel, "keep");
-    await assert.rejects(storage.saveBookState(config, { ...book, revision: 5 }, 4));
-    assert.deepEqual(await readFile(primary), oldBytes);
-    assert.equal(await readFile(sentinel, "utf8"), "keep");
-    assert.deepEqual((await readdir(dirname(primary))).sort(), ["book.json", "book.prev.json"]);
-    await rm(sentinel);
-    await rm(previous, { recursive: true });
-    book = { ...book, revision: 5 };
-    await storage.saveBookState(config, book, 4);
-  });
-  await test("missing authority is never restored from the retained backup", async () => {
-    const backupBytes = await readFile(previous);
+  await test("deleting a visible book note prevents automatic restoration", async () => {
     await rm(primary);
     assert.equal(await storage.loadBookState(config, book.id), undefined);
     assert.equal(await storage.loadMatchingBookAuthority(config, book), undefined);
-    assert.deepEqual(await storage.listBookStates(config), []);
-    await assert.rejects(storage.saveBookState(config, { ...book, revision: 6 }, 5), /authority was deleted/);
+    await assert.rejects(storage.saveBookState(config, { ...book, revision: 4 }, 3), /authority was deleted/);
     assert.equal(await exists(primary), false);
-    assert.deepEqual(await readFile(previous), backupBytes);
-  });
-  await test("explicit reimport starts fresh and ignores the old backup", async () => {
-    book = { ...book, instanceId: "fresh-import", revision: 0, exams: [] };
-    await storage.createBookState(config, book);
-    assert.equal((await storage.loadBookState(config, book.id)).instanceId, "fresh-import");
-    const oldBytes = await readFile(primary);
-    await storage.saveBookState(config, { ...book, revision: 1 }, 0);
-    assert.deepEqual(await readFile(previous), oldBytes);
-  });
-  await test("deleting the whole book cannot be undone by a stale save", async () => {
-    const bookFolder = dirname(dirname(primary));
-    const withinVault = relative(vaultRoot, resolve(bookFolder));
-    assert.ok(withinVault.startsWith(`Scholar${sep}Books${sep}`) && !isAbsolute(withinVault) && !withinVault.startsWith(".."));
-    await rm(bookFolder, { recursive: true });
-    await assert.rejects(storage.saveBookState(config, { ...book, revision: 2 }, 1), /authority was deleted/);
-    assert.equal(await exists(bookFolder), false);
-    assert.deepEqual(await storage.listBookStates(config), []);
   });
   await test("PDF-library layout rejects Obsidian metadata and its ancestors", () => {
     for (const unsafe of [join(vaultRoot, ".obsidian"), vaultRoot, root]) {

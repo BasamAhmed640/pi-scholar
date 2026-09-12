@@ -173,7 +173,8 @@ export function tutorFileName(session: TutorSession): string {
 }
 
 export function examNotePath(config: ScholarConfig, book: ScholarBook, exam: ScholarExam): string {
-  return resolve(bookNoteDirectory(config, book), "Exams", examFileName(exam));
+  const names = disambiguatedFileNames(book.exams.map((item) => ({ id: item.id, name: examFileName(item) })));
+  return resolve(bookNoteDirectory(config, book), "Exams", names.get(exam.id) || examFileName(exam));
 }
 
 /** The learner's paper has a stable identity-based name, independent of its title. */
@@ -192,11 +193,13 @@ export function answerKeyFileName(exam: ScholarExam): string {
 }
 
 export function answerKeyNotePath(config: ScholarConfig, book: ScholarBook, exam: ScholarExam): string {
-  return resolve(bookNoteDirectory(config, book), "Exams", answerKeyFileName(exam));
+  const names = disambiguatedFileNames(book.exams.map((item) => ({ id: item.id, name: answerKeyFileName(item) })));
+  return resolve(bookNoteDirectory(config, book), "Exams", names.get(exam.id) || answerKeyFileName(exam));
 }
 
 export function tutorNotePath(config: ScholarConfig, book: ScholarBook, session: TutorSession): string {
-  return resolve(bookNoteDirectory(config, book), "Tutor", tutorFileName(session));
+  const names = disambiguatedFileNames(book.tutorSessions.map((item) => ({ id: item.id, name: tutorFileName(item) })));
+  return resolve(bookNoteDirectory(config, book), "Tutor", names.get(session.id) || tutorFileName(session));
 }
 
 export function snapshotAssetPath(config: ScholarConfig, book: ScholarBook, snapshot: ScholarSnapshot): string {

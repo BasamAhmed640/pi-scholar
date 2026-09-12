@@ -1,4 +1,5 @@
 import { latestAttemptForKind, sectionCompletionBlockers } from "../domain.ts";
+import { transcriptBlock } from "../note-records.ts";
 import { chapterNotePath, sectionNotePath, snapshotAssetPath } from "../obsidian-paths.ts";
 import type { AssessmentAttempt, AssessmentKind, ScholarBook, ScholarChapter, ScholarConfig, ScholarSection, ScholarSnapshot, TranscriptEntry } from "../types.ts";
 import { block, collapsedRecord, frontmatter, generatedDocument, markdownText, pageRange, readableOutcome, statusLabel, tableText, titleCase, wikiEmbed, wikiLink, yaml } from "./common.ts";
@@ -146,7 +147,8 @@ export function renderSection(config: ScholarConfig, book: ScholarBook, chapter:
     "| Understanding check | Result |", "| --- | --- |",
     ...section.requiredChecks.map((kind) => `| ${tableText(titleCase(kind))} | ${passed.has(kind) ? "Demonstrated" : "Not yet demonstrated"} |`),
   ] : [];
-  const teaching = sectionTeachingLines(section);
+  const authored = transcriptBlock(section.transcript || [], section.attempts).trim();
+  const teaching = authored ? authored.split("\n") : [];
   const lesson = teaching.length ? teaching : section.synthesis?.trim() ? [markdownText(section.synthesis)] : [];
   const summary = uniqueSupplementLines(section.synthesis ? [section.synthesis] : [], lesson);
   const keyPoints = uniqueSupplementLines(section.keyPoints, [...lesson, ...summary]);

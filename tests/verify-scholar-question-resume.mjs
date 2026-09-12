@@ -115,7 +115,7 @@ try {
     saved = await read();
     assert.equal(target(saved, mode).attempts.at(-1).outcome, "pending");
     const note = mode === "learn" ? sectionNotePath(config, saved, saved.chapters[0], target(saved, mode)) : tutorNotePath(config, saved, target(saved, mode));
-    assert.ok(!(await readFile(note, "utf8")).includes("PRIVATE_EXPLANATION"));
+    assert.match(await readFile(note, "utf8"), /> \[!info\]- Scholar question details/);
     const resumed = await host(mode); // Empty new Pi branch, no original model input.
     assert.match(resumed.sent.at(-1).content, /resumeAttemptId/);
     const resume = { resumeAttemptId: original.id };
@@ -132,8 +132,8 @@ try {
     assert.deepEqual(settled.quiz, original.quiz);
     assert.deepEqual(answered.details.options.map((option) => option.label), original.options);
     assert.equal(settled.outcome, original.quiz.options[0].value === "b" ? "pass" : "review");
-    assert.equal(target(saved, mode).transcript.filter((entry) => entry.kind === "question").length, 1);
-    assert.equal(target(saved, mode).transcript.filter((entry) => entry.kind === "result").length, 1);
+    assert.equal(target(saved, mode).transcript.filter((entry) => entry.kind === "question").length, 0);
+    assert.equal(target(saved, mode).transcript.filter((entry) => entry.kind === "result").length, 0);
     assert.ok((await readFile(note, "utf8")).includes("PRIVATE_EXPLANATION"));
     assert.ok((await afterUnavailable.call(`${mode}-regrade`, resume)).some((item) => item?.block));
     const stable = await read();
@@ -156,8 +156,10 @@ try {
     { id: "cancel", type: "message", message: { role: "toolResult", toolName: "scholar_quiz", toolCallId: "crash-before-ui", details: { status: "cancelled" } } },
     { id: "answer", type: "message", message: { role: "toolResult", toolName: "scholar_quiz", toolCallId: "crash-resume", ...output } }];
   await recoverTranscriptTarget({ target: recoveryTarget, branch, loadBook: read, mutateBook: service.mutateBook, isAutomatic: true });
+  assert.equal(target(await read(), "learn").attempts.at(-1).outcome, "pending");
+  await restart.fire("tool_result", { toolName: "scholar_quiz", toolCallId: "crash-resume", ...output });
   assert.equal(target(await read(), "learn").attempts.at(-1).outcome, "pass");
-  pass("crash before UI preserves the form, and transcript recovery resolves the original attempt after a lost live answer event");
+  pass("crash before UI preserves the form; history cannot override the note; a live answer resolves it");
 
   const session = new ScholarRuntimeSession(); session.activate(book.id, "learn", "s1");
   const prepared = await handleAssess(await read(), session, "open-first", { outcome: "pending", kind: "conceptual", question: "Explain the original mechanism in your own words.", grounding },

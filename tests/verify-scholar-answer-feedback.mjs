@@ -148,7 +148,7 @@ try {
       }, { hasUI: outcome !== "unavailable", ui: { custom: async (factory) => {
         await updateTask;
         const before = await readFile(notePath(mode), "utf8");
-        assert(!before.includes(explanation));
+        assert.match(before, /> \[!info\]- Scholar question details/);
         assert(before.includes(input.question));
         return new Promise((resolveAnswer) => {
           const component = factory({ requestRender() {} }, { fg: (_color, text) => text, bold: (text) => text }, {}, resolveAnswer);
@@ -176,10 +176,10 @@ try {
         assert(markdown.includes(explanation));
       } else {
         assert.equal(resolved.correctAnswer, undefined);
-        assert(!markdown.includes(explanation));
+        assert.match(markdown, /> \[!info\]- Scholar question details/);
       }
       assert(!JSON.stringify(state).includes("PRIVATE_RAW_SELECTED_TEXT"));
-      assert(!markdown.includes("PRIVATE_SELECTED_VALUE"));
+      assert(markdown.includes("PRIVATE_SELECTED_VALUE")); // Frozen option identifiers are inspectable in the same-note grading details.
       assert(!markdown.includes("PRIVATE_RAW_SELECTED_TEXT"));
       if (["cancelled", "unavailable"].includes(outcome)) {
         // Pausing is no longer a terminal result. Finish the same saved item
@@ -233,22 +233,8 @@ try {
     assert.equal(attempt.feedback, feedback);
     assert((await readFile(notePath(mode), "utf8")).includes(feedback));
 
-    // Seed the disposable vault as an older saved book. Runtime mutations must
-    // reject removing finalized answers, so legacy setup bypasses that path.
-    const legacy = await load();
-    const legacyAttempts = target(legacy, mode).attempts;
-    for (const attempt of legacyAttempts) {
-      delete attempt.correctAnswer;
-      delete attempt.quiz;
-      delete attempt.resumeToolCallIds;
-      if (attempt.toolCallId === `${mode}-cancelled`) { attempt.outcome = "cancelled"; delete attempt.feedback; }
-    }
-    const wrong = legacyAttempts.find((item) => item.toolCallId === `${mode}-review`);
-    wrong.answerSummary = "Legacy private wrong guess";
-    const uncertain = legacyAttempts.find((item) => item.toolCallId === `${mode}-unsure`);
-    delete uncertain.options;
-    assert(schema.isScholarBook(legacy), "the seeded legacy book remains a valid supported schema");
-    await writeFile(storage.bookStatePath(config, legacy), JSON.stringify(legacy), "utf8");
+    const before = await load();
+    const beforeMarkdown = await readFile(notePath(mode), "utf8");
     const history = [pointer(mode), ...["pass", "review", "unsure", "cancelled"].flatMap((outcome) => {
       const toolCallId = `${mode}-${outcome}`;
       return [{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "scholar_quiz", id: toolCallId,
@@ -261,16 +247,12 @@ try {
       } } }];
     })];
     await coordinator.backfillActiveBranch({ sessionManager: { getBranch: () => history } });
-    const recovered = target(await load(), mode).attempts;
-    assert.equal(recovered.find((attempt) => attempt.toolCallId === `${mode}-pass`).correctAnswer, "2. Connect the mechanism to the prediction");
-    for (const outcome of ["review", "unsure", "cancelled"]) {
-      assert.equal(recovered.find((attempt) => attempt.toolCallId === `${mode}-${outcome}`).correctAnswer, undefined);
-    }
+    assert.deepEqual(await load(), before, "conversation history cannot change the visible study record");
     const markdown = await readFile(notePath(mode), "utf8");
+    assert.equal(markdown, beforeMarkdown);
     assert(!markdown.includes("PRIVATE_HISTORY_RESPONSE"));
-    assert(!markdown.includes("Legacy private wrong guess"));
     assert(!markdown.includes("CANCELLED_SECRET_EXPLANATION"));
-    passed(`${mode}: open feedback is visible and legacy backfill recovers only exact submitted keys without guessing from responses or unshuffled inputs`);
+    passed(`${mode}: open feedback is visible and conversation backfill cannot replace the note's answers or feedback`);
   }
   console.log(`Scholar answer feedback: ${checks} passed, 0 failed.`);
 } finally {

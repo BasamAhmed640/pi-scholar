@@ -30,6 +30,7 @@ import {
   yaml,
 } from "./common.ts";
 import { assessmentQuestionBlock, sourceFigureLines, teachingRecordLines, uniqueSupplementLines } from "./section.ts";
+import { transcriptBlock } from "../note-records.ts";
 
 export type ExamQuestion = ScholarExam["questions"][number];
 export type ExamItemResult = ScholarExam["itemResults"][number];
@@ -237,7 +238,8 @@ export function renderExam(config: ScholarConfig, book: ScholarBook, exam: Schol
 export function renderTutorSession(config: ScholarConfig, book: ScholarBook, session: TutorSession): string {
   const notePath = tutorNotePath(config, book, session);
   const images = referenceImageLines(config, book, notePath, session.images);
-  const teaching = teachingRecordLines(session.transcript || [], session.attempts);
+  const authored = transcriptBlock(session.transcript || [], session.attempts).trim();
+  const teaching = authored ? authored.split("\n") : [];
   const lesson = teaching.length ? teaching : session.synthesis?.trim() ? [markdownText(session.synthesis)] : [];
   const summary = uniqueSupplementLines(session.synthesis ? [session.synthesis] : [], lesson);
   const keyPoints = uniqueSupplementLines(session.keyPoints, [...lesson, ...summary]);

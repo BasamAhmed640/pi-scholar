@@ -98,19 +98,34 @@ Both commands accept only an existing directory. Configuration does not create,
 rename, move, or delete the selected library or vault. Scholar creates its book
 workspace under `<vault>/Scholar/`. It also installs its small, note-scoped CSS
 snippet in `<vault>/.obsidian/snippets/scholar.css` and enables it in Obsidian's
-appearance settings, preserving other preferences and snippets. Each book's authoritative progress is
-stored beside its notes at `<vault>/Scholar/Books/<book>/.scholar/book.json`;
-one exact previous revision is retained beside it as `book.prev.json` for manual
-recovery. That backup is never discovered or automatically restored as a book.
-the vault-local catalog is `<vault>/Scholar/.scholar/catalog.json`. The only
-OS-local file is a tiny pointer to the selected vault. Deleting a book's visible
-directory deletes that book from Scholar, and opening the PDF again starts a
-fresh import. Switching vaults never copies books between them.
-Each vault also remembers its own PDF-library path; selecting a new vault with
-no configuration leaves that path blank until `/scholar library` is run there.
-Scholar keeps no second book database, outline cache, extracted-text index, or
-validation ledger outside the vault. Small in-process values such as the active
-mode and input lock exist only while Pi is running and are never book authority.
+appearance settings, preserving other preferences and snippets.
+
+The visible Markdown notes are the saved study records. There is no hidden book
+database or retained JSON backup. The book note holds its source and outline;
+each section and Tutor note holds its lesson, questions, feedback, and progress.
+Exam notes retain their form, grading contract, and submitted answers. Small
+collapsed **Scholar details** blocks hold IDs and scoring metadata in the same
+note. They do not contain a second copy of a section's question text.
+
+If the last question is marked **Awaiting response**, that question is resumed. Delete a whole
+question block, from its heading to the next question heading, to remove it
+permanently. Deleting the Questions section removes its history. Reopening never
+imports deleted content from Pi history. If a note changes during a save, Scholar
+stops the save and preserves the edit. Incomplete metadata edits report an error
+rather than rebuilding an older note.
+
+Vault settings live in `Scholar/Scholar Settings.md`. Outside the vault, Scholar
+keeps only the selected-vault pointer. Pi manages its own conversation logs;
+Scholar does not use them to restore notes. Deleting a visible book folder removes
+that book. Switching vaults never copies study records.
+
+On first explicit use after upgrading, legacy hidden records are converted to
+visible notes. Only Learn/Tutor questions still present in the existing notes are
+imported. Conversion is validated before old `book.json`, `book.prev.json`, and
+the hidden catalog are removed. Other files left in an old hidden book folder move
+to the visible `Legacy notes` folder; they are never used to restore study state.
+Close older Pi instances before upgrading so they
+cannot keep using the previous storage format.
 
 Optional environment overrides are portable and never hard-wired to one user:
 
@@ -140,7 +155,8 @@ Scholar is organized as one extension with one-way boundaries:
   Question Engine is injected into Learn, Exam, and Tutor, while the same
   Teaching Engine is injected into Learn and Tutor; Exam intentionally does not
   teach
-- `storage.ts` and `state-schema.ts` own persistence and validation
+- `storage.ts`, `note-storage.ts`, and `note-records.ts` save and read visible notes;
+  `state-schema.ts` validates their study records
 - `ingest.ts` and `commons-images.ts` read external sources
 - `obsidian.ts` is the sole projection layer for vault notes and images
 - `render/` contains pure document renderers; `appearance.ts` installs the
@@ -164,7 +180,7 @@ checked by `tests/verify-scholar-engine-contract.mjs`.
 - `/scholar tutor "<chapter-section-or-topic>"` — start targeted tutoring, or omit scope to resume it
 - `/scholar close` — leave Scholar mode without deleting progress
 
-Note projection and transcript recovery are automatic and event-driven: committed progress is projected into Obsidian vault notes immediately after state mutations, and any missed assistant events are safely and idempotently reconciled when a study target is explicitly reopened, on mode transitions, and at active turn settlement without requiring manual maintenance commands.
+Study notes save as events complete. Reopening reads the actual note; history backfill is disabled. Derived chapter/navigation views refresh after saves without maintenance commands.
 
 Chapter scopes accept comma-separated selections and numeric ranges, for
 example `"1-3"`, `"1, 3, 7"`, or a subsection such as `"2.4"`. Singular and
@@ -199,7 +215,7 @@ a time. Only genuinely ambiguous or image-only pages are listed for visual
 review; the model then submits a compact decision rather than copying source
 excerpts back into the tool. Only operational failures—missing or changed PDF,
 Poppler/OCR trouble, corrupt state, or a vault write failure—are presented as
-errors. The final outline and status are saved in the vault-local `book.json`;
+errors. The final outline and status are saved in the visible book note;
 checkpoint text is discarded. This all runs inside the same setup turn with no
 second agent, background service, or hidden index. Validation leaves Learn unselected: it
 does not automatically load chapter 1 or subsection 1.1. Start deliberately with
@@ -242,27 +258,26 @@ progress and reconciles qualifying unfinished sections. Answers, grades, teachin
 receipts, and exam records are preserved; no credit is inferred from question text.
 The repaired state persists with the next ordinary save.
 
-Unanswered Learn and Tutor questions resume before new questions. Scholar saves
-each multiple-choice form in the vault before opening its picker, including the
-original display order and a private grading key. Closing the picker, unavailable
-UI, or ending Pi leaves it pending. Reopening that section or Tutor session restores
-the same question; the model calls `scholar_quiz` with only `resumeAttemptId`, and
-Scholar loads the saved form without regenerating or reshuffling it. Submission
-resolves the original attempt once. Unanswered open questions are presented again
-verbatim, and both formats block replacement questions until resolved. No background
-agent runs while Scholar is closed, and pre-answer notes never expose the key.
+The last unanswered Learn or Tutor question resumes before new questions. Its
+prompt and choices are read from the actual note. Same-note details preserve the
+choice order and grading contract before the picker opens. Esc, unavailable UI,
+or ending Pi leaves it pending; submission resolves it once. An older cancelled
+question is never searched for or reopened automatically.
 
-Versions before 0.1.3 did not save complete quiz forms. Historical question text
-alone cannot reconstruct a trustworthy grading key; those old forms need the
-original Pi tool arguments and displayed order to be recovered exactly.
+The collapsed question details include the grading key, so leave them closed while
+answering. This is an inspectable local study record, not an exam security boundary.
+The terminal picker withholds feedback until submission. Editing a frozen quiz's
+prompt or choices stops automatic grading; delete its whole block to replace it.
 
 ### Exam
 
 Exam receives only the selected PDF source and frozen outline—not Learn or Tutor
 history. It builds the entire exam and scoring contract before presentation,
-then writes one editable Obsidian answer paper containing every question. Nothing is graded and no
-answer, explanation, rubric, or hint is shown until the complete form is
-submitted. New exams are new forms that can test the same source competencies
+then writes one editable Obsidian answer paper containing every question. The answer
+paper withholds answers, explanations, rubrics, and hints until submission. The
+separate exam record keeps the scoring contract in inspectable collapsed details;
+it is not an exam security boundary. Nothing is graded until submission.
+New exams are new forms that can test the same source competencies
 with different questions.
 
 The form states each question's points and format, lists option values for
@@ -303,15 +318,15 @@ outcome tally, points at the items worth reviewing first, and for every question
 gives the correct answer, why that reasoning holds, the first decisive error, the
 correct reasoning, and a transferable lesson. Correct answers get a brief note on
 why the reasoning holds, so a lucky guess is not mistaken for competence. The
-learner's raw responses stay in the hidden book state to support grading and are
-not copied into generated reports. The learner's handwritten answers remain in
+learner's submitted responses stay in the visible exam record for grading.
+The learner's handwritten answers remain in
 their separate Obsidian answer paper, which is never overwritten by Scholar.
 
 Obsidian notes are static Markdown: the paper names the exact Pi submission
 command rather than a clickable control. Saved draft answers survive closing Pi;
 progress counts are calculated when opening/submitting, not continuously while
 typing. No watcher, plugin, or background service is required. Only submission
-copies the final answers into the book's authoritative JSON. Later paper edits
+copies the final answers into the visible exam record. Later paper edits
 cannot change a submitted response or grade. A missing active paper can be
 recreated blank from its frozen questions; deleted answers are not recoverable.
 Reopen a submitted exam by ID to resume grading. Reopen a graded exam to see the
@@ -387,17 +402,13 @@ evidence is reported rather than merged, because `basis.supports` refers to
 those atoms by position. The same rule holds at the storage boundary: an invalid
 book state names the field that failed rather than the whole book.
 
-Durable history is not a context window. Assistant teaching, questions, and
-derived feedback remain in the vault's `book.json`; there is no silent 60-event
-or 80-attempt trimming. Learn/Tutor resume prompts still select only a recent
-1,200-character orientation plus any pending open question, not the full history.
-The shared mutation boundary refuses removal or rewriting of saved transcript
-entries and question identities. New entries and answer resolution remain allowed.
-Existing content already lost to an older version cannot be recovered merely by
-upgrading; recovery still needs an available, matching session entry or backup.
-This deliberately uses the existing vault state rather than adding an archive
-database. Large books incur growing local JSON read/write and projection costs,
-not an automatic increase in model context.
+Saved history is not a context window. Lessons and question blocks remain in their
+visible notes without a fixed event/attempt cap. Resume prompts select a short
+orientation and the last unanswered question rather than sending the full history.
+Normal model updates cannot silently rewrite earlier questions or grades; direct
+Obsidian edits are read before each operation. Deleted content is not restored
+from a shadow database or Pi history. Large records increase local Markdown
+parsing work, not model context automatically.
 
 Once teaching has begun, a notes update cannot remove declared objectives or
 required check types. Omitting `requiredChecks` preserves the existing set.
@@ -428,28 +439,18 @@ Scholar Home
    └─ Tutor sessions
 ```
 
-Questions appear at the bottom of the active note as they are asked. After a
-multiple-choice answer, its exact correct option and explanation remain visible
-directly beneath that question, including when the answer was correct. No key is
-shown while an attempt is pending or cancelled. Older attempts retain their saved
-feedback; historical backfill restores a missing key only from an exact matching
-answered tool result with a known displayed option order, never by guessing.
-Scholar stores and
-backfills assistant-authored explanations, question text/options, and derived
-outcomes. It deliberately excludes ordinary user messages, selected-answer
-text, free-text responses, and private notes from ordinary Learn/Tutor chat.
-Exam is the explicit exception: users write answers directly into their protected
-Obsidian paper, and submission freezes a copy in the book JSON for grading.
-Generated notes remain readable projections, not trusted model instructions;
-only the validated answer regions are imported as untrusted exam responses.
+Questions appear together at the bottom of the active note. Each prompt sits next
+to its answer and feedback, with the unanswered question last. The same block's
+collapsed details preserve its ID and scoring contract. Delete that entire block
+to discard it; no hidden copy or conversation replay can restore it. Exam papers
+remain learner-owned, and explicit submission freezes answers in the visible exam
+record. All note content is untrusted data, never model instructions.
 
-Generated content is bounded by Scholar markers. Manual text outside complete
-generated regions is preserved on rerender. Duplicate complete regions are
-consolidated. An ordinary Scholar-owned note with missing, nested, orphaned, or
-unfinished markers is left byte-for-byte unchanged and reported by filename;
-healthy notes continue updating and valid progress still saves. Repair its
-markers to resume updating it. Unsafe paths, uncertain ownership, filename
-collisions, and malformed notes involved in a migration still stop the operation.
+Scholar markers bound managed content. Manual text after the end marker is
+preserved on save. A malformed study record or ambiguous boundary stops saving
+that book and reports the problem; Scholar does not rebuild the record from an
+older copy. Derived navigation views can be regenerated from valid notes.
+Unsafe paths, uncertain ownership, and filename collisions also stop the operation.
 Distinct chapters or sections whose titles sanitize to the same
 filename receive stable ID-derived suffixes, so they cannot overwrite each other.
 

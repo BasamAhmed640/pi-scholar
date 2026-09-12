@@ -181,10 +181,7 @@ try {
     staleError instanceof Error ? staleError.message : "stale save unexpectedly succeeded",
   );
   const revisedHub = obsidian.bookHomePath(config, revised);
-  const oldGenerated = await readFile(oldTitleHub, "utf8");
-  const generatedEnd = "<!-- scholar:generated:end -->";
-  const generatedOnly = oldGenerated.slice(0, oldGenerated.indexOf(generatedEnd) + generatedEnd.length);
-  await writeFile(revisedHub, `${generatedOnly}\n\n${destinationTail}\n`, "utf8");
+  await appendFile(revisedHub, `\n${destinationTail}\n`, "utf8");
   await obsidian.renderScholarWorkspace(config, [revised]);
   const revisedText = await readFile(revisedHub, "utf8");
   await obsidian.renderScholarWorkspace(config, [revised]);

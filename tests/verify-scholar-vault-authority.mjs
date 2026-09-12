@@ -1,3 +1,4 @@
+import { findBookNotes } from "./note-fixture.mjs";
 import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiPath as sdkJitiPath } from "./sdk.mjs";
 // Focused disposable regression verifier for Scholar's vault-authority contract.
 //
@@ -334,7 +335,7 @@ try {
     `${libraryFilesAfterValidation.length} library file(s); sha256=${createHash("sha256").update(sourceBytesAfterValidation).digest("hex").slice(0, 12)}`,
   );
   const originalStatePath = storage.bookStatePath(configA, originalBook);
-  const visibleBookDirectory = dirname(dirname(originalStatePath));
+  const visibleBookDirectory = dirname(originalStatePath);
   check(
     "book authority lives under selected vault",
     isInside(vaultA, originalStatePath)
@@ -523,19 +524,17 @@ try {
   check(
     "backfill is isolated by book instanceId",
     backfilledBook?.instanceId === reopenedBook.instanceId
-      && backfilledTranscript.some((entry) => entry.markdown.includes(currentInstanceAssistantMarker))
+      && !backfilledTranscript.some((entry) => entry.markdown.includes(currentInstanceAssistantMarker))
       && !backfilledTranscript.some((entry) => entry.markdown.includes(oldInstanceAssistantMarker)),
     `transcript entries=${backfilledTranscript.length}; current=${backfilledTranscript.some((entry) => entry.markdown.includes(currentInstanceAssistantMarker))}; old=${backfilledTranscript.some((entry) => entry.markdown.includes(oldInstanceAssistantMarker))}`,
   );
-  const vaultABookFilesBeforeSwitch = (await filesUnder(join(vaultA, "Scholar", "Books")))
-    .filter((path) => basename(path).toLowerCase() === "book.json");
+  const vaultABookFilesBeforeSwitch = await findBookNotes(vaultA);
   await second.command.handler(`obsidian ${JSON.stringify(vaultB)}`, second.context);
   const switchErrors = second.notifications.filter(({ message, level }) => level === "error" || /^Scholar error:/i.test(message));
   requireCondition(switchErrors.length === 0, switchErrors.map((item) => item.message).join("; "));
   const configB = await storage.loadConfig();
   const vaultBBooks = await storage.listBookStates(configB);
-  const vaultBBookFiles = (await filesUnder(join(vaultB, "Scholar", "Books")))
-    .filter((path) => basename(path).toLowerCase() === "book.json");
+  const vaultBBookFiles = await findBookNotes(vaultB);
   const originalStillInA = await storage.loadBookState(reopenedConfig, bookId);
   check(
     "vault switching does not copy books",

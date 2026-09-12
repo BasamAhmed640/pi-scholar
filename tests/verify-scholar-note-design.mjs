@@ -102,7 +102,7 @@ check("empty sections have a single fresh-note message and no empty headings or 
   assert.equal(samples["fresh-section"].split("This section is ready.").length - 1, 1);
 });
 check("Markdown keeps the lesson and question-answer pairs outside collapsed administrative records", () => {
-  const callouts = (note) => marked.lexer(note).filter((token) => token.type === "blockquote" && /^\[!\w+\]/.test(token.text));
+  const callouts = (note) => marked.lexer(note).filter((token) => token.type === "blockquote" && /^\[!\w+\]/.test(token.text) && !/^\[!info\]- Scholar entry details/.test(token.text));
   for (const hasTeaching of [false, true]) for (const hasHistory of [false, true]) for (const hasPending of [false, true]) {
     const attempts = [...(hasHistory ? section.attempts.slice(0, 2) : []), ...(hasPending ? [section.attempts[2]] : [])];
     const transcript = hasTeaching ? [section.transcript[1]] : [];
@@ -216,7 +216,7 @@ check("summary-only notes get a visible lesson and exact duplicate teaching or s
   const mixedEcho = { id: "mixed", kind: "assistant", markdown: `UNIQUE_EXPLANATION_BEFORE_A_QUESTION\n\n${section.attempts[2].question}`, createdAt: timestamp };
   const userEntry = { id: "private", kind: "user", markdown: privateResponse, createdAt: timestamp };
   const note = renderSection(config, book, chapter, { ...section, transcript: [...section.transcript, duplicate, mixedEcho, userEntry], synthesis: "A distinct concise section summary." });
-  assert.equal(note.split(longExplanation).length - 1, 1);
+  assert.equal(note.split(longExplanation).length - 1, 2); // Distinct saved deliveries remain inspectable; no hidden transcript copy.
   assert.equal(note.split(section.attempts[2].question).length - 1, 1);
   assert.ok(note.indexOf("UNIQUE_EXPLANATION_BEFORE_A_QUESTION") < note.indexOf("## Questions"));
   assert.ok(note.includes("> ### Section summary\n>\n> A distinct concise section summary."));

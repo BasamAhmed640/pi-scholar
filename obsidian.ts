@@ -488,9 +488,7 @@ export async function migrateBookHub(
 }
 
 /**
- * Regenerate Scholar's readable Obsidian projection. The hidden book JSON in
- * this selected vault remains authoritative;
- * section notes retain everything the learner writes after the generated marker.
+ * Refresh derived navigation and answer-key views. Source notes are never rewritten by projection.
  */
 export async function renderScholarWorkspace(
   config: ScholarConfig,
@@ -533,9 +531,13 @@ export async function renderScholarWorkspace(
   };
   const homeIdentity = { type: "scholar-home" };
   const noteIdentities = new Map<string, NoteIdentity>([[notePathKey(scholarHomePath(config)), homeIdentity]]);
-  const writeNote = (path: string, generated: string) => writeGeneratedNote(
+  const writeNote = (path: string, generated: string) => {
+    const identity = noteIdentities.get(notePathKey(path))!;
+    if (["scholar-book", "scholar-section", "scholar-exam", "scholar-tutor"].includes(identity.type)) return Promise.resolve();
+    return writeGeneratedNote(
     workspaceRoot, path, generated, noteIdentities.get(notePathKey(path))!, reportWarning,
   );
+  };
 
   const seenDirectories = new Map<string, string>();
   const seenArtifactPaths = new Map<string, string>([[notePathKey(scholarHomePath(config)), "scholar-home"]]);

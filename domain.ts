@@ -55,8 +55,8 @@ export function firstIncomplete(book: ScholarBook): ScholarSection | undefined {
 }
 
 export function unansweredQuestion(attempts: AssessmentAttempt[]): AssessmentAttempt | undefined {
-  return attempts.find((attempt) => attempt.outcome === "pending" && (attempt.format === "open" || attempt.quiz))
-    || [...attempts].reverse().find((attempt) => attempt.quiz && (attempt.outcome === "cancelled" || attempt.outcome === "unavailable"));
+  const last = attempts.at(-1);
+  return last?.outcome === "pending" && last.question?.trim() ? last : undefined;
 }
 
 export function unansweredQuestionMessage(attempts: AssessmentAttempt[]): string | undefined {

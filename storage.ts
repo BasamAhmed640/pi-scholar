@@ -1,9 +1,11 @@
-import { mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { noteBookFiles, readNoteBook, writeNoteBook } from "./note-storage.ts";
+import { attachDetails, readDetails } from "./note-records.ts";
+import { bookHomePath } from "./obsidian-paths.ts";
+import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 
-import { migrateLegacyCompletion, migrateLearnAssessmentKinds } from "./domain.ts";
 import {
   SCHOLAR_SCHEMA_VERSION,
   type CatalogEntry,
@@ -18,7 +20,6 @@ import {
   isCatalogEntry,
   isScholarBook,
   isScholarCatalog,
-  scholarBookIssues,
   legacyBootstrapPaths,
   type BootstrapConfig,
 } from "./state-schema.ts";
@@ -33,12 +34,9 @@ export const DEFAULT_SCHOLAR_OBSIDIAN_ROOT = "";
 export const DEFAULT_SCHOLAR_STATE_ROOT = join(homedir(), ".pi", "agent", "scholar");
 
 const CONFIG_FILE = "config.json";
-const CATALOG_FILE = "catalog.json";
+const CATALOG_FILE = "Scholar Settings.md";
 const SCHOLAR_FOLDER = "Scholar";
 const VISIBLE_BOOKS_FOLDER = "Books";
-const VAULT_STATE_FOLDER = ".scholar";
-const BOOK_STATE_FILE = "book.json";
-const BOOK_PREVIOUS_STATE_FILE = "book.prev.json";
 
 function normalizeRoot(value: string, fallback: string): string {
   const trimmed = value.trim();
@@ -91,10 +89,10 @@ function configPath(config: ScholarConfig): string {
   return resolve(config.stateRoot, CONFIG_FILE);
 }
 
-/** Hidden vault-local metadata shared by the books in this selected vault. */
+/** Visible vault-local settings shared by books in the selected vault. */
 export function vaultStateDirectory(config: ScholarConfig): string {
   if (!config.obsidianRoot.trim()) throw new Error("Scholar's Obsidian vault is not configured.");
-  return resolve(config.obsidianRoot, SCHOLAR_FOLDER, VAULT_STATE_FOLDER);
+  return resolve(config.obsidianRoot, SCHOLAR_FOLDER);
 }
 
 export function catalogPath(config: ScholarConfig): string {
@@ -124,7 +122,7 @@ function authorityDirectory(config: ScholarConfig, book: ScholarBook): string {
 
 export function bookStatePath(config: ScholarConfig, book: ScholarBook): string {
   safeBookId(book.id);
-  return resolve(authorityDirectory(config, book), VAULT_STATE_FOLDER, BOOK_STATE_FILE);
+  return bookHomePath(config, book);
 }
 
 async function canonicalizeAllowMissing(inputPath: string): Promise<string> {
@@ -195,71 +193,6 @@ async function atomicWriteUnlocked(
     await rename(temporary, filePath);
   } finally {
     await rm(temporary, { force: true }).catch(() => undefined);
-  }
-}
-
-async function atomicReplaceBookAuthority(
-  filePath: string,
-  content: string,
-  expectedBookId: string,
-  expectedInstanceId: string,
-  expectedRevision: number,
-): Promise<void> {
-  const verifyCurrent = async (): Promise<string> => {
-    let parsed: unknown;
-    let current: string;
-    try {
-      current = await readFile(filePath, "utf8");
-      parsed = JSON.parse(current) as unknown;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        throw new Error(`Scholar book authority was deleted while saving: ${filePath}`);
-      }
-      throw error;
-    }
-    if (!isScholarBook(parsed) || parsed.id !== expectedBookId || parsed.instanceId !== expectedInstanceId) {
-      throw new Error(`Scholar book authority changed while saving: ${filePath}`);
-    }
-    if (parsed.revision !== expectedRevision) {
-      throw new ScholarRevisionConflictError(
-        expectedBookId,
-        expectedRevision,
-        parsed.revision,
-        filePath,
-      );
-    }
-    return current;
-  };
-
-  const previous = await verifyCurrent();
-  const temporary = resolve(
-    dirname(filePath),
-    `.${basename(filePath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
-  );
-  const previousPath = resolve(dirname(filePath), BOOK_PREVIOUS_STATE_FILE);
-  // Reject an existing symlink/junction that would send the backup outside
-  // this authority directory, just as the primary path is confined by its caller.
-  await safePathWithinRoot(dirname(filePath), previousPath);
-  const previousTemporary = `${temporary}.prev`;
-  try {
-    await writeFile(temporary, content, { encoding: "utf8", flag: "wx" });
-    // Copy the verified bytes; never move the live authority away. A failed
-    // copy leaves both the primary and the last successful backup intact.
-    await writeFile(previousTemporary, previous, { encoding: "utf8", flag: "wx" });
-    // Re-check immediately before replacement. Deleting the manifest or
-    // recreating the same PDF as a fresh instance can never be overwritten by
-    // an older in-flight save.
-    const current = await verifyCurrent();
-    if (current !== previous) {
-      throw new Error(`Scholar book authority changed while saving: ${filePath}`);
-    }
-    // Publish one previous generation only after the final CAS checks. Discovery
-    // reads exactly book.json; this backup is never a recovery authority.
-    await rename(previousTemporary, previousPath);
-    await rename(temporary, filePath);
-  } finally {
-    await rm(temporary, { force: true }).catch(() => undefined);
-    await rm(previousTemporary, { force: true }).catch(() => undefined);
   }
 }
 
@@ -346,7 +279,8 @@ export async function writeBinaryFileOnce(
 }
 
 async function readJson(filePath: string): Promise<unknown> {
-  return JSON.parse(await readFile(filePath, "utf8")) as unknown;
+  const text = await readFile(filePath, "utf8");
+  return filePath.endsWith(".md") ? readDetails(text, "settings") : JSON.parse(text);
 }
 
 async function ensureVaultMetadata(config: ScholarConfig): Promise<void> {
@@ -449,8 +383,8 @@ export async function loadCatalog(config: ScholarConfig): Promise<ScholarCatalog
   if (!normalized.obsidianRoot) return { schemaVersion: SCHOLAR_SCHEMA_VERSION, entries: [] };
   const filePath = await safePathWithinRoot(normalized.obsidianRoot, catalogPath(normalized));
   try {
-    const parsed = await readJson(filePath);
-    if (!isScholarCatalog(parsed)) throw new Error("Scholar catalog.json does not match schema v3.");
+    const parsed = await readCatalogRecord(normalized, filePath);
+    if (!isScholarCatalog(parsed)) throw new Error("Scholar Settings.md does not contain valid catalog settings.");
     return parsed;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -471,8 +405,8 @@ export async function updateCatalog(
   return withFileMutationQueue(filePath, async () => {
     let catalog: ScholarCatalog;
     try {
-      const parsed = await readJson(filePath);
-      if (!isScholarCatalog(parsed)) throw new Error("Scholar catalog.json does not match schema v3.");
+      const parsed = await readCatalogRecord(normalized, filePath);
+      if (!isScholarCatalog(parsed)) throw new Error("Scholar Settings.md does not contain valid catalog settings.");
       catalog = parsed;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -491,52 +425,16 @@ export async function updateCatalog(
 
     if (!isScholarCatalog(catalog)) throw new Error("Scholar catalog update produced invalid schema v3 data.");
     catalog.entries.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
-    await atomicWriteUnlocked(filePath, `${JSON.stringify(catalog, null, 2)}\n`);
+    await atomicWriteUnlocked(filePath, catalogDocument(catalog));
     return catalog;
   });
 }
 
-async function authorityStateFiles(config: ScholarConfig): Promise<string[]> {
-  if (!config.obsidianRoot) return [];
-  const booksRoot = await safePathWithinRoot(config.obsidianRoot, bookStatesDirectory(config));
-  let entries;
-  try {
-    entries = await readdir(booksRoot, { withFileTypes: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw error;
-  }
-  const files: string[] = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory() || entry.name.toLowerCase() === VAULT_STATE_FOLDER.toLowerCase()) continue;
-    const candidate = await safePathWithinRoot(
-      config.obsidianRoot,
-      resolve(booksRoot, entry.name, VAULT_STATE_FOLDER, BOOK_STATE_FILE),
-    );
-    const exists = await stat(candidate).then((info) => info.isFile(), (error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return false;
-      throw error;
-    });
-    if (exists) files.push(candidate);
-  }
-  return files.sort((a, b) => a.localeCompare(b));
-}
-
+const authorityStateFiles = noteBookFiles;
 async function readBookAuthority(config: ScholarConfig, filePath: string): Promise<ScholarBook> {
-  const parsed = await readJson(filePath);
-  if (!isScholarBook(parsed)) throw new Error(`Scholar book authority does not match schema v3: ${filePath}`);
-  const expected = await safePathWithinRoot(config.obsidianRoot, bookStatePath(config, parsed));
-  const actual = await safePathWithinRoot(config.obsidianRoot, filePath);
-  const samePath = process.platform === "win32" ? expected.toLowerCase() === actual.toLowerCase() : expected === actual;
-  if (!samePath) throw new Error(`Scholar book authority is stored in the wrong book directory: ${filePath}`);
-  if (config.libraryRoot) {
-    const sourceFromRelativePath = resolve(config.libraryRoot, ...parsed.source.relativePath.split(/[\\/]+/));
-    parsed.source.absolutePath = await safePathWithinRoot(config.libraryRoot, sourceFromRelativePath);
-  }
-  // Applied at the one place a stored book is parsed, so every in-memory book
-  // is already migrated. It is pure; the flag persists on the next ordinary
-  // write rather than forcing a write during a read.
-  return migrateLearnAssessmentKinds(migrateLegacyCompletion(parsed));
+  const book = await readNoteBook(config, filePath);
+  if (config.libraryRoot) book.source.absolutePath = await safePathWithinRoot(config.libraryRoot, resolve(config.libraryRoot, ...book.source.relativePath.split(/[\\/]+/)));
+  return book;
 }
 
 /** Reload an expected book only if the same vault-local import still exists. */
@@ -551,7 +449,10 @@ export async function loadMatchingBookAuthority(
   try {
     current = await readBookAuthority(normalized, filePath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      const renamed = await loadBookState(normalized, expected.id);
+      return renamed?.instanceId === expected.instanceId ? renamed : undefined;
+    }
     throw error;
   }
   return current?.id === expected.id && current.instanceId === expected.instanceId ? current : undefined;
@@ -562,6 +463,7 @@ export async function loadBookState(config: ScholarConfig, bookId: string): Prom
   const normalized = resolveScholarConfig(config);
   let match: ScholarBook | undefined;
   for (const filePath of await authorityStateFiles(normalized)) {
+    if (readDetails(await readFile(filePath, "utf8"), "book")?.id !== bookId) continue;
     const book = await readBookAuthority(normalized, filePath);
     if (book.id !== bookId) continue;
     if (match) throw new Error(`Scholar found duplicate authority for book ${bookId} in the selected Obsidian vault.`);
@@ -570,57 +472,14 @@ export async function loadBookState(config: ScholarConfig, bookId: string): Prom
   return match;
 }
 
-function serializedBook(book: ScholarBook): string {
-  return `${JSON.stringify(book, (key, value) =>
-    (key === "snapshots" || key === "images") && Array.isArray(value) && value.length === 0 ? undefined : value, 2)}\n`;
-}
-
-/** The only operation allowed to create a new authoritative book directory. */
+/** All learning records are saved in ordinary visible Markdown notes. */
 export async function createBookState(config: ScholarConfig, book: ScholarBook): Promise<ScholarBook> {
-  if (!isScholarBook(book)) throw new Error(`Refusing to create invalid Scholar book state: ${scholarBookIssues(book).join("; ")}`);
   const normalized = await initializeScholarStorage(config);
-  if (!normalized.obsidianRoot) throw new Error("Scholar's Obsidian vault is not configured.");
-  const directory = await safePathWithinRoot(normalized.obsidianRoot, authorityDirectory(normalized, book));
-  const filePath = await safePathWithinRoot(normalized.obsidianRoot, bookStatePath(normalized, book));
-  await withFileMutationQueue(filePath, async () => {
-    const manifestExists = await stat(filePath).then((info) => info.isFile(), (error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return false;
-      throw error;
-    });
-    if (manifestExists) throw new Error(`Scholar book already exists in this Obsidian vault: ${book.metadata.title}`);
-    // A user may delete only the hidden authority while leaving readable notes
-    // or generated assets behind. Re-importing deliberately reclaims that same
-    // book folder as a blank state instead of creating duplicate directories.
-    await mkdir(resolve(directory, VAULT_STATE_FOLDER), { recursive: true });
-    // Exclusive creation means two simultaneous imports cannot replace one
-    // another even before either caller sees the catalog update.
-    await writeFile(filePath, serializedBook(book), { encoding: "utf8", flag: "wx" });
-  });
-  return book;
+  return writeNoteBook(normalized, book);
 }
-
-/** Replace an existing authority only when its identity and revision still match the caller's snapshot. */
-export async function saveBookState(
-  config: ScholarConfig,
-  book: ScholarBook,
-  expectedRevision: number,
-): Promise<ScholarBook> {
-  if (!isScholarBook(book)) throw new Error(`Refusing to save invalid Scholar book state: ${scholarBookIssues(book).join("; ")}`);
-  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
-    throw new Error("Scholar save requires a non-negative expected book revision.");
-  }
-  const normalized = await initializeScholarStorage(config);
-  if (!normalized.obsidianRoot) throw new Error("Scholar's Obsidian vault is not configured.");
-  const filePath = await safePathWithinRoot(normalized.obsidianRoot, bookStatePath(normalized, book));
-  await withFileMutationQueue(filePath, () =>
-    atomicReplaceBookAuthority(
-      filePath,
-      serializedBook(book),
-      book.id,
-      book.instanceId,
-      expectedRevision,
-    ));
-  return book;
+export async function saveBookState(config: ScholarConfig, book: ScholarBook, expectedRevision: number): Promise<ScholarBook> {
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new Error("Scholar save requires a non-negative expected book revision.");
+  return writeNoteBook(await initializeScholarStorage(config), book, expectedRevision);
 }
 
 export async function listBookStates(config: ScholarConfig): Promise<ScholarBook[]> {
@@ -634,4 +493,22 @@ export async function listBookStates(config: ScholarConfig): Promise<ScholarBook
     books.push(book);
   }
   return books.sort((a, b) => a.metadata.title.localeCompare(b.metadata.title));
+}
+
+function catalogDocument(catalog: ScholarCatalog): string {
+  return attachDetails("# Scholar settings\n\n<!-- scholar:generated:start -->\nThis visible note remembers this vault's PDF library and selected book.\n<!-- scholar:generated:end -->\n", "settings", catalog);
+}
+async function readCatalogRecord(config: ScholarConfig, path: string): Promise<unknown> {
+  try { return await readJson(path); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const legacy = await safePathWithinRoot(config.obsidianRoot, resolve(config.obsidianRoot, "Scholar", ".scholar", "catalog.json"));
+    let catalog;
+    try { catalog = JSON.parse(await readFile(legacy, "utf8")); } catch (oldError) { if ((oldError as NodeJS.ErrnoException).code === "ENOENT") throw error; throw oldError; }
+    if (!isScholarCatalog(catalog)) throw new Error("Invalid legacy Scholar catalog.");
+    await atomicWriteUnlocked(path, catalogDocument(catalog));
+    await rm(legacy);
+    const { rmdir } = await import("node:fs/promises");
+    await rmdir(dirname(legacy)).catch((e: NodeJS.ErrnoException) => { if (e.code !== "ENOTEMPTY" && e.code !== "ENOENT") throw e; });
+    return catalog;
+  }
 }

@@ -60,9 +60,8 @@ There is deliberately one definition of each engine:
 
 `modes.ts` defines capabilities, `types.ts` defines shared contracts, and
 `state-schema.ts` validates persisted records. Durable-history checks and
-revision checks protect committed work. `transcript-recovery.ts` reconciles
-missed assistant events when a study target is explicitly reopened and after
-active study turns; users do not need sync/backfill commands. Pi startup leaves
+revision checks protect committed work. `note-storage.ts` reloads the visible records before each operation.
+Conversation history cannot restore deleted note content. Pi startup leaves
 Scholar closed. Its inactive hooks do not access the vault or replace the editor.
 An inactive Pi-session marker closes any old study transcript segment on resume.
 
@@ -74,7 +73,8 @@ Both paths start blank and must be explicitly configured.
 | --- | --- |
 | User-selected PDF library | Original PDF files; not a progress database |
 | User-selected Obsidian vault | All durable Scholar book state, lessons, exams, tutoring records, notes and captured figures |
-| `<vault>/Scholar/Books/<book>/.scholar/book.json` | Authoritative structured book state; the adjacent previous revision is recovery-only |
+| Book, section, Tutor and Exam Markdown notes | Authoritative study records with inspectable same-note details |
+| `Scholar/Scholar Settings.md` | Visible vault settings and source catalog |
 | Local Scholar configuration | Pointer to the chosen vault, not a second book database |
 | Pi process memory | Temporary active mode, input locks and pending work |
 

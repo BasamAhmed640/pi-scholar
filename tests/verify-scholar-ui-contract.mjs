@@ -1,3 +1,4 @@
+import { findBookNotes, readFixtureBook, writeFixtureBook } from "./note-fixture.mjs";
 import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiPath as sdkJitiPath, resolvePiDependency } from "./sdk.mjs";
 // Disposable regression probe for Scholar's compact read row and inactive status.
 // It loads the real TypeScript extension through Pi's production loader and keeps
@@ -201,7 +202,7 @@ try {
   const bookDirectories = (await readdir(join(obsidian, "Scholar", "Books"), { withFileTypes: true }))
     .filter((entry) => entry.isDirectory());
   if (bookDirectories.length !== 1) throw new Error(`Expected one Scholar book directory, found ${bookDirectories.length}.`);
-  const bookStatePath = join(obsidian, "Scholar", "Books", bookDirectories[0].name, ".scholar", "book.json");
+  const bookStatePath = (await findBookNotes(obsidian))[0];
   const reviewResult = await definition.execute(
     "outline-review-ui-contract",
     {
@@ -216,7 +217,7 @@ try {
     undefined,
     context,
   );
-  const reviewedBook = JSON.parse(await readFile(bookStatePath, "utf8"));
+  const reviewedBook = (await readFixtureBook(bookStatePath));
   check(
     "outline corrections are aggregated without false errors",
     reviewResult.details?.tone === "review"
@@ -287,7 +288,7 @@ try {
     undefined,
     context,
   );
-  const bookState = JSON.parse(await readFile(bookStatePath, "utf8"));
+  const bookState = (await readFixtureBook(bookStatePath));
   check(
     "deterministic outline validation is automatic",
     outlineResult.details?.validationReport?.status === "ready"
@@ -377,7 +378,7 @@ try {
     JSON.stringify(notesText),
   );
 
-  const beforeBlockedQuiz = JSON.parse(await readFile(bookStatePath, "utf8"));
+  const beforeBlockedQuiz = (await readFixtureBook(bookStatePath));
   const ungroundedQuiz = await runToolCallPreflight(extension, {
     toolName: "scholar_quiz",
     toolCallId: "quiz-ungrounded-ui-contract",
@@ -388,7 +389,7 @@ try {
       explanation: "A is right.",
     },
   }, context);
-  const afterBlockedQuiz = JSON.parse(await readFile(bookStatePath, "utf8"));
+  const afterBlockedQuiz = (await readFixtureBook(bookStatePath));
   check(
     "ungrounded multiple choice is blocked before persistence or presentation",
     ungroundedQuiz?.block === true
@@ -418,7 +419,7 @@ try {
       explanation: "The invariant survives the changed layout.",
     },
   }, context);
-  const afterOutOfScopeQuiz = JSON.parse(await readFile(bookStatePath, "utf8"));
+  const afterOutOfScopeQuiz = (await readFixtureBook(bookStatePath));
   check(
     "out-of-scope grounding is blocked without an orphan pending attempt",
     outOfScopeQuiz?.block === true
@@ -453,7 +454,7 @@ try {
     toolCallId: "quiz-demanding-transfer-ui-contract",
     input: demandingQuizInput,
   }, context);
-  const afterDemandingQuiz = JSON.parse(await readFile(bookStatePath, "utf8"));
+  const afterDemandingQuiz = (await readFixtureBook(bookStatePath));
   const demandingAttempt = afterDemandingQuiz.chapters[0].sections[0].attempts.at(-1);
   check(
     "a demanding grounded transfer question passes without being simplified",
@@ -539,7 +540,7 @@ try {
       && pendingSectionMarkdown.includes("### Question 1")
       && pendingSectionMarkdown.includes(`1. ${demandingQuizInput.options[0].label}`)
       && pendingSectionMarkdown.slice(pendingQuestionIndex).includes("*Awaiting response*")
-      && !/^> \[!\w+\]/m.test(pendingSectionMarkdown.slice(pendingQuestionIndex))
+      && /^> \[!info\]- Scholar question details/m.test(pendingSectionMarkdown.slice(pendingQuestionIndex))
       && pendingSectionMarkdown.split("Why should a compact source read avoid a padded card?").length - 1 === 1
       && pendingSectionMarkdown.includes("This teaching note deliberately separates"),
     `questions=${pendingQuestionIndex}; objectives=${pendingObjectivesIndex}; teaching=${pendingTeachingIndex}; answers=${pendingAnswersIndex}`,
@@ -565,7 +566,7 @@ try {
     undefined,
     context,
   );
-  const afterDuplicateOpen = JSON.parse(await readFile(bookStatePath, "utf8"));
+  const afterDuplicateOpen = (await readFixtureBook(bookStatePath));
   check(
     "a second open question cannot displace a pending approved question",
     duplicateOpen.content?.[0]?.text?.startsWith("Scholar retry:")
@@ -601,7 +602,7 @@ try {
     undefined,
     context,
   );
-  const afterTamper = JSON.parse(await readFile(bookStatePath, "utf8"));
+  const afterTamper = (await readFixtureBook(bookStatePath));
   check(
     "an approved open question is immutable during resolution",
     tamperedResolution.content?.[0]?.text?.startsWith("Scholar retry:")
@@ -629,7 +630,7 @@ try {
     JSON.stringify(assessmentText),
   );
 
-  const beforeProjection = JSON.parse(await readFile(bookStatePath, "utf8"));
+  const beforeProjection = (await readFixtureBook(bookStatePath));
   const projectedTranscriptIds = beforeProjection.chapters[0].sections[0].transcript.map((entry) => entry.id);
   const privateAnswerSummary = "PRIVATE_LEARNER_ANSWER_MUST_STAY_IN_JSON";
   beforeProjection.chapters[0].sections[0].attempts[1].answerSummary = privateAnswerSummary;
@@ -639,7 +640,7 @@ try {
     markdown: "**Outcome:** Needs review. This legacy result has no trustworthy question pairing.",
     createdAt: new Date().toISOString(),
   });
-  await writeFile(bookStatePath, `${JSON.stringify(beforeProjection, null, 2)}\n`, "utf8");
+  await writeFixtureBook(bookStatePath, beforeProjection);
   const projectionRefresh = await definition.execute(
     "learn-notes-projection-ui-contract",
     {
@@ -657,9 +658,9 @@ try {
     context,
   );
   const completedSectionMarkdown = await readFile(sectionNotePath, "utf8");
-  const completedAnswersIndex = completedSectionMarkdown.indexOf("> [!success] Correct");
+  const completedAnswersIndex = completedSectionMarkdown.lastIndexOf("#### Feedback");
   const completedEndIndex = completedSectionMarkdown.indexOf("<!-- scholar:generated:end -->");
-  const afterProjection = JSON.parse(await readFile(bookStatePath, "utf8"));
+  const afterProjection = (await readFixtureBook(bookStatePath));
   check(
     "completed questions have visible paired feedback at the generated note bottom",
     projectionRefresh.details?.action === "notes"
@@ -668,13 +669,13 @@ try {
       && completedAnswersIndex > completedSectionMarkdown.indexOf("### Question 2")
       && completedSectionMarkdown.indexOf("## Questions") > completedSectionMarkdown.indexOf("## Lesson")
       && completedAnswersIndex < completedEndIndex
-      && !/^> \[!\w+\][-+]/m.test(completedSectionMarkdown.slice(completedSectionMarkdown.indexOf("## Questions"), completedEndIndex))
+      && /> \[!info\]- Scholar question details/.test(completedSectionMarkdown.slice(completedSectionMarkdown.indexOf("## Questions"), completedEndIndex))
       && !completedSectionMarkdown.includes("*Awaiting response*")
       && completedSectionMarkdown.split("The response correctly connects compact presentation").length - 1 === 1
       && completedSectionMarkdown.split("Why should a compact source read avoid a padded card?").length - 1 === 1
       && !completedSectionMarkdown.includes("This legacy result has no trustworthy question pairing")
-      && !completedSectionMarkdown.includes(privateAnswerSummary)
-      && JSON.stringify(afterProjection.chapters[0].sections[0].transcript.map((entry) => entry.id).slice(0, -1)) === JSON.stringify(projectedTranscriptIds),
+      && completedSectionMarkdown.includes(privateAnswerSummary)
+      && JSON.stringify(afterProjection.chapters[0].sections[0].transcript.map((entry) => entry.id)) === JSON.stringify(projectedTranscriptIds),
     `answers=${completedAnswersIndex}; end=${completedEndIndex}; transcript=${afterProjection.chapters[0].sections[0].transcript.length}`,
   );
 
@@ -710,7 +711,7 @@ try {
     undefined,
     context,
   );
-  const afterTutorLeak = JSON.parse(await readFile(bookStatePath, "utf8"));
+  const afterTutorLeak = (await readFixtureBook(bookStatePath));
   check(
     "Tutor cannot borrow Learn teaching receipts",
     tutorLeakAttempt.content?.[0]?.text?.startsWith("Scholar retry:")
@@ -755,7 +756,7 @@ try {
     undefined,
     context,
   );
-  const afterTutor = JSON.parse(await readFile(bookStatePath, "utf8"));
+  const afterTutor = (await readFixtureBook(bookStatePath));
   const tutor = afterTutor.tutorSessions.at(-1);
   const learnedSectionAfterTutor = afterTutor.chapters[0].sections[0];
   check(
@@ -827,7 +828,7 @@ try {
     examBuildResult.details?.summary || JSON.stringify(examBuildText),
   );
 
-  const frozenBook = JSON.parse(await readFile(bookStatePath, "utf8"));
+  const frozenBook = (await readFixtureBook(bookStatePath));
   const examDirectory = join(obsidian, "Scholar", "Books", frozenBook.noteDirectory, "Exams");
   const paperPath = join(examDirectory, (await readdir(examDirectory)).find((name) => name.endsWith(" - Answers.md")));
   const originalPaper = await readFile(paperPath, "utf8");
@@ -868,7 +869,7 @@ try {
     undefined,
     context,
   );
-  const afterExam = JSON.parse(await readFile(bookStatePath, "utf8"));
+  const afterExam = (await readFixtureBook(bookStatePath));
   const exam = afterExam.exams.at(-1);
   const groundingInState = afterExam.chapters[0].sections[0].attempts.map((attempt) => Boolean(attempt.grounding));
   const exactQuestion = "Why should a compact source read avoid a padded card?";
@@ -891,16 +892,16 @@ try {
       && exam.percent === 100
       && groundingInState.length === 2
       && groundingInState.every(Boolean)
-      && storedQuestionEntries === 2
+      && storedQuestionEntries === 0
       && visibleQuestionEntries === 1
       && visibleMarkdown.includes("## Questions")
-      && visibleMarkdown.includes("> [!success] Correct")
+      && visibleMarkdown.includes("#### Feedback")
       && !visibleMarkdown.includes("> [!question]- Assessment record")
       && !visibleMarkdown.includes("## Attempts")
       && !visibleMarkdown.includes("**Grounding:**")
       && !visibleMarkdown.includes("**Basis:**")
       && !visibleMarkdown.includes("**Expected evidence:**")
-      && !visibleMarkdown.includes(privateExamResponse),
+      && visibleMarkdown.includes(privateExamResponse),
     `status=${exam?.status}; score=${exam?.earnedPoints}/${exam?.maxPoints}; breakdown=${exam?.breakdown?.length}; stateGrounding=${groundingInState.join(",")}; storedQuestionEntries=${storedQuestionEntries}; visibleQuestionEntries=${visibleQuestionEntries}; markdownLength=${visibleMarkdown.length}; attempts=${visibleMarkdown.includes("## Attempts")}; grounding=${visibleMarkdown.includes("**Grounding:**")}; evidence=${visibleMarkdown.includes("**Expected evidence:**")}; visibleRawResponse=${visibleMarkdown.includes(privateExamResponse)}`,
   );
 

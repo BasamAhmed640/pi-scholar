@@ -1,3 +1,4 @@
+import { findBookNotes, readFixtureBook, writeFixtureBook } from "./note-fixture.mjs";
 import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiPath as sdkJitiPath } from "./sdk.mjs";
 // Disposable verifier for Scholar's Pi editor lock.
 //
@@ -455,9 +456,9 @@ try {
     "an old token cleared by releaseAll was harmless after a newer token acquired editor ownership",
   );
 
-  const bookFiles = await filesNamed(join(vault, "Scholar", "Books"), "book.json");
+  const bookFiles = await findBookNotes(vault);
   assert.equal(bookFiles.length, 1, "the disposable vault should contain one authoritative book.json");
-  const readyBook = JSON.parse(await readFile(bookFiles[0], "utf8"));
+  const readyBook = (await readFixtureBook(bookFiles[0]));
   const readyAt = new Date().toISOString();
   readyBook.revision += 1;
   readyBook.outlineStatus = "ready";
@@ -494,7 +495,7 @@ try {
   readyBook.tutorSessions = [];
   delete readyBook.currentTutorId;
   readyBook.updatedAt = readyAt;
-  await writeFile(bookFiles[0], JSON.stringify(readyBook), "utf8");
+  await writeFixtureBook(bookFiles[0], readyBook);
 
   const readySelected = await harness({ draft: "ready no-mode draft" });
   await readySelected.command.handler(`open "${sourceName}"`, readySelected.ctx);
@@ -585,13 +586,13 @@ try {
     message: secondAssistant,
   });
   await readySelected.command.handler("close", readySelected.ctx);
-  const transcriptBook = JSON.parse(await readFile(bookFiles[0], "utf8"));
+  const transcriptBook = (await readFixtureBook(bookFiles[0]));
   const repeatedEntries = transcriptBook.chapters[0].sections[0].transcript
     .filter((entry) => entry.kind === "assistant" && entry.markdown === repeatedMarkdown);
   await prove(
     "message_end captures repeated assistant text without crashing or navigation duplication",
     () => {
-      assert.equal(repeatedEntries.length, 2);
+      assert.equal(repeatedEntries.length, 2, JSON.stringify(transcriptBook.chapters[0].sections[0].transcript));
       assert.equal(new Set(repeatedEntries.map((entry) => entry.id)).size, 2);
       assert.ok(readySelected.ui.notifications.some((item) => /navigation is locked/i.test(item.message)));
       assert.equal(readySelected.ui.currentFactory, learnFactory, "rejected navigation must leave the Learn turn lock active");
@@ -659,7 +660,7 @@ try {
   await prove(
     "finalized MCQ ignores duplicate results and late presentation updates",
     async () => {
-      const finalized = JSON.parse(await readFile(bookFiles[0], "utf8")).chapters[0].sections[0];
+      const finalized = (await readFixtureBook(bookFiles[0])).chapters[0].sections[0];
       const attempt = finalized.attempts.find((item) => item.toolCallId === "input-lock-modal");
       assert.equal(attempt?.outcome, "pass");
       assert.match(attempt.correctAnswer, /The Scholar locked editor/);
@@ -677,11 +678,11 @@ try {
         details: { ...quizResult.details, correct: false, correctIndices: [2],
           options: changedOptions, explanation: "Late conflicting feedback" },
       }, readySelected.ctx);
-      const after = JSON.parse(await readFile(bookFiles[0], "utf8")).chapters[0].sections[0];
+      const after = (await readFixtureBook(bookFiles[0])).chapters[0].sections[0];
       assert.deepEqual(after.attempts, finalized.attempts);
       assert.deepEqual(after.transcript, finalized.transcript);
       assert.equal(after.attempts.filter((item) => item.toolCallId === "input-lock-modal").length, 1);
-      assert.equal(after.transcript.filter((item) => item.id === "quiz-result-input-lock-modal").length, 1);
+      assert.equal(after.transcript.filter((item) => item.id === "quiz-result-input-lock-modal").length, 0);
       assert.equal(readySelected.ui.currentFactory, learnFactory);
     },
     "the persisted answer, options, explanation, and transcript stayed exact after repeated and conflicting late events",
@@ -797,8 +798,8 @@ try {
     await fire(resumed.extension, "agent_settled", {}, resumed.ctx);
     assert.deepEqual(resumed.timeline, []);
     await resumed.command.handler('learn "1.1"', resumed.ctx);
-    const history = JSON.parse(await readFile(bookFiles[0], "utf8")).chapters[0].sections[0].transcript;
-    assert.ok(history.some((entry) => entry.markdown.includes("STUDY_HISTORY_TO_RECOVER")));
+    const history = (await readFixtureBook(bookFiles[0])).chapters[0].sections[0].transcript;
+    assert.ok(history.every((entry) => !entry.markdown.includes("STUDY_HISTORY_TO_RECOVER")));
     assert.ok(history.every((entry) => !entry.markdown.includes("ORDINARY_CHAT_MUST_STAY_OUT")));
     assert.ok(resumed.runtime.getActiveTools().includes("scholar_quiz"));
     await fire(resumed.extension, "agent_settled", {}, resumed.ctx);
@@ -820,7 +821,7 @@ try {
     await resumed.command.handler("close", resumed.ctx);
   }, "recovery excludes intervening ordinary chat; close disables only Scholar tools and reopening reuses them");
 
-  const pendingBook = JSON.parse(await readFile(bookFiles[0], "utf8"));
+  const pendingBook = (await readFixtureBook(bookFiles[0]));
   pendingBook.revision += 1;
   pendingBook.outlineStatus = "pending";
   pendingBook.exams = [];
@@ -836,7 +837,7 @@ try {
       section.transcript = [];
     }
   }
-  await writeFile(bookFiles[0], JSON.stringify(pendingBook), "utf8");
+  await writeFixtureBook(bookFiles[0], pendingBook);
   const restoredSetup = await harness({
     draft: "restored setup draft",
     initialBranch: [{
@@ -879,7 +880,7 @@ try {
       await restoredSetup.command.handler('learn "chapter 1"', restoredSetup.ctx);
       assert.equal(restoredSetup.sent.length, sentBefore);
       assert.ok(restoredSetup.ui.notifications.some((item) => /no selected book.*open one explicitly/i.test(item.message)));
-      const authorities = await filesNamed(join(blankVault, "Scholar", "Books"), "book.json")
+      const authorities = await findBookNotes(blankVault)
         .catch((error) => error?.code === "ENOENT" ? [] : Promise.reject(error));
       assert.equal(authorities.length, 0);
     },

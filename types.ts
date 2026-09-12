@@ -67,7 +67,7 @@ export type AssessmentAttempt = {
   toolCallId?: string;
   /** Additional deliveries of the same unanswered question, never new attempts. */
   resumeToolCallIds?: string[];
-  /** Frozen private form, including the original display order and grading key. */
+  /** Frozen same-note form, including the original display order and grading key. */
   quiz?: import("./quiz-contract.ts").FrozenScholarQuiz;
   kind: AssessmentKind;
   format: "open" | "multiple-choice";
@@ -234,7 +234,7 @@ export type ExamQuestion = {
   maxPoints: number;
 };
 
-/** Raw learner input is private state and is never part of the Obsidian projection. */
+/** Submitted learner input retained in the visible exam record; later paper edits cannot change it. */
 export type ExamRawResponse = {
   questionId: string;
   response: string | string[];

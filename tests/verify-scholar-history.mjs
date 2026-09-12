@@ -71,7 +71,7 @@ try {
   });
   let saved = await storage.loadBookState(config, initial.id);
   for (const record of [sectionOf(saved), saved.tutorSessions[0]]) {
-    assert.equal(record.transcript.length, 242);
+    assert.equal(record.transcript.length, 2); // Question/result text exists once in its question block.
     assert.equal(record.attempts.length, 120);
   }
   passed('all 242 events and 120 attempts per mode survive real vault commit');
@@ -85,7 +85,7 @@ try {
     assert.ok(note.includes(`${label} question 0:`));
     assert.ok(note.includes(`${label} question 119:`));
     assert.ok(note.includes('Reason 0:'));
-    assert.ok(!note.includes('PRIVATE_ANSWER_DO_NOT_PROJECT'));
+    assert.ok(note.includes('PRIVATE_ANSWER_DO_NOT_PROJECT')); // Answers now belong to the visible record.
     assert.ok(!note.includes(`${label === 'Learn' ? 'Tutor' : 'Learn'} durable first explanation`));
   }
   passed('oldest and newest teaching, questions and feedback project without raw answers or cross-mode history');
