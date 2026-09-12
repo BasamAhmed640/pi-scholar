@@ -65,6 +65,10 @@ export type BookMetadata = {
 export type AssessmentAttempt = {
   id: string;
   toolCallId?: string;
+  /** Additional deliveries of the same unanswered question, never new attempts. */
+  resumeToolCallIds?: string[];
+  /** Frozen private form, including the original display order and grading key. */
+  quiz?: import("./quiz-contract.ts").FrozenScholarQuiz;
   kind: AssessmentKind;
   format: "open" | "multiple-choice";
   question: string;

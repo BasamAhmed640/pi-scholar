@@ -13,6 +13,32 @@ export const SCHOLAR_QUIZ_TOOL_NAME = "scholar_quiz" as const;
 export type ScholarQuizMode = "single-select" | "multi-select";
 export type ScholarQuizStatus = "answered" | "cancelled" | "unavailable";
 
+/** Private vault state. Never include this answer key in a pre-answer tool update or note. */
+export interface FrozenScholarQuiz {
+  question: string;
+  context?: string;
+  mode: ScholarQuizMode;
+  options: ScholarQuizOption[];
+  correctValues: string[];
+  explanation: string;
+}
+
+export function isFrozenScholarQuiz(value: unknown): value is FrozenScholarQuiz {
+  if (!isRecord(value) || Object.keys(value).some((key) => !["question", "context", "mode", "options", "correctValues", "explanation"].includes(key))) return false;
+  if (typeof value.question !== "string" || !value.question.trim() || typeof value.explanation !== "string" || !value.explanation.trim()
+    || (value.context !== undefined && typeof value.context !== "string") || !["single-select", "multi-select"].includes(value.mode as string)
+    || !Array.isArray(value.options) || value.options.length < 2 || !Array.isArray(value.correctValues) || !value.correctValues.length) return false;
+  if (!value.options.every((option) => isRecord(option) && Object.keys(option).every((key) => ["label", "value", "description"].includes(key))
+    && typeof option.label === "string" && option.label.trim() && typeof option.value === "string" && option.value.trim()
+    && (option.description === undefined || typeof option.description === "string"))) return false;
+  const values = value.options.map((option) => option.value);
+  return new Set(values).size === values.length
+    && new Set(value.options.map((option) => option.label.toLowerCase())).size === values.length
+    && new Set(value.correctValues).size === value.correctValues.length
+    && value.correctValues.every((key) => typeof key === "string" && values.includes(key))
+    && (value.mode === "multi-select" ? value.correctValues.length >= 2 : value.correctValues.length === 1);
+}
+
 export interface ScholarQuizOption {
   label: string;
   value: string;
@@ -72,6 +98,7 @@ export interface ObservedScholarQuizDetails {
 
 /** Fields used by Scholar when observing a quiz tool call. */
 export interface ObservedScholarQuizInput {
+  resumeAttemptId?: string;
   kind?: AssessmentKind;
   question?: string;
   details?: string;
@@ -127,6 +154,7 @@ export function parseScholarQuizInput(value: unknown): ObservedScholarQuizInput 
   // silently drops grounding, and the gate reports it as simply missing.
   const grounding = normalizeQuestionGrounding(value.grounding);
   return {
+    ...(typeof value.resumeAttemptId === "string" ? { resumeAttemptId: value.resumeAttemptId } : {}),
     ...(["conceptual", "application", "computation", "discrimination"].includes(value.kind as string)
       ? { kind: value.kind as AssessmentKind } : {}),
     ...(typeof value.question === "string" ? { question: value.question } : {}),

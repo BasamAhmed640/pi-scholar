@@ -54,6 +54,19 @@ export function firstIncomplete(book: ScholarBook): ScholarSection | undefined {
   return allSections(book).find((section) => section.status !== "complete");
 }
 
+export function unansweredQuestion(attempts: AssessmentAttempt[]): AssessmentAttempt | undefined {
+  return attempts.find((attempt) => attempt.outcome === "pending" && (attempt.format === "open" || attempt.quiz))
+    || [...attempts].reverse().find((attempt) => attempt.quiz && (attempt.outcome === "cancelled" || attempt.outcome === "unavailable"));
+}
+
+export function unansweredQuestionMessage(attempts: AssessmentAttempt[]): string | undefined {
+  const pending = unansweredQuestion(attempts);
+  if (!pending) return undefined;
+  return pending.format === "multiple-choice"
+    ? `Unanswered saved question ${pending.id}: ${pending.question} Call scholar_quiz with only resumeAttemptId=${JSON.stringify(pending.id)} to reopen its exact choices. Do not create a replacement question.`
+    : `Pending approved open question ${pending.id}: ${pending.question} Present this exact question again and wait for the learner's answer before resolving it with assess. Do not cancel it just because a session ended, and do not prepare another question.`;
+}
+
 export function latestAttemptForKind(section: ScholarSection, kind: AssessmentKind): AssessmentAttempt | undefined {
   const candidates = (section.attempts || []).filter((attempt) =>
     attempt.kind === kind
@@ -109,6 +122,8 @@ export function sectionCompletionBlockers(section: ScholarSection): string[] {
 }
 
 export function sectionProgressMessage(section: ScholarSection): string {
+  const unanswered = unansweredQuestionMessage(section.attempts || []);
+  if (unanswered) return `${section.status === "complete" ? "Section complete; this question is practice. " : ""}${unanswered}`;
   if (section.status === "complete") return "Section complete. Stop this lesson here. Any later questions are practice only and do not change earned completion.";
   const remaining = sectionCompletionBlockers(section);
   return `Section ${section.status}. Remaining: ${remaining.join("; ") || "progress reconciliation"}. Resume only the missing work; do not repeat passed checks or claim completion yet.`;
@@ -216,13 +231,13 @@ export function quizKind(details: unknown, difficulty: unknown, section?: Schola
 
 export function findQuizAttempt(book: ScholarBook, sectionId: string | undefined, toolCallId: string): { section: ScholarSection; attempt: AssessmentAttempt } | undefined {
   const section = findSection(book, sectionId);
-  const attempt = section && [...section.attempts].reverse().find((item) => item.toolCallId === toolCallId);
+  const attempt = section && [...section.attempts].reverse().find((item) => item.toolCallId === toolCallId || item.resumeToolCallIds?.includes(toolCallId));
   return section && attempt ? { section, attempt } : undefined;
 }
 
 export function findTutorQuizAttempt(book: ScholarBook, tutorId: string | undefined, toolCallId: string): { tutor: TutorSession; attempt: AssessmentAttempt } | undefined {
   const tutor = book.tutorSessions.find((item) => item.id === tutorId);
-  const attempt = tutor?.attempts.find((item) => item.toolCallId === toolCallId);
+  const attempt = tutor?.attempts.find((item) => item.toolCallId === toolCallId || item.resumeToolCallIds?.includes(toolCallId));
   return tutor && attempt ? { tutor, attempt } : undefined;
 }
 
@@ -412,7 +427,7 @@ export function resolveLearnSection(book: ScholarBook, input: string | undefined
   const value = input?.trim();
   if (!value) {
     const current = findSection(book, book.currentSectionId);
-    return current && (current.status === "learning" || current.status === "review") ? current : undefined;
+    return current && (current.status === "learning" || current.status === "review" || unansweredQuestion(current.attempts)) ? current : undefined;
   }
   const selector = scopeSelector(value);
   const chapters = matchingChapters(book, selector);
@@ -421,7 +436,8 @@ export function resolveLearnSection(book: ScholarBook, input: string | undefined
   if (sections[0]) return sections[0];
   const chapter = chapters[0];
   if (!chapter) return undefined;
-  const unfinished = chapter.sections.find((section) => section.status !== "complete");
+  const unfinished = chapter.sections.find((section) => unansweredQuestion(section.attempts))
+    || chapter.sections.find((section) => section.status !== "complete");
   if (!unfinished) {
     throw new Error(`${chapter.number ? `Chapter ${chapter.number}` : chapter.title} is complete. Select a specific section explicitly to review it.`);
   }

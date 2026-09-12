@@ -36,7 +36,11 @@ export function assertDurableHistoryPreserved(before: ScholarBook, after: Schola
         || attempt.toolCallId !== current.toolCallId || attempt.createdAt !== current.createdAt) {
         reject(`question ${attempt.id}`);
       }
-      if (attempt.outcome !== "pending") {
+      if (attempt.quiz && JSON.stringify(attempt.quiz) !== JSON.stringify(current!.quiz)) reject(`frozen quiz ${attempt.id}`);
+      if (attempt.resumeToolCallIds?.some((id, position) => current!.resumeToolCallIds?.[position] !== id)) reject(`quiz deliveries ${attempt.id}`);
+      const reopeningUnanswered = (attempt.outcome === "cancelled" || attempt.outcome === "unavailable")
+        && current!.outcome === "pending" && current!.quiz && !attempt.correctAnswer;
+      if (attempt.outcome !== "pending" && !reopeningUnanswered) {
         for (const field of ["outcome", "correctAnswer", "feedback"] as const) {
           // Recovery may fill a historically missing key/feedback, never
           // replace a result that the learner has already received.

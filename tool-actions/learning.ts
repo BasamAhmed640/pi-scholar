@@ -7,6 +7,7 @@ import {
   requiredChecks,
   sectionLabel,
   sectionProgressMessage,
+  unansweredQuestionMessage,
 } from "../domain.ts";
 import { assertQuestionGrounding, normalizeQuestionGrounding } from "../question-grounding.ts";
 import type { ScholarRuntimeSession } from "../runtime-session.ts";
@@ -197,9 +198,8 @@ export async function handleAssess(
       } else {
         assertQuestionGrounding(grounding, state, { mode: "tutor", tutor: target as TutorSession });
       }
-      if (target.attempts.some((item) => item.outcome === "pending" && item.format === "open")) {
-        throw new Error("Resolve or cancel the existing open question before preparing another one.");
-      }
+      const pending = unansweredQuestionMessage(target.attempts);
+      if (pending) throw new Error(`Resolve or cancel the existing open question, or resume the saved quiz, before preparing another. ${pending}`);
       target.attempts.push(attempt);
       appendTranscript(target.transcript, {
         id: `open-question-${preparedId}`,

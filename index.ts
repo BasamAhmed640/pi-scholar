@@ -16,9 +16,12 @@ import {
   quizKind,
   recomputeProgress,
   sectionProgressMessage,
+  unansweredQuestion,
+  unansweredQuestionMessage,
   titleFor,
 } from "./domain.ts";
 import { modeCan } from "./modes.ts";
+import { prepareScholarQuiz } from "./quiz.ts";
 import { assertQuestionGrounding } from "./question-grounding.ts";
 import { assertLearnFigureCoverage } from "./figure-coverage.ts";
 import {
@@ -267,14 +270,42 @@ export default function scholarExtension(pi: ExtensionAPI) {
     if (!coordinator.hasConfiguredLibrary() || !coordinator.runtimeSession.active || !coordinator.runtimeSession.bookId || event.toolName !== SCHOLAR_QUIZ_TOOL_NAME) return;
     if (!modeCan(coordinator.runtimeSession.mode, "assesses")) return;
     const input = parseScholarQuizInput(event.input);
-    if (input.question === undefined) return;
+    if (input.question === undefined && !input.resumeAttemptId) return;
     const book = await loadBookState(coordinator.getConfig(), coordinator.runtimeSession.bookId);
     if (!book || !coordinator.ownsActiveAuthority(book)) {
       return { block: true, reason: "Scholar blocked this quiz because the active book no longer exists in the selected Obsidian vault." };
     }
     const section = coordinator.runtimeSession.mode === "learn" ? findSection(book, coordinator.runtimeSession.recordId) : undefined;
     const tutor = coordinator.runtimeSession.mode === "tutor" ? book.tutorSessions.find((item) => item.id === coordinator.runtimeSession.recordId) : undefined;
+    if (input.resumeAttemptId) {
+      try {
+        await coordinator.mutateBook(book.id, (state) => {
+          if (!coordinator.ownsActiveAuthority(state)) throw new Error("The active Scholar book changed.");
+          const target = coordinator.runtimeSession.mode === "learn" ? findSection(state, coordinator.runtimeSession.recordId)
+            : state.tutorSessions.find((item) => item.id === coordinator.runtimeSession.recordId && item.status === "active");
+          const attempt = target && unansweredQuestion(target.attempts);
+          if (!attempt || attempt.id !== input.resumeAttemptId || !attempt.quiz) throw new Error("Resume the unanswered multiple-choice question in the active record; answered questions cannot be regraded.");
+          if (coordinator.runtimeSession.mode === "learn") {
+            const current = findSection(state, target!.id)!;
+            attempt.grounding = learnQuestionGrounding(current, attempt.grounding!);
+            assertQuestionGrounding(attempt.grounding, state, { mode: "learn", section: current });
+          } else {
+            assertQuestionGrounding(attempt.grounding, state, { mode: "tutor", tutor: state.tutorSessions.find((item) => item.id === target!.id)! });
+          }
+          const prior = coordinator.runtimeSession.mode === "learn" ? findQuizAttempt(state, target!.id, event.toolCallId)
+            : findTutorQuizAttempt(state, target!.id, event.toolCallId);
+          if (prior && prior.attempt.id !== attempt.id) throw new Error("Quiz delivery ID is already in use.");
+          if (attempt.toolCallId !== event.toolCallId && !attempt.resumeToolCallIds?.includes(event.toolCallId)) {
+            (attempt.resumeToolCallIds ||= []).push(event.toolCallId);
+          }
+          attempt.outcome = "pending";
+        });
+        return;
+      } catch (error) { return { block: true, reason: error instanceof Error ? error.message : String(error) }; }
+    }
     try {
+      const pending = unansweredQuestion(section?.attempts || tutor?.attempts || []);
+      if (pending && pending.toolCallId !== event.toolCallId) throw new Error(unansweredQuestionMessage([pending]));
       if (coordinator.runtimeSession.mode === "learn") {
         if (!section) throw new Error("Scholar blocked this question before presentation: no Learn section is active.");
         if (input.grounding) input.grounding = learnQuestionGrounding(section, input.grounding);
@@ -288,6 +319,10 @@ export default function scholarExtension(pi: ExtensionAPI) {
       return { block: true, reason: error instanceof Error ? error.message : String(error) };
     }
     try {
+      // Invalid forms still receive the quiz tool's field-level error. Only a
+      // validated form can be shown or become a resumable unanswered question.
+      let frozen: ReturnType<typeof prepareScholarQuiz> | undefined;
+      try { frozen = prepareScholarQuiz(event.input); } catch { /* execution reports the invalid form */ }
       await coordinator.mutateBook(coordinator.runtimeSession.bookId, async (targetBook) => {
         if (!coordinator.ownsActiveAuthority(targetBook)) throw new Error("Scholar blocked this question because the active book authority changed.");
         const currentSection = coordinator.runtimeSession.mode === "learn" ? findSection(targetBook, coordinator.runtimeSession.recordId) : undefined;
@@ -303,12 +338,15 @@ export default function scholarExtension(pi: ExtensionAPI) {
         }
         const attempts = currentSection?.attempts || currentTutor?.attempts;
         if (!attempts || attempts.some((item) => item.toolCallId === event.toolCallId)) return;
+        const pending = unansweredQuestion(attempts);
+        if (pending) throw new Error(unansweredQuestionMessage([pending]));
         attempts.push({
           id: `quiz-${event.toolCallId}`,
           toolCallId: event.toolCallId,
           kind: input.grounding!.purpose === "diagnostic" ? "quiz" : quizKind(input.details, input.difficulty, currentSection, input.kind),
           format: "multiple-choice",
-          question: input.question,
+          question: frozen?.question || input.question!,
+          ...(frozen ? { quiz: frozen, options: frozen.options.map((option) => option.label) } : {}),
           mode: input.multiSelect === true ? "multi-select" : "single-select",
           ...(typeof input.difficulty === "string" ? { difficulty: input.difficulty } : {}),
           grounding: input.grounding!,
@@ -342,7 +380,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
       found.attempt.options = options;
       const transcript = "section" in found ? found.section.transcript : found.tutor.transcript;
       appendTranscript(transcript, {
-        id: `quiz-question-${event.toolCallId}`,
+        id: `quiz-question-${found.attempt.toolCallId || event.toolCallId}`,
         kind: "question",
         markdown: [`**${found.attempt.question}**`, "", ...options.map((option, index) => `${index + 1}. ${option}`)].join("\n"),
         createdAt: new Date().toISOString(),
@@ -365,6 +403,11 @@ export default function scholarExtension(pi: ExtensionAPI) {
       // repeated or late tool events must not change the recorded outcome.
       if (!found || found.attempt.outcome !== "pending") return;
       const attempt = found.attempt;
+      if (attempt.quiz && (details.status !== "answered" || (event as { isError?: unknown }).isError === true)) {
+        // Esc, a closed terminal, or unavailable UI leaves the same question
+        // pending. No answer or result transcript exists until submission.
+        return;
+      }
       if (details.options) attempt.options = details.options.map((option) => option.label);
       attempt.outcome = details.status === "cancelled" ? "cancelled"
         : details.status === "unavailable" || (event as { isError?: unknown }).isError === true ? "unavailable"
@@ -379,7 +422,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
       attempt.feedback = feedback.join(" ") || undefined;
       const transcript = "section" in found ? found.section.transcript : found.tutor.transcript;
       appendTranscript(transcript, {
-        id: `quiz-result-${event.toolCallId}`,
+        id: `quiz-result-${attempt.toolCallId || event.toolCallId}`,
         kind: "result",
         markdown: `**Outcome:** ${attempt.outcome === "pass" ? "Correct" : attempt.outcome === "unsure" ? "Knowledge gap identified" : attempt.outcome === "review" ? "Needs review" : attempt.outcome}. ${attempt.correctAnswer ? `Correct answer: ${attempt.correctAnswer}. ` : ""}${attempt.feedback || ""}`.trim(),
         createdAt: new Date().toISOString(),
@@ -389,11 +432,19 @@ export default function scholarExtension(pi: ExtensionAPI) {
     });
     const section = coordinator.runtimeSession.mode === "learn"
       ? findSection(mutation.book, coordinator.runtimeSession.recordId) : undefined;
+    const delivered = coordinator.runtimeSession.mode === "learn"
+      ? findQuizAttempt(mutation.book, coordinator.runtimeSession.recordId, event.toolCallId)
+      : findTutorQuizAttempt(mutation.book, coordinator.runtimeSession.recordId, event.toolCallId);
+    const paused = delivered?.attempt.quiz && delivered.attempt.outcome === "pending"
+      && (details.status !== "answered" || (event as { isError?: unknown }).isError === true);
+    const pauseMessage = "The unanswered question is saved. End this turn and wait for the learner to reopen Scholar or explicitly continue. Do not reopen the picker or create another question now.";
     if (section) {
       await coordinator.setStatus(ctx);
-      return { content: [...(event.content || []), { type: "text" as const, text: sectionProgressMessage(section)
+      return { content: [...(event.content || []), { type: "text" as const, text: (paused ? pauseMessage : sectionProgressMessage(section))
         + (mutation.projectionStatus === "pending" ? " Progress is saved; the Obsidian note update is pending." : "") }] };
     }
+    const pending = mutation.book.tutorSessions.find((item) => item.id === coordinator.runtimeSession.recordId);
+    if (pending) return { content: [...(event.content || []), { type: "text" as const, text: paused ? pauseMessage : unansweredQuestionMessage(pending.attempts) || "Tutor answer saved." }] };
   });
 
   pi.registerCommand("scholar", {

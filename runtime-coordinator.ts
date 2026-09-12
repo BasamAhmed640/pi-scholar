@@ -16,6 +16,7 @@ import {
   recomputeProgress,
   sectionLabel,
   sectionProgressMessage,
+  unansweredQuestionMessage,
   titleFor,
 } from "./domain.ts";
 import { inspectBook, scanLibrary } from "./ingest.ts";
@@ -112,6 +113,8 @@ export function kickoffMessage(
   if (mode === "learn") {
     const section = target as ScholarSection | undefined;
     if (!section) return `Report that ${titleFor(book)} has no incomplete Learn section. Do not enter Exam or Tutor automatically.`;
+    const pending = unansweredQuestionMessage(section.attempts);
+    if (pending) return pending;
     if (section.status === "complete") return `Reopen ${sectionLabel(book, section)} for practice only. It is already complete. Acknowledge its earned completion and offer fresh optional practice; do not restart teaching or repeat completion checks. All new questions must have purpose=practice.`;
     return `Begin or resume Learn at ${sectionLabel(book, section)} (PDF pages ${section.startPage}-${section.endPage}). ${sectionProgressMessage(section)} Teach only uncovered material from the source, persist its coverage, and run only outstanding required checks.`;
   }
@@ -124,6 +127,8 @@ export function kickoffMessage(
   }
   if (mode === "tutor") {
     const tutor = target as TutorSession;
+    const pending = unansweredQuestionMessage(tutor.attempts);
+    if (pending) return pending;
     return `Begin or resume ${tutor.title} for ${tutor.scope.description}. Diagnose the requested gap, teach it from the selected PDF source, persist a concise tutor synthesis, and use fresh practice only when helpful.`;
   }
   return `The book is selected and its outline is ready. Wait for an explicit /scholar learn, /scholar exam, or /scholar tutor command.`;
@@ -325,7 +330,15 @@ export class ScholarRuntimeCoordinator {
       this.scholarToolRegistered = true;
     }
     if (modeCan(mode, "assesses") && !this.quizRegistered) {
-      registerScholarQuiz(this.pi);
+      registerScholarQuiz(this.pi, async (toolCallId) => {
+        if (!this.runtimeSession.active || !this.runtimeSession.bookId || !modeCan(this.runtimeSession.mode, "assesses")) throw new Error("Open Scholar Learn or Tutor first.");
+        const active = await loadBookState(this.activeConfig, this.runtimeSession.bookId);
+        if (!active || !this.ownsActiveAuthority(active)) throw new Error("The active Scholar book changed.");
+        const found = this.runtimeSession.mode === "learn" ? findQuizAttempt(active, this.runtimeSession.recordId, toolCallId)
+          : findTutorQuizAttempt(active, this.runtimeSession.recordId, toolCallId);
+        if (!found || found.attempt.outcome !== "pending") throw new Error("This quiz was not approved or has already been answered.");
+        return found.attempt.quiz ? structuredClone(found.attempt.quiz) : undefined;
+      });
       this.quizRegistered = true;
     }
     this.syncActiveTools();

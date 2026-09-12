@@ -1,5 +1,6 @@
 import { basename, extname, isAbsolute } from "node:path";
 import { isQuestionGrounding } from "./question-grounding.ts";
+import { isFrozenScholarQuiz } from "./quiz-contract.ts";
 import { pageInRanges, scopedPageRanges } from "./page-scope.ts";
 
 import {
@@ -139,11 +140,15 @@ function isAttempt(value: unknown): value is AssessmentAttempt {
   if (!hasOnlyKeys(
     value,
     ["id", "kind", "format", "question", "outcome", "createdAt"],
-    ["toolCallId", "options", "mode", "note", "difficulty", "grounding", "answerSummary", "correctAnswer", "feedback"],
+    ["toolCallId", "resumeToolCallIds", "quiz", "options", "mode", "note", "difficulty", "grounding", "answerSummary", "correctAnswer", "feedback"],
   )) return false;
   const common = (
     isStableId(value.id) &&
     (value.toolCallId === undefined || isNonEmptyString(value.toolCallId)) &&
+    (value.resumeToolCallIds === undefined || isStringArray(value.resumeToolCallIds, { nonEmpty: true, unique: true })) &&
+    (value.quiz === undefined || (value.format === "multiple-choice" && isFrozenScholarQuiz(value.quiz)
+      && value.quiz.question === value.question && value.quiz.mode === value.mode
+      && JSON.stringify(value.options) === JSON.stringify(value.quiz.options.map((option) => option.label)))) &&
     isAssessmentKind(value.kind) &&
     (value.format === "open" || value.format === "multiple-choice") &&
     isNonEmptyString(value.question) &&

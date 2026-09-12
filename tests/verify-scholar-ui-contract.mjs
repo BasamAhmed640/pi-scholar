@@ -429,6 +429,7 @@ try {
   );
 
   const demandingQuizInput = {
+    shuffle: false,
     question: "A pipeline must display 10,000 bounded source reads in a pane four times narrower. Which redesign best preserves the compact renderer's information invariant across both scale and layout?",
     details: "application transfer",
     difficulty: "transfer",
@@ -477,7 +478,7 @@ try {
     await handler({
       toolName: "scholar_quiz",
       toolCallId: "quiz-demanding-transfer-ui-contract",
-      details: { status: "cancelled", question: demandingQuizInput.question, mode: "single-select" },
+      details: { status: "answered", correct: false, question: demandingQuizInput.question, mode: "single-select" },
     }, context);
   }
 

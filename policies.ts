@@ -1,5 +1,5 @@
 import type { ScholarBook, ScholarExam, ScholarMode, ScholarSection, TutorSession } from "./types.ts";
-import { sectionProgressMessage } from "./domain.ts";
+import { sectionProgressMessage, unansweredQuestionMessage } from "./domain.ts";
 
 function sectionName(book: ScholarBook, section: ScholarSection): string {
   const chapter = book.chapters.find((item) => item.sections.some((candidate) => candidate.id === section.id));
@@ -48,13 +48,13 @@ export function learnInstructions(book: ScholarBook, section: ScholarSection | u
     ? `Active Learn section: ${section.id} — ${sectionName(book, section)}, PDF viewer pages ${section.startPage}-${section.endPage}.`
     : `This book has no active Learn section. Build and verify its source outline first.`;
   const lastAssistant = section?.transcript.filter((entry) => entry.kind === "assistant").at(-1)?.markdown;
-  const pending = (section?.attempts || []).find((attempt) => attempt.format === "open" && attempt.outcome === "pending");
+  const pending = unansweredQuestionMessage(section?.attempts || []);
   const resume = lastAssistant ? `Last durable assistant synthesis (resume orientation only): ${lastAssistant.slice(0, 1200)}` : "No prior assistant lesson is stored for this section.";
   return `Scholar Learn mode is active for ${book.metadata.title}. ${location}
 ${section ? `Authoritative progress: ${sectionProgressMessage(section)}` : ""}
 ${section?.status === "complete" ? "This completed section was reopened for PRACTICE ONLY. Briefly acknowledge completion, then offer fresh practice or answer the learner's question. Do not restart the lesson, reset coverage, add completion requirements, or label practice as unfinished mastery." : "Resume saved teaching and checks. Do not restart material or required checks that are already covered and passed."}
 ${resume}
-${pending ? `Pending approved open question ${pending.id}: ${pending.question} Resolve this exact attempt before preparing another.` : "No open question is awaiting resolution."}
+${pending || "No question is awaiting resolution."}
 
 ${SOURCE_AND_PRIVACY}
 
@@ -104,10 +104,10 @@ Exam-mode contract:
 export function tutorInstructions(book: ScholarBook, tutor: TutorSession): string {
   const scope = tutor.scope.description || `${tutor.scope.chapterIds.length} chapter(s), ${tutor.scope.sectionIds.length} section(s)`;
   const lastAssistant = tutor.transcript.filter((entry) => entry.kind === "assistant").at(-1)?.markdown;
-  const pending = (tutor.attempts || []).find((attempt) => attempt.format === "open" && attempt.outcome === "pending");
+  const pending = unansweredQuestionMessage(tutor.attempts || []);
   return `Scholar Tutor mode is active for ${book.metadata.title}. Tutor session ${tutor.id}: ${scope}.
 ${lastAssistant ? `Last durable tutor synthesis (resume orientation only): ${lastAssistant.slice(0, 1200)}` : "No earlier tutor explanation is stored."}
-${pending ? `Pending approved open question ${pending.id}: ${pending.question} Resolve this exact attempt before preparing another.` : "No open question is awaiting resolution."}
+${pending || "No question is awaiting resolution."}
 
 ${SOURCE_AND_PRIVACY}
 

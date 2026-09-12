@@ -353,11 +353,12 @@ export async function recoverTranscriptTarget(options: RecoverTranscriptOptions)
           : target.mode === "tutor"
             ? findTutorQuizAttempt(currentBook, target.recordId, message.toolCallId)?.attempt
             : undefined;
+        const canonicalCallId = priorAttempt?.toolCallId || message.toolCallId;
 
         const options = details.options?.map((option) => option.label) || priorAttempt?.options || [];
         if (call.question !== undefined) {
           incomingTranscripts.push({
-            id: `quiz-question-${message.toolCallId}`,
+            id: `quiz-question-${canonicalCallId}`,
             kind: "question",
             markdown: [`**${call.question}**`, "", ...options.map((option: string, optionIndex: number) => `${optionIndex + 1}. ${option}`)].join("\n"),
             createdAt: new Date(typeof message.timestamp === "number" ? message.timestamp : Date.now()).toISOString(),
@@ -365,6 +366,10 @@ export async function recoverTranscriptTarget(options: RecoverTranscriptOptions)
         }
 
         const isError = message.isError === true;
+        if (priorAttempt?.quiz && (details.status !== "answered" || isError)) {
+          lastSafelyProcessedEntryId = entryId;
+          continue;
+        }
         const answered = details.status === "answered" && !isError;
         const outcome: AssessmentOutcome = details.status === "cancelled"
           ? "cancelled"
@@ -387,7 +392,7 @@ export async function recoverTranscriptTarget(options: RecoverTranscriptOptions)
           : "Unavailable";
 
         incomingTranscripts.push({
-          id: `quiz-result-${message.toolCallId}`,
+          id: `quiz-result-${canonicalCallId}`,
           kind: "result",
           markdown: `**Outcome:** ${outcomeLabel}. ${feedbackStr}`.trim(),
           createdAt: new Date(typeof message.timestamp === "number" ? message.timestamp : Date.now()).toISOString(),

@@ -18,6 +18,7 @@ import {
   type ScholarQuizProgressDetails as QuizProgressDetails,
   type ScholarQuizResponse as QuizResponse,
   type ScholarQuizResultDetails as QuizResultDetails,
+  type FrozenScholarQuiz,
 } from "./quiz-contract.ts";
 
 interface DisplayOption extends QuizOption {
@@ -42,7 +43,7 @@ const OptionSchema = Type.Object({
   ),
 });
 
-const ScholarQuizParams = Type.Object({
+const NewScholarQuizParams = Type.Object({
   kind: Type.Optional(Type.Union([
     Type.Literal("conceptual"), Type.Literal("application"), Type.Literal("computation"),
     Type.Literal("discrimination"),
@@ -76,6 +77,14 @@ const ScholarQuizParams = Type.Object({
     }),
   ),
 });
+
+// Keep an object at the schema root for providers that reject top-level unions.
+// New questions are validated in prepareScholarQuiz and the grounding gate;
+// resumes need only the saved ID, without regenerating private answer fields.
+const ScholarQuizParams = Type.Object({
+  ...Type.Partial(NewScholarQuizParams).properties,
+  resumeAttemptId: Type.Optional(Type.String({ description: "Reopen this saved unanswered question. Supply no replacement question or answer key." })),
+}, { description: "Supply only resumeAttemptId to resume. For a new question, question, grounding, options, correctAnswer, and explanation are required." });
 
 function isManualUncertainty(label: string, value: string): boolean {
   if (value === DONT_KNOW_VALUE || value === SUBMIT_VALUE) return true;
@@ -412,7 +421,7 @@ function unavailableResult(
 }
 
 function cancelledResult(question: string, mode: QuizMode, context?: string) {
-  const message = "User cancelled the Scholar quiz before submitting.";
+  const message = "Question paused before submission. Reopen Scholar to resume this same question.";
   return {
     content: [{ type: "text" as const, text: message }],
     details: { status: "cancelled" as const, question, context, mode, message } satisfies QuizResultDetails,
@@ -461,7 +470,29 @@ function answeredResult(
   };
 }
 
-export function registerScholarQuiz(pi: ExtensionAPI): void {
+/** Freeze validation and shuffling before showing a question; reuse the result on every delivery. */
+export function prepareScholarQuiz(params: any, displayedLabels?: string[]): FrozenScholarQuiz {
+  const question = typeof params?.question === "string" ? params.question.trim() : "";
+  const explanation = typeof params?.explanation === "string" ? params.explanation.trim() : "";
+  if (!question) throw new Error("scholar_quiz requires a question");
+  if (!explanation) throw new Error("scholar_quiz requires a non-empty explanation");
+  const mode: QuizMode = params.multiSelect ? "multi-select" : "single-select";
+  let options = normalizeOptions(params.options);
+  if (options.length < 2) throw new Error("scholar_quiz requires at least two options");
+  if (displayedLabels) {
+    if (displayedLabels.length !== options.length || new Set(displayedLabels).size !== options.length
+      || displayedLabels.some((label) => !options.some((option) => option.label === label))) {
+      throw new Error("Saved displayed choices do not match the original quiz form.");
+    }
+    options = displayedLabels.map((label) => options.find((option) => option.label === label)!);
+  } else if (params.shuffle !== false) options = shuffleOptions(options);
+  const resolved = resolveCorrect(params.correctAnswer, options, mode);
+  if (resolved.error) throw new Error(`scholar_quiz ${resolved.error}`);
+  const context = typeof params.details === "string" ? params.details.trim() : "";
+  return { question, ...(context ? { context } : {}), mode, options, correctValues: resolved.indices.map((index) => options[index - 1]!.value), explanation };
+}
+
+export function registerScholarQuiz(pi: ExtensionAPI, loadSaved?: (toolCallId: string) => Promise<FrozenScholarQuiz | undefined>): void {
   pi.registerTool({
     name: SCHOLAR_QUIZ_TOOL_NAME,
     label: "Scholar quiz",
@@ -470,6 +501,7 @@ export function registerScholarQuiz(pi: ExtensionAPI): void {
     promptSnippet:
       "Use scholar_quiz for Scholar's graded multiple-choice checks. Supply stable option values, the correct value(s), and a post-answer explanation.",
     promptGuidelines: [
+      "If a question is unanswered, call scholar_quiz with only its resumeAttemptId. Closing the dialog or ending a session pauses it; never replace it or reveal its answer before submission.",
       "Set kind to the check being assessed (conceptual, application, computation, or discrimination). Read the saved progress in the result: stop when complete; follow-up questions are practice only.",
       "grounding is mandatory. It names the competency, observable evidence, in-scope PDF pages, and exact saved teaching basis. Scholar blocks unsupported questions before the picker opens.",
       "The guard constrains fairness, never rigor. Continue to use demanding computation, misconception discrimination, independent generation, and novel transfer when the competency supports them.",
@@ -483,37 +515,20 @@ export function registerScholarQuiz(pi: ExtensionAPI): void {
     ],
     parameters: ScholarQuizParams,
 
-    async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const question = params.question.trim();
-      const context = params.details?.trim() || undefined;
-      const explanation = params.explanation.trim();
-      const mode: QuizMode = params.multiSelect ? "multi-select" : "single-select";
-
-      if (!question) return unavailableResult(params.question, mode, "scholar_quiz requires a question", context);
-      if (!explanation) {
-        return unavailableResult(question, mode, "scholar_quiz requires a non-empty explanation", context);
-      }
-
-      let options: QuizOption[];
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      let frozen: FrozenScholarQuiz;
       try {
-        options = normalizeOptions(params.options);
+        const saved = await loadSaved?.(toolCallId);
+        if ("resumeAttemptId" in params && !saved) throw new Error("The saved question is unavailable in the active Scholar record.");
+        frozen = saved || prepareScholarQuiz(params);
       } catch (error) {
         return unavailableResult(
-          question,
-          mode,
-          `scholar_quiz ${error instanceof Error ? error.message : String(error)}`,
-          context,
+          typeof params.question === "string" ? params.question : "Saved question", "single-select",
+          error instanceof Error ? error.message : String(error),
         );
       }
-      if (options.length < 2) {
-        return unavailableResult(question, mode, "scholar_quiz requires at least two options", context);
-      }
-      if (params.shuffle !== false) options = shuffleOptions(options);
-
-      const resolved = resolveCorrect(params.correctAnswer as string | string[], options, mode);
-      if (resolved.error) {
-        return unavailableResult(question, mode, `scholar_quiz ${resolved.error}`, context);
-      }
+      const { question, context, explanation, options, mode } = frozen;
+      const resolved = resolveCorrect(frozen.correctValues, options, mode);
       if (signal?.aborted) return cancelledResult(question, mode, context);
       if (!ctx.hasUI) {
         return unavailableResult(question, mode, "scholar_quiz requires interactive mode UI", context);
@@ -541,10 +556,10 @@ export function registerScholarQuiz(pi: ExtensionAPI): void {
     },
 
     renderCall(args, theme) {
-      const count = Array.isArray(args.options) ? args.options.length : 0;
+      const count = "options" in args && Array.isArray(args.options) ? args.options.length : 0;
       let text = theme.fg("toolTitle", theme.bold("Scholar quiz"));
-      text += theme.fg("muted", " · validating grounding");
-      if (args.multiSelect) text += theme.fg("dim", " [multi-select]");
+      text += theme.fg("muted", "resumeAttemptId" in args ? " · resuming saved question" : " · validating grounding");
+      if ("multiSelect" in args && args.multiSelect) text += theme.fg("dim", " [multi-select]");
       if (count > 0) text += theme.fg("dim", ` (${count} ${count === 1 ? "option" : "options"})`);
       return new Text(text, 0, 0);
     },

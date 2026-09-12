@@ -1,6 +1,6 @@
 {
   "name": "pi-scholar",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Local PDF study workflows for Pi and Obsidian",
   "type": "module",

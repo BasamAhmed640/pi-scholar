@@ -242,6 +242,20 @@ progress and reconciles qualifying unfinished sections. Answers, grades, teachin
 receipts, and exam records are preserved; no credit is inferred from question text.
 The repaired state persists with the next ordinary save.
 
+Unanswered Learn and Tutor questions resume before new questions. Scholar saves
+each multiple-choice form in the vault before opening its picker, including the
+original display order and a private grading key. Closing the picker, unavailable
+UI, or ending Pi leaves it pending. Reopening that section or Tutor session restores
+the same question; the model calls `scholar_quiz` with only `resumeAttemptId`, and
+Scholar loads the saved form without regenerating or reshuffling it. Submission
+resolves the original attempt once. Unanswered open questions are presented again
+verbatim, and both formats block replacement questions until resolved. No background
+agent runs while Scholar is closed, and pre-answer notes never expose the key.
+
+Versions before 0.1.3 did not save complete quiz forms. Historical question text
+alone cannot reconstruct a trustworthy grading key; those old forms need the
+original Pi tool arguments and displayed order to be recovered exactly.
+
 ### Exam
 
 Exam receives only the selected PDF source and frozen outline—not Learn or Tutor

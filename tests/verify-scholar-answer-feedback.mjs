@@ -119,7 +119,7 @@ try {
   }
   assert.equal(target(await load(), "learn").attempts.length, 0);
   await gatedHost.emit("tool_call", { toolName: "scholar_quiz", toolCallId: "diagnostic-before-figures", input: { ...gateInput, grounding: { ...grounding, purpose: "diagnostic" } } });
-  await gatedHost.emit("tool_result", { toolName: "scholar_quiz", toolCallId: "diagnostic-before-figures", details: { status: "cancelled" } });
+  await gatedHost.emit("tool_result", { toolName: "scholar_quiz", toolCallId: "diagnostic-before-figures", details: { status: "answered", correct: true } });
   const restored = await load();
   restored.chapters[0].sections[0].figureCoverage = structuredClone(book.chapters[0].sections[0].figureCoverage);
   restored.revision++;
@@ -168,7 +168,7 @@ try {
       const state = await load();
       const resolved = target(state, mode).attempts.find((attempt) => attempt.toolCallId === toolCallId);
       const markdown = await readFile(notePath(mode), "utf8");
-      assert.equal(resolved.outcome, outcome);
+      assert.equal(resolved.outcome, ["cancelled", "unavailable"].includes(outcome) ? "pending" : outcome);
       if (["pass", "review", "unsure"].includes(outcome)) {
         assert.equal(resolved.correctAnswer, "2. Connect the mechanism to the prediction");
         assert.equal(resolved.feedback, explanation);
@@ -181,13 +181,24 @@ try {
       assert(!JSON.stringify(state).includes("PRIVATE_RAW_SELECTED_TEXT"));
       assert(!markdown.includes("PRIVATE_SELECTED_VALUE"));
       assert(!markdown.includes("PRIVATE_RAW_SELECTED_TEXT"));
+      if (["cancelled", "unavailable"].includes(outcome)) {
+        // Pausing is no longer a terminal result. Finish the same saved item
+        // before this fixture proceeds to its next independent case.
+        const resumeCall = `${toolCallId}-resume`;
+        const resumeInput = { resumeAttemptId: resolved.id };
+        await host.emit("tool_call", { toolName: "scholar_quiz", toolCallId: resumeCall, input: resumeInput });
+        const retried = await host.quiz.execute(resumeCall, resumeInput, undefined, undefined,
+          { hasUI: true, ui: { custom: async () => ({ dontKnow: true, answers: [] }) } });
+        await host.emit("tool_result", { toolName: "scholar_quiz", toolCallId: resumeCall, details: retried.details });
+        assert.equal(target(await load(), mode).attempts.find((attempt) => attempt.id === resolved.id).outcome, "unsure");
+      }
     }
-    passed(`${mode}: real quiz pending → pass/review/unsure/cancelled/unavailable persists resolved key and explanation without raw responses`);
+    passed(`${mode}: quiz answers persist feedback; cancelled/unavailable questions stay pending until resumed, without storing raw responses`);
   }
 
   const saved = await load();
   for (const mode of ["learn", "tutor"]) {
-    const attempted = target(saved, mode).attempts.find((attempt) => attempt.outcome === "pass");
+    const attempted = target(saved, mode).attempts.find((attempt) => attempt.outcome === "pass" && attempt.correctAnswer);
     const old = structuredClone(saved);
     for (const attempt of target(old, mode).attempts) delete attempt.correctAnswer;
     assert(schema.isScholarBook(old), "legacy attempts without a key remain readable");
@@ -226,7 +237,12 @@ try {
     // reject removing finalized answers, so legacy setup bypasses that path.
     const legacy = await load();
     const legacyAttempts = target(legacy, mode).attempts;
-    for (const attempt of legacyAttempts) delete attempt.correctAnswer;
+    for (const attempt of legacyAttempts) {
+      delete attempt.correctAnswer;
+      delete attempt.quiz;
+      delete attempt.resumeToolCallIds;
+      if (attempt.toolCallId === `${mode}-cancelled`) { attempt.outcome = "cancelled"; delete attempt.feedback; }
+    }
     const wrong = legacyAttempts.find((item) => item.toolCallId === `${mode}-review`);
     wrong.answerSummary = "Legacy private wrong guess";
     const uncertain = legacyAttempts.find((item) => item.toolCallId === `${mode}-unsure`);
