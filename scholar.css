@@ -122,8 +122,8 @@
 .scholar-note .callout[data-callout="example"] { padding: 1rem 1.2rem; }
 .scholar-note .callout[data-callout="example"] em { color: var(--text-muted); font-size: 0.9em; }
 .scholar-note :is(.math-block, .mermaid) { max-width: 100%; overflow-x: auto; padding-block: 0.75rem; }
-.scholar-note .mermaid { text-align: start; }
-.scholar-note .mermaid svg { display: block; margin-inline: 0; }
+.scholar-note .mermaid { text-align: center; }
+.scholar-note .mermaid svg { display: block; margin-inline: auto; }
 .scholar-note pre { max-width: 100%; overflow-x: auto; border: 1px solid var(--background-modifier-border); border-radius: 0.5rem; }
 
 /* Exam choices are answers, not completed to-do items. Keep them fully readable. */
