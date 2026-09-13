@@ -163,7 +163,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
     if (!coordinator.loading.active) return;
     const last = [...event.messages].reverse().find(message => message.role === "assistant");
     coordinator.loadingFailed = last?.role === "assistant" && ["error", "aborted", "length"].includes(last.stopReason);
-    if (coordinator.loadingFailed && last?.role === "assistant") coordinator.loadingProblem = last.stopReason === "aborted" ? "Interrupted · saved work preserved"
+    if (coordinator.loadingFailed && !coordinator.loadingProblem && last?.role === "assistant") coordinator.loadingProblem = last.stopReason === "aborted" ? "Interrupted · saved work preserved"
       : last.stopReason === "length" ? "Response reached its output limit · saved work preserved" : "Model connection failed · saved work preserved";
   });
 

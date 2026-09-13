@@ -41,6 +41,42 @@ selected PDF library contains the source books, not your learning history.
 
 ## Installation
 
+### Recoverable Learn preparation (0.5.2)
+
+Reopening a saved, unfinished lesson displays its Obsidian draft location immediately,
+without starting generation. Use `/scholar learn "9.3" continue` (or explicitly ask
+Scholar to continue) to resume preparation. Existing unanswered questions retain
+their normal resume behavior. A visible draft is not scientific approval or mastery.
+
+Lesson reviewers now receive their required PDF text, rendered pages and crops
+up front. Each batch makes one verdict request, with no model turns spent fetching
+evidence. Source/visual scopes are enforced; visual packets contain at most six
+images. All required pages and current crops still have to be supplied before
+approval. The selected Pi model and reasoning level are preserved, with at most
+three reviewer requests running concurrently.
+Isolated reviews request Pi's standard HTTP streaming transport where supported,
+avoiding persistent WebSocket connections for these one-shot checks.
+
+An execution failure saves the completed review results and stops the author loop.
+It cannot trigger automatic retries or optional rewrites. Completed checks can be
+reused only for unchanged evidence. Three completed content-review rounds remain
+the maximum; reaching that limit also stops authoring. In addition to the shared
+12-minute review deadline, new Learn preparation has a **20-minute total work
+limit**, including writing and repairs and excluding learner input time. This is
+a recovery ceiling, not a promised completion time. Provider failures can still
+leave a saved draft awaiting a later retry; they never count as approval.
+
+`lessonPatch.calloutEdits` replaces one equation or source-figure callout through
+the existing renderers, retaining all other prose and callouts. It requires the
+current content hash and exact old callout. Source scope, equation definitions,
+figure inventory, history protection and review invalidation remain enforced.
+Safe review diagnostics are stored in the existing vault receipts; credentials,
+raw transport errors and private reasoning are excluded.
+The progress widget reports incoming reviewer reasoning/verdict activity without
+showing its private text. If the computer sleeps, deadlines are enforced when
+execution resumes; nothing can execute during OS suspension. Buffered answers
+are checked against the elapsed deadline before they can approve content.
+
 ### Bounded reviews and fewer retries (0.5.1)
 
 One **12-minute deadline covers the entire lesson review round**, across all

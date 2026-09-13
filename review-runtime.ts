@@ -20,7 +20,7 @@ export type ReviewerTool = {
 
 export type ReviewerProgress = {
   role: ReviewRole;
-  stage: "starting" | "model" | "tool" | "complete";
+  stage: "starting" | "model" | "stream" | "tool" | "complete";
   turn: number;
   toolCalls: number;
   toolName?: string;
@@ -28,6 +28,9 @@ export type ReviewerProgress = {
   batch?: number;
   batches?: number;
   reused?: boolean;
+  elapsedMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
 };
 
 export type ReviewerLimits = {
@@ -68,13 +71,15 @@ export type ReviewerRunOptions = {
   cwd: string;
   prompt: string;
   tools: readonly ReviewerTool[];
+  /** Runner-owned evidence, loaded under the same cancellation/deadline budget. */
+  prepareEvidence?: (signal: AbortSignal) => Promise<(TextContent | ImageContent)[]>;
   signal?: AbortSignal;
   onProgress?: (event: ReviewerProgress) => void | Promise<void>;
   limits?: Partial<ReviewerLimits>;
 };
 
 export class ReviewerRunError extends Error {
-  readonly code: "cancelled" | "timeout" | "limit" | "provider" | "tool" | "invalid-output" | "configuration";
+  readonly code: "cancelled" | "timeout" | "limit" | "provider" | "tool" | "invalid-output" | "configuration" | "evidence";
 
   constructor(code: ReviewerRunError["code"], message: string, cause?: unknown) {
     super(message, cause === undefined ? undefined : { cause });
@@ -92,6 +97,18 @@ Use blocking for defects that prevent faithful, understandable instruction or va
 Return changes if there is any blocking finding, otherwise pass. An empty findings array is allowed for pass.
 Do not invent findings to fill a quota. Missing evidence is a blocking finding, not a pass. Do not rewrite the full lesson.
 Return at most 40 findings. Do not output private reasoning or any text outside the verdict JSON.`;
+
+// Only known categories leave the transport boundary: provider error strings can
+// contain URLs, credentials, prompt text or other private request data.
+function providerFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error || "");
+  if (/websocket|ECONNRESET|socket|connection.*closed|fetch failed/i.test(message)) return "connection failure";
+  if (/429|rate.?limit|too many requests/i.test(message)) return "rate limit";
+  if (/401|403|unauthorized|authentication/i.test(message)) return "authentication failure";
+  if (/timeout|timed out/i.test(message)) return "provider timeout";
+  if (/context.*(?:length|limit|exceed)|maximum context/i.test(message)) return "provider context limit";
+  return "provider failure (details withheld)";
+}
 
 function limitError(message: string): never {
   throw new ReviewerRunError("limit", message);
@@ -181,6 +198,15 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
   const signal = controller.signal;
   // An in-memory transport identity only: no Pi session file is created.
   const requestSessionId = randomUUID();
+  const started = Date.now();
+  // Timers cannot run while the OS suspends the process. Recheck wall time at
+  // every async boundary so buffered results cannot win the race on resume.
+  const checkActive = () => {
+    if (!signal.aborted && Date.now() - started >= limits.timeoutMs) {
+      controller.abort(new ReviewerRunError("timeout", "Scholar review exceeded its time limit; it was not approved."));
+    }
+    if (signal.aborted) errorFromAbort(signal);
+  };
   let turn = 0;
   let toolCalls = 0;
   let toolTextChars = 0;
@@ -198,15 +224,35 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
   };
   const progress = (stage: ReviewerProgress["stage"], toolName?: string) => {
     try {
-      void Promise.resolve(options.onProgress?.({ role: options.role, stage, turn, toolCalls, ...(toolName ? { toolName } : {}) })).catch(() => {});
+      void Promise.resolve(options.onProgress?.({ role: options.role, stage, turn, toolCalls, elapsedMs: Date.now() - started,
+        inputTokens: lastInputTokens, outputTokens, ...(toolName ? { toolName } : {}) })).catch(() => {});
     } catch { /* UI/reporting failure must not silently approve or reject content. */ }
   };
 
   try {
     if (signal.aborted) errorFromAbort(signal);
     progress("starting");
+    if (options.prepareEvidence) {
+      const evidence = await abortable(options.prepareEvidence(signal), signal);
+      checkActive();
+      const content: (TextContent | ImageContent)[] = [];
+      for (const block of evidence) {
+        if (block.type === "text" && typeof block.text === "string") {
+          toolTextChars += block.text.length;
+          if (toolTextChars > limits.maxToolTextChars) limitError("Prepared evidence exceeds the source-text allowance; split its scope.");
+          content.push(block);
+        } else if (block.type === "image" && typeof block.data === "string" && /^image\/(png|jpeg|webp|gif)$/.test(block.mimeType)
+          && block.data.length > 0 && block.data.length % 4 === 0 && /^[a-zA-Z0-9+/]+={0,2}$/.test(block.data)) {
+          if (!options.model.input.includes("image")) throw new ReviewerRunError("configuration", "The selected model cannot inspect images.");
+          const bytes = Math.floor(block.data.length * 3 / 4); images++; imageBytes += bytes;
+          if (images > limits.maxImages || bytes > limits.maxImageBytes || imageBytes > limits.maxTotalImageBytes) limitError("Prepared evidence exceeds the image allowance; split its scope.");
+          content.push(block);
+        } else throw new ReviewerRunError("tool", "Prepared review evidence is malformed.");
+      }
+      if (content.length) context.messages.push({ role: "user", content, timestamp: Date.now() });
+    }
     for (turn = 1; turn <= limits.maxTurns; turn++) {
-      if (signal.aborted) errorFromAbort(signal);
+      checkActive();
       const chars = textualSize(context);
       // Conservative text/image estimate plus observed provider usage. No dropping
       // source pages or hidden compaction: an oversized review fails visibly.
@@ -225,7 +271,9 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
       if (signal.aborted) errorFromAbort(signal);
       let response;
       try {
-        const requestOptions = { signal, maxTokens, timeoutMs: limits.timeoutMs, maxRetries: 0, sessionId: requestSessionId };
+        // These isolated verdicts do not need a persistent socket or continuation
+        // cache. Use Pi's portable HTTP stream option where the provider supports it.
+        const requestOptions = { signal, maxTokens, timeoutMs: limits.timeoutMs, maxRetries: 0, sessionId: requestSessionId, transport: "sse" as const };
         if (thinkingLevel === undefined) {
           response = await abortable(options.modelRegistry.complete(options.model, context, requestOptions), signal);
         } else {
@@ -235,39 +283,56 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
           const provider = options.modelRegistry.getProvider!(options.model.provider);
           if (!provider || typeof provider.streamSimple !== "function") throw new Error("The active review provider has no simple stream interface.");
           const auth = await abortable(options.modelRegistry.getApiKeyAndHeaders!(options.model), signal);
-          if (signal.aborted) errorFromAbort(signal);
+          checkActive();
           if (!auth.ok) throw new Error("The active registry could not authenticate the review model.");
           const requestModel = auth.baseUrl ? { ...options.model, baseUrl: auth.baseUrl } : options.model;
-          response = await abortable(provider.streamSimple(requestModel, context, {
+          const stream = provider.streamSimple(requestModel, context, {
             ...requestOptions, apiKey: auth.apiKey, headers: auth.headers, env: auth.env,
             reasoning: thinkingLevel === "off" ? undefined : thinkingLevel,
-          }).result(), signal);
+          });
+          // Observe liveness without retaining or exposing reasoning text. The
+          // same stream supplies the final verdict; this creates no extra call.
+          const observe = async () => {
+            if (typeof stream[Symbol.asyncIterator] !== "function") return;
+            const iterator = stream[Symbol.asyncIterator]();
+            let last = 0;
+            while (!signal.aborted) {
+              const next = await abortable(iterator.next(), signal);
+              checkActive();
+              if (next.done) return;
+              if (Date.now() - last >= 1000 && ["thinking_delta", "text_delta", "toolcall_delta"].includes(next.value.type)) {
+                last = Date.now();
+                progress("stream", next.value.type === "thinking_delta" ? "reasoning" : "writing verdict");
+              }
+            }
+          };
+          [response] = await abortable(Promise.all([stream.result(), observe()]), signal);
         }
       } catch (error) {
         if (signal.aborted) errorFromAbort(signal);
-        throw new ReviewerRunError("provider", "The selected model could not complete the review; no approval was recorded.", error);
+        throw new ReviewerRunError("provider", `The selected model could not complete the review: ${providerFailure(error)}.`, error);
       }
-      if (signal.aborted) errorFromAbort(signal);
+      checkActive();
       if (!response || response.role !== "assistant" || !Array.isArray(response.content)) {
         throw new ReviewerRunError("invalid-output", "The reviewer returned an invalid assistant message.");
       }
-      if (response.stopReason !== "stop" && response.stopReason !== "toolUse") {
-        throw new ReviewerRunError(response.stopReason === "length" ? "limit" : "provider", response.stopReason === "length"
-          ? "The reviewer reached the response output limit; its partial verdict cannot approve a lesson."
-          : "The reviewer did not finish cleanly; partial output cannot approve a lesson.");
-      }
       const responseChars = JSON.stringify(response.content).length;
-      if (responseChars > limits.maxResponseChars) limitError("The reviewer response exceeded its bounded size.");
       const usage = response.usage;
       if (usage && (!Number.isFinite(usage.output) || usage.output < 0
           || [usage.input, usage.cacheRead, usage.cacheWrite].some((value) => !Number.isFinite(value) || value < 0))) {
         throw new ReviewerRunError("invalid-output", "The reviewer returned invalid usage accounting.");
       }
       outputTokens += Math.max(Math.ceil(responseChars / 4), usage?.output ?? 0);
-      if (outputTokens > limits.maxTotalOutputTokens) limitError("The reviewer exhausted its total output allowance.");
       lastInputTokens = usage ? usage.input + usage.cacheRead + usage.cacheWrite : estimatedInput;
       lastContextChars = chars;
       lastContextImages = images;
+      if (response.stopReason !== "stop" && response.stopReason !== "toolUse") {
+        throw new ReviewerRunError(response.stopReason === "length" ? "limit" : "provider", response.stopReason === "length"
+          ? "The reviewer reached the response output limit; its partial verdict cannot approve a lesson."
+          : `The reviewer did not finish cleanly: ${providerFailure(response.errorMessage)}; partial output cannot approve a lesson.`);
+      }
+      if (responseChars > limits.maxResponseChars) limitError("The reviewer response exceeded its bounded size.");
+      if (outputTokens > limits.maxTotalOutputTokens) limitError("The reviewer exhausted its total output allowance.");
       const calls = response.content.filter((block) => block.type === "toolCall");
       if (calls.length === 0) {
         if (response.stopReason !== "stop") throw new ReviewerRunError("invalid-output", "The reviewer requested tools without a tool call.");
@@ -276,7 +341,7 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
         try { verdict = parseReviewerVerdict(text); }
         catch (error) { throw new ReviewerRunError("invalid-output", "The reviewer verdict was malformed; no approval was recorded.", error); }
         progress("complete");
-        if (signal.aborted) errorFromAbort(signal);
+        checkActive();
         return verdict;
       }
       if (response.stopReason !== "toolUse") throw new ReviewerRunError("invalid-output", "The reviewer ended with unresolved tool calls.");
@@ -301,7 +366,7 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
           if (signal.aborted) errorFromAbort(signal);
           throw new ReviewerRunError("tool", `The scoped reviewer reader ${tool.name} failed; no approval was recorded.`, error);
         }
-        if (signal.aborted) errorFromAbort(signal);
+        checkActive();
         if (!result || result.isError || !Array.isArray(result.content) || result.content.length === 0) {
           throw new ReviewerRunError("tool", `The scoped reviewer reader ${tool.name} returned no usable evidence.`);
         }
@@ -327,6 +392,12 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
       }
     }
     return limitError("The reviewer reached its turn limit without a valid verdict.");
+  } catch (error) {
+    progress("model");
+    if (error instanceof ReviewerRunError && error.code !== "cancelled") {
+      throw new ReviewerRunError(error.code, `${error.message} [${Math.round((Date.now() - started) / 1000)}s; ${turn} model turns; ${toolCalls} tool calls; last input ${lastInputTokens} tokens; output ${outputTokens} tokens]`, error);
+    }
+    throw error;
   } finally {
     clearTimeout(timeout);
     options.signal?.removeEventListener("abort", cancelled);

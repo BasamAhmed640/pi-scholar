@@ -15,7 +15,8 @@ import {
 import { scanLibrary } from "./ingest.ts";
 import { examAnswerProgress } from "./exam.ts";
 import { readExamAnswerNote } from "./exam-paper.ts";
-import { answerKeyNotePath, scholarWorkspaceRoot } from "./obsidian-paths.ts";
+import { answerKeyNotePath, scholarWorkspaceRoot, sectionNotePath } from "./obsidian-paths.ts";
+import { lessonReady } from "./lesson.ts";
 import { validateNoteOwnership } from "./obsidian.ts";
 import type { InputLockContext } from "./input-lock.ts";
 import type { ScholarRuntimeSession } from "./runtime-session.ts";
@@ -133,7 +134,7 @@ export function scholarGuide(book?: ScholarBook): string {
     "  Open or switch textbooks from your configured PDF library. Run bare to browse all available books in a selector, or specify a partial title to jump directly.",
     "",
     "• /scholar learn <chapter/section>",
-    '  Guided study of textbook sections. Presents source-grounded lessons, verified diagrams/figures, and comprehension checks with feedback to build section mastery. Run bare (/scholar learn) to resume your active unfinished section.',
+    '  Guided study with source-grounded explanations and checks. Reopening a saved unfinished lesson shows its draft immediately. Use /scholar learn "1.1" continue to resume preparation explicitly. Pending unanswered questions resume unchanged.',
     "",
     "• /scholar exam <scope>",
     '  Answer an exam in Obsidian. Specify chapters (e.g. "1-3", "1, 2", or "all"), or reopen an exam by ID. Run bare (/scholar exam) to resume an in-progress exam or begin a new one.',
@@ -512,6 +513,13 @@ export async function handleScholarCommand(
         book = mutation.book;
         const section = findSection(book, selected.id)!;
         await coordinator.activateBook(book, ctx, "learn", section.id);
+        if (!parsed.continue && !section.attempts.some(attempt => attempt.outcome === "pending")
+          && section.transcript.some(entry => entry.lesson && entry.markdown.trim()) && !lessonReady(section, book.source.fingerprint.sha256)) {
+          const chapter = book.chapters.find(item => item.sections.some(candidate => candidate.id === section.id))!;
+          const path = await safePathWithinRoot(activeConfig.obsidianRoot, sectionNotePath(activeConfig, book, chapter, section));
+          ctx.ui.notify(`Saved draft available in Obsidian: ${path}\nThis lesson is not yet approved. No generation started. To continue preparation: /scholar learn ${quoted(section.number || section.id)} continue`, "info");
+          return;
+        }
         await coordinator.startScholarModeTurn(book, "learn", section, ctx);
         return;
       }

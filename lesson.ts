@@ -9,7 +9,8 @@ import { recordValidatedLessonRevision } from "./history.ts";
 import type { AssessmentKind, ScholarBook, ScholarConfig, ScholarSection, TranscriptEntry, TutorSession } from "./types.ts";
 
 export type LessonInput = { id: string; title: string; markdown: string; objectives: string[]; keyPoints: string[]; sourcePages: number[]; keyEquations?: KeyEquation[]; expectedContentHash?: string };
-export type LessonPatch = { id: string; expectedContentHash: string; edits: Array<{ oldText: string; newText: string }> };
+export type LessonPatch = { id: string; expectedContentHash: string; edits?: Array<{ oldText: string; newText: string }>;
+  calloutEdits?: Array<{ oldText: string; equation?: KeyEquation; snapshotId?: string; replacesSnapshotId?: string }> };
 export type LessonReceipt = Omit<LessonInput, "id" | "markdown" | "expectedContentHash" | "keyEquations"> & { contentHash: string; sourceHash: string; keyEquationIds?: string[]; embeddedSnapshotIds?: string[] };
 export type LessonCommit = { entryIds: string[]; contentHash: string; sourceHash: string };
 export type ObjectiveCheck = { objective: string; checks: AssessmentKind[] };
@@ -178,12 +179,13 @@ export function saveLesson(record: ScholarSection | TutorSession, book: ScholarB
   record.lessonEntryIds = [...new Set([...(record.lessonEntryIds || []), id])];
 }
 
-/** Small prose repairs do not need to regenerate every equation and crop.
- * Keep all rendered callouts and image references byte-for-byte; structural or
- * equation edits still use the complete, validated lesson input. */
-export function patchLesson(record: ScholarSection | TutorSession, book: ScholarBook, patch: LessonPatch): void {
-  if (!patch || typeof patch.id !== "string" || !hash(patch.expectedContentHash) || !Array.isArray(patch.edits)
-    || !patch.edits.length || patch.edits.length > 16 || patch.edits.some(edit => !edit || typeof edit.oldText !== "string"
+/** Exact prose repairs preserve callouts. Explicit callout replacements reuse
+ * the structured equation/figure validators without regenerating the lesson. */
+export function patchLesson(record: ScholarSection | TutorSession, book: ScholarBook, patch: LessonPatch, config?: ScholarConfig): void {
+  const edits = patch?.edits ?? [];
+  const calloutEdits = patch?.calloutEdits ?? [];
+  if (!patch || typeof patch.id !== "string" || !hash(patch.expectedContentHash) || !Array.isArray(edits) || !Array.isArray(calloutEdits)
+    || !(edits.length + calloutEdits.length) || edits.length + calloutEdits.length > 16 || edits.some(edit => !edit || typeof edit.oldText !== "string"
       || !edit.oldText.trim() || typeof edit.newText !== "string" || edit.oldText.length > 24000 || edit.newText.length > 24000)) {
     throw new Error("lessonPatch needs id, current expectedContentHash and 1–16 exact oldText/newText edits (up to 24000 characters each).");
   }
@@ -194,7 +196,7 @@ export function patchLesson(record: ScholarSection | TutorSession, book: Scholar
     || entry.lesson.sourceHash !== book.source.fingerprint.sha256) throw new Error("Stale lessonPatch. Read status with lessonId again; changes outside the validated lesson require a full structured revision.");
   const original = entry.markdown;
   let markdown = original;
-  for (const edit of patch.edits) {
+  for (const edit of edits) {
     const oldText = edit.oldText.replace(/\r\n/g, "\n"), newText = edit.newText.replace(/\r\n/g, "\n");
     if (markdown.split(oldText).length !== 2) throw new Error("Each lessonPatch oldText must occur exactly once in the current lesson. No edits were saved.");
     markdown = markdown.replace(oldText, () => newText);
@@ -208,13 +210,34 @@ export function patchLesson(record: ScholarSection | TutorSession, book: Scholar
   ].map(match => match[0]);
   if (JSON.stringify(protectedContent(original)) !== JSON.stringify(protectedContent(markdown))
     || markdown.includes("[[scholar-") || /<!--|-->/.test(markdown)) throw new Error("lessonPatch preserves rendered equation, figure and other callout blocks. Use a full lesson revision to change those blocks or their references.");
+  let embeddedSnapshotIds = [...(entry.lesson.embeddedSnapshotIds || [])];
+  const changed = new Set<string>();
+  for (const edit of calloutEdits) {
+    if (!edit || typeof edit.oldText !== "string" || edit.oldText.length > 24000) throw new Error("A callout edit needs the exact saved callout.");
+    const old = edit.oldText.replace(/\r\n/g, "\n").trim();
+    const blocks = [...markdown.matchAll(/^>[^\n]*(?:\n>[^\n]*)*/gm)].map(match => match[0]);
+    if (!blocks.includes(old) || markdown.split(old).length !== 2 || changed.has(old)) throw new Error("Replace exactly one complete saved callout; no partial or duplicate targets.");
+    changed.add(old);
+    let replacement: string;
+    if (edit.equation && !edit.snapshotId && !edit.replacesSnapshotId) {
+      if (!/^> \[!note\] Key equation\b/.test(old) || !entry.lesson.keyEquationIds?.includes(edit.equation.id)) throw new Error("Equation edits must preserve an existing equation ID and target a Key equation callout.");
+      replacement = renderKeyEquations(`[[scholar-equation:${edit.equation.id}]]`, [edit.equation], entry.lesson.sourcePages);
+    } else if (!edit.equation && edit.snapshotId && edit.replacesSnapshotId) {
+      const previous = record.snapshots?.find(item => item.id === edit.replacesSnapshotId);
+      if (!/^> \[!example\] Figure\b/.test(old) || !previous || !old.includes(previous.assetFile)
+        || !embeddedSnapshotIds.includes(previous.id) || embeddedSnapshotIds.includes(edit.snapshotId)) throw new Error("Figure edits must replace one existing embedded source crop with a new scoped crop.");
+      replacement = resolveLessonFigures(`[[scholar-figure:${edit.snapshotId}]]`, record, book, entry.lesson.sourcePages, config);
+      embeddedSnapshotIds = embeddedSnapshotIds.map(id => id === previous.id ? edit.snapshotId! : id);
+    } else throw new Error("Supply either a structured equation or a replacement snapshot pair for each callout edit.");
+    markdown = markdown.replace(old, () => replacement.trim());
+  }
   const issues = lessonMarkdownIssues(markdown);
   if (issues.length) throw new Error(`Repair the prose patch presentation: ${issues.join("; ")}.`);
   if (!markdown) throw new Error("A prose patch cannot empty the lesson.");
   if (markdown === original) return;
   const before = JSON.stringify(entry);
   entry.markdown = markdown;
-  entry.lesson = { ...entry.lesson, contentHash: lessonHash(markdown) };
+  entry.lesson = { ...entry.lesson, contentHash: lessonHash(markdown), ...(embeddedSnapshotIds.length ? { embeddedSnapshotIds } : {}) };
   recordValidatedLessonRevision(book, entry, before);
 }
 

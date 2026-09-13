@@ -51,6 +51,7 @@ await check("Actual SDK registry receives the selected custom model and isolated
     requestSignal = request.signal;
     assert.equal(request.maxTokens, 12_000);
     assert.equal(request.maxRetries, 0);
+    assert.equal(request.transport, "sse");
     assert.equal(request.signal.aborted, false);
     return message();
   }));
@@ -109,6 +110,7 @@ await check("Selected reasoning uses the active custom provider with registry au
     assert.deepEqual(await runReviewer(options(undefined, { model: reasoningModel, modelRegistry: registry, thinkingLevel: "high" })), pass);
     assert.equal(requests.length, 1);
     assert.equal(requests[0].request.reasoning, "high");
+    assert.equal(requests[0].request.transport, "sse");
     assert.equal(requests[0].selected.provider, model.provider);
     assert.equal(requests[0].selected.api, model.api);
     assert.equal(requests[0].selected.baseUrl, "https://fixture.invalid/custom");
@@ -306,4 +308,64 @@ await check("Invalid configuration and accounting fail before misleading complet
   assert.ok(Object.isFrozen(DEFAULT_REVIEWER_LIMITS));
 });
 
+await check("Evidence preparation shares the deadline and cannot start a late model request", async () => {
+  let requests=0, release;
+  const pending=new Promise(resolve=>{release=resolve;});
+  await rejectCode(runReviewer(options(async()=>{requests++;return message();},{prepareEvidence:()=>pending,limits:{timeoutMs:25}})),"timeout");
+  release([{type:"text",text:"Late source evidence"}]);
+  await new Promise(resolve=>setTimeout(resolve,30));
+  assert.equal(requests,0);
+});
+await check("Provider failures retain safe category and execution counters without leaking request secrets", async () => {
+  try { await runReviewer(options(async()=>message([],"error",{errorMessage:"WebSocket disconnected https://private.invalid?api_key=secret-test"})));assert.fail(); }
+  catch(error){assert.equal(error.code,"provider");assert.match(error.message,/connection failure/);assert.match(error.message,/1 model turns/);assert.doesNotMatch(error.message,/secret-test|private.invalid/);}
+});
+await check("A response buffered across sleep cannot beat an overdue timer and approve", async () => {
+  const realNow = Date.now; let now = realNow(); Date.now = () => now;
+  try {
+    await rejectCode(runReviewer(options(async () => { now += 60_000; return message(); }, { limits: { timeoutMs: 1000 } })), "timeout");
+    let calls = 0;
+    await rejectCode(runReviewer(options(async () => { calls++; return message(); }, {
+      prepareEvidence: async () => { now += 60_000; return [{ type: "text", text: "late evidence" }]; }, limits: { timeoutMs: 1000 },
+    })), "timeout");
+    assert.equal(calls, 0);
+  } finally { Date.now = realNow; }
+});
+await check("Actual SDK streams report liveness without leaking reasoning and still return one verdict", async () => {
+  const { createAssistantMessageEventStream } = await jiti.import(piAiEntry);
+  const events = [], requestIds = [];
+  const registry = new ModelRegistry({ complete() { throw new Error("unexpected raw completion"); },
+    getAuth() { return { auth: { apiKey: "fixture" } }; },
+    getProvider() { return { streamSimple(_model, _context, request) {
+      requestIds.push(request.sessionId);
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => {
+        stream.push({ type: "thinking_delta", contentIndex: 0, delta: "PRIVATE REASONING", partial: message() });
+        stream.push({ type: "done", reason: "stop", message: message() });
+        stream.end();
+      });
+      return stream;
+    } }; },
+  });
+  assert.deepEqual(await runReviewer(options(undefined, { model: { ...model, reasoning: true }, modelRegistry: registry,
+    thinkingLevel: "high", onProgress: event => events.push(event) })), pass);
+  assert.equal(requestIds.length, 1);
+  assert.ok(events.some(event => event.stage === "stream" && event.toolName === "reasoning"));
+  assert.doesNotMatch(JSON.stringify(events), /PRIVATE/);
+});
+await check("Cancellation ends a stalled SDK stream observer and ignores its late verdict", async () => {
+  const { createAssistantMessageEventStream } = await jiti.import(piAiEntry);
+  const stream = createAssistantMessageEventStream(), owner = new AbortController(), events = [];
+  const registry = new ModelRegistry({ complete() { throw new Error("unexpected raw completion"); },
+    getAuth() { return { auth: { apiKey: "fixture" } }; },
+    getProvider() { return { streamSimple() { setTimeout(() => owner.abort(), 10); return stream; } }; },
+  });
+  await rejectCode(runReviewer(options(undefined, { model: { ...model, reasoning: true }, modelRegistry: registry,
+    thinkingLevel: "high", signal: owner.signal, onProgress: event => events.push(event) })), "cancelled");
+  const count = events.length;
+  stream.push({ type: "done", reason: "stop", message: message() }); stream.end();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(events.length, count);
+  assert.equal(events.some(event => event.stage === "complete"), false);
+});
 console.log(`Scholar reviewer runtime: ${checks} checks passed with the installed Pi SDK; no paid model calls.`);

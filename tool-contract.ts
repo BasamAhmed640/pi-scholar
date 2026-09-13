@@ -174,8 +174,10 @@ export const ScholarParams = Type.Object({
   lessonComplete: Type.Optional(Type.Boolean({ description: "Commit the full saved Learn lesson after all declared objectives have real explanations and the editorial review is complete. Does not award mastery." })),
   lessonPatch: Type.Optional(Type.Object({
     id: Type.String(), expectedContentHash: Type.String(),
-    edits: Type.Array(Type.Object({ oldText: Type.String({ minLength: 1, maxLength: 24000 }), newText: Type.String({ maxLength: 24000 }) }), { minItems: 1, maxItems: 16 }),
-  }, { description: "With notes, repair prose by exact unique text matches after reading status with lessonId. Preserves all existing equation/figure callouts and receipts; no full lesson retransmission. Update changed sourceCoverage excerpts separately. Use full lesson instead when changing callouts; never provide both." })),
+    edits: Type.Optional(Type.Array(Type.Object({ oldText: Type.String({ minLength: 1, maxLength: 24000 }), newText: Type.String({ maxLength: 24000 }) }), { minItems: 1, maxItems: 16 })),
+    calloutEdits: Type.Optional(Type.Array(Type.Object({ oldText: Type.String({ minLength: 1, maxLength: 24000 }),
+      equation: Type.Optional(KeyEquationSchema), snapshotId: Type.Optional(Type.String()), replacesSnapshotId: Type.Optional(Type.String()) }), { minItems: 1, maxItems: 16 })),
+  }, { description: "Repair only changed passages after status lessonId. edits matches unique prose; calloutEdits matches a COMPLETE saved callout and supplies either its structured equation (existing ID) or snapshotId plus replacesSnapshotId. Scholar renders replacements and preserves other callouts. Update changed coverage excerpts/figureReviews separately. Never combine with full lesson." })),
   lessonId: Type.Optional(Type.String({ description: "With action=status, read this saved lesson entry and its current content hash before an intentional revision." })),
   objectiveChecks: Type.Optional(Type.Array(Type.Object({ objective: Type.String(), checks: Type.Array(CheckKindSchema, { minItems: 1 }) }))),
   keyPoints: Type.Optional(Type.Array(Type.String())),

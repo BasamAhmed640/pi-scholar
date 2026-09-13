@@ -541,6 +541,19 @@ export class ScholarRuntimeCoordinator {
       this.loadingRound = 0;
       this.loadingRepair = this.loadingNeedsWriting = false;
       this.loadingSourcePrepared = false;
+      if (newLesson) {
+        const run = this.scholarTurnRun, token = this.loading.token;
+        const releaseInput = run.releaseInput;
+        const deadline = setInterval(() => {
+          if (this.scholarTurnRun !== run || this.loading.token !== token || !this.loading.active) { clearInterval(deadline); return; }
+          if (this.loading.workElapsedMs >= 20 * 60_000) {
+            clearInterval(deadline);
+            this.toolController.stopDelivery("Learn reached its 20-minute work limit. Saved draft preserved; generation stopped. Reopen the draft to read it, or explicitly continue unfinished preparation.", ctx as ExtensionContext);
+          }
+        }, 1000);
+        deadline.unref?.();
+        run.releaseInput = () => { clearInterval(deadline); releaseInput(); };
+      }
     }
     return this.scholarTurnRun;
   }

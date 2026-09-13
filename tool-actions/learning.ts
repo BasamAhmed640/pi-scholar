@@ -84,7 +84,7 @@ export async function handleNotes(
       if (synthesis) tutor.synthesis = synthesis;
       tutor.keyPoints = compactStrings([...tutor.keyPoints, ...keyPoints, ...(params.lesson?.keyPoints || [])]);
       if (params.lesson) saveLesson(tutor, state, params.lesson, config);
-      if (params.lessonPatch) patchLesson(tutor, state, params.lessonPatch);
+      if (params.lessonPatch) patchLesson(tutor, state, params.lessonPatch, config);
       tutor.updatedAt = new Date().toISOString();
     });
     return toolResult("notes", `Saved source-grounded Tutor notes for ${mutation.book.tutorSessions.find((item) => item.id === session.recordId)?.title}.`, { bookId: book.id });
@@ -159,7 +159,7 @@ export async function handleNotes(
     section.keyPoints = compactStrings([...(editorial && params.keyPoints !== undefined ? [] : section.keyPoints), ...keyPoints, ...(params.lesson?.keyPoints || [])]);
     if (params.misconceptions !== undefined) section.misconceptions = compactStrings(params.misconceptions);
     if (params.lesson) saveLesson(section, state, params.lesson, config);
-    if (params.lessonPatch) patchLesson(section, state, params.lessonPatch);
+    if (params.lessonPatch) patchLesson(section, state, params.lessonPatch, config);
     const taught = compactStrings(validLessonEntries(section, state.source.fingerprint.sha256).flatMap(entry => entry.lesson!.objectives));
     if (params.coveredObjectives !== undefined && covered.some(objective => !taught.includes(objective)) && section.status !== "complete") {
       throw new Error("Coverage needs an explicitly saved explanation for each objective; a summary or label cannot mark it taught. Save notes.lesson first.");

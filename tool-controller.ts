@@ -103,6 +103,7 @@ export type ScholarToolController = {
   prepareOutlineValidation(book: ScholarBook): OutlineValidationRun | undefined;
   clearOutlineValidation(): void;
   resetTransientState(): void;
+  stopDelivery(message: string, ctx: ExtensionContext): void;
   captureOpenResponse(text: string, source: string, images?: OpenResponseImage[]): Promise<void>;
   bindOpenResponseTurn(book: ScholarBook, prompt: string, images?: OpenResponseImage[]): void;
   reviewQuestion(book: ScholarBook, section: ScholarSection, value: unknown, sourcePages: number[], ctx: ExtensionContext, signal?: AbortSignal): Promise<(current: ScholarSection) => void>;
@@ -121,6 +122,17 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
   let openInputRevision = 0;
   const reviewStops = new Set<AbortController>();
   const reviewRounds = new Map<string, number>();
+  let stoppedDelivery: string | undefined;
+  const stopDelivery = (message: string, ctx: ExtensionContext): void => {
+    if (stoppedDelivery) return;
+    stoppedDelivery = message;
+    for (const stop of reviewStops) stop.abort(new Error("Scholar preparation was stopped; its saved draft remains available."));
+    try { ports.onReviewOutcome?.(message); } catch { /* display only */ }
+    try { if (ctx.hasUI) ctx.ui.notify(message, "warning"); } catch { /* disconnected UI */ }
+    // Stop Pi's loop as well as subsequent writes. A tool error alone lets the
+    // author keep spending tokens on revisions that cannot be reviewed.
+    ctx.abort?.();
+  };
   const reserveReview = (key: string) => {
     const rounds = reviewRounds.get(key) || 0;
     if (rounds >= 3) throw new Error("Scholar stopped after three review rounds for this delivery. Preserve the draft and report the remaining findings to the learner; continue only on their next request.");
@@ -166,6 +178,7 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
   };
   const captureOpenResponse = async (text: string, source: string, images?: OpenResponseImage[]): Promise<void> => {
     reviewRounds.clear();
+    stoppedDelivery = undefined;
     const inputRevision = ++openInputRevision;
     const activation = session.state;
     openResponses.clear();
@@ -476,6 +489,7 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
 
       async execute(toolCallId, params, signal, _onUpdate, ctx) {
         try {
+          if (stoppedDelivery && params.action !== "status") throw new Error(stoppedDelivery);
           const book = await requireActiveBook();
           if (!ports.isActiveAuthority(book)) {
             throw new Error("Scholar stopped because the active book authority changed. Select the PDF again.");
@@ -611,7 +625,7 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
             if (final.result.length) {
               const incomplete = reviews.filter(review => review.failure);
               const message = incomplete.length
-                ? `Draft saved; review incomplete (${incomplete.map(review => `${review.role}: ${review.failure!.code}`).join(", ")}). Resume the failed review with lessonComplete on this same saved draft. Do not rewrite it because a reviewer failed to execute. Address any separate content findings below.`
+                ? `Draft saved; review incomplete (${incomplete.map(review => `${review.role}: ${review.failure!.code}`).join(", ")}). Generation stopped. Continue only on the learner's next request; retry the same draft before any optional edits. No automatic retry or rewrite after an execution failure.`
                 : "Draft saved; specialist review found repairs. Revise the named passages in their existing lesson IDs using the current expectedContentHash, update their exact coverage evidence, and submit lessonComplete again. Do not append a duplicate replacement lesson.";
               try { ports.onReviewOutcome?.(incomplete.length ? `Draft saved · review incomplete: ${incomplete.map(review => review.failure!.code).join(", ")}` : "Draft saved · revisions needed"); } catch { /* display only */ }
               const result = toolResult("notes", message, { bookId: book.id, sectionId: section.id, tone: "review" });
@@ -620,6 +634,9 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
                 ...review.findings.filter(finding => !(review.failure && finding.target === "review evidence" && finding.issue === review.failure.message))
                   .map(finding => `${review.role} / ${finding.severity} / ${finding.target} / PDF ${finding.sourcePages.join(", ")}: ${finding.issue}\nRepair: ${finding.repair}`),
               ]).join("\n\n") });
+              if (incomplete.length || (reviewRounds.get(`lesson:${section.id}`) || 0) >= 3) {
+                stopDelivery(incomplete.length ? message : "Draft saved; three review rounds found unresolved content. Generation stopped. Resume only when requested.", ctx);
+              }
               return result;
             }
             try { ports.onReviewOutcome?.(); } catch { /* display only */ }
@@ -753,6 +770,7 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
   const resetTransientState = (): void => {
     for (const stop of reviewStops) stop.abort(new Error("Scholar review cancelled because its active session changed."));
     reviewRounds.clear();
+    stoppedDelivery = undefined;
     clearOutlineValidation();
     clearImageSelection();
     sourceFigureViews.clear();
@@ -765,6 +783,7 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
     prepareOutlineValidation,
     clearOutlineValidation,
     resetTransientState,
+    stopDelivery,
     captureOpenResponse,
     bindOpenResponseTurn,
     reviewQuestion,

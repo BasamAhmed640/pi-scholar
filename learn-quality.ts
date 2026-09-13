@@ -168,6 +168,7 @@ export type ReviewReceipt = ReviewResult & {
   failure?: ReviewFailure;
   /** Successful scoped work, stored with the parent lesson/source hashes in the vault. */
   batches?: ReviewBatchPass[];
+  diagnostics?: { elapsedMs: number; modelTurns: number; toolCalls: number; inputTokens: number; outputTokens: number };
 };
 
 export function isReviewFinding(value: unknown): value is ReviewFinding {
@@ -202,7 +203,7 @@ export function parseReviewerVerdict(raw: string): ReviewerVerdict {
 }
 
 export function isReviewReceipt(value: unknown): value is ReviewReceipt {
-  if (!object(value) || !keys(value, ["role", "contentHash", "sourceHash", "model", "createdAt", "status", "findings", "failure", "batches"])
+  if (!object(value) || !keys(value, ["role", "contentHash", "sourceHash", "model", "createdAt", "status", "findings", "failure", "batches", "diagnostics"])
     || !validReviewFields(value) || !REVIEW_ROLES.includes(value.role as ReviewRole)
     || !sha256(value.contentHash) || !sha256(value.sourceHash) || !text(value.model, 300)
     || typeof value.createdAt !== "string") return false;
@@ -213,6 +214,8 @@ export function isReviewReceipt(value: unknown): value is ReviewReceipt {
     || !value.batches.every(batch => object(batch) && keys(batch, ["key", "findings"]) && sha256(batch.key)
       && Array.isArray(batch.findings) && batch.findings.length <= 40 && batch.findings.every(finding => isReviewFinding(finding) && finding.severity === "advice"))
     || new Set(value.batches.map(batch => batch.key)).size !== value.batches.length)) return false;
+  if (value.diagnostics !== undefined && (!object(value.diagnostics) || !keys(value.diagnostics, ["elapsedMs", "modelTurns", "toolCalls", "inputTokens", "outputTokens"])
+    || Object.keys(value.diagnostics).length !== 5 || Object.values(value.diagnostics).some(value => !Number.isSafeInteger(value) || Number(value) < 0))) return false;
   const time = new Date(value.createdAt);
   return Number.isFinite(time.getTime()) && time.toISOString() === value.createdAt;
 }

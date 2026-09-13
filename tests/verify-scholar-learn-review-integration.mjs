@@ -207,12 +207,15 @@ try {
     h.onRequest = async ({role}) => { if (role === 'source') throw new Error('Simulated connection failure'); };
     const result = await h.execute({ ...notes(), lessonComplete: true });
     assert.match(textOf(result), /review incomplete.*source: provider/s);
-    assert.match(textOf(result), /Do not rewrite/);
+    assert.match(textOf(result), /No automatic retry or rewrite/);
     const first = active(await h.load());
     assert.equal(first.learnQuality.reviews.find(review=>review.role==='source').failure.code, 'provider');
     assert.equal(first.lessonCommit, undefined);
     const start = h.requests.length;
     h.onRequest = undefined;
+    assert.match(textOf(await h.execute({action:'notes',lessonComplete:true})), /Generation stopped/);
+    assert.equal(h.requests.length, start, 'a model cannot retry a failed execution in the same turn');
+    await h.controller.captureOpenResponse('Continue this saved draft', 'interactive');
     success(await h.execute({action:'notes',lessonComplete:true}));
     assert(h.requests.slice(start).every(request=>request.role==='source'));
     const current = await h.load();
@@ -248,9 +251,9 @@ try {
     assert.deepEqual(section.learnQuality.reviews.map(receipt => receipt.role), ["source", "teaching", "visual"]);
     assert.equal(new Set(h.requests.map(request => request.sessionId)).size, 3);
     assert.deepEqual([...new Set(h.requests.map(request => request.role))].sort(), ["source", "teaching", "visual"]);
-    const readEvidence = h.requests.flatMap(request => request.context.messages).filter(message => message.role === "toolResult" && message.toolName === "read_source");
+    const readEvidence = h.requests.flatMap(request => request.context.messages).filter(message => Array.isArray(message.content));
     assert.ok(readEvidence.some(message => message.content.some(item => item.type === "text" && item.text.includes("[Page 1]") && item.text.includes("constant speed"))));
-    const renderedEvidence = h.requests.flatMap(request => request.context.messages).filter(message => message.role === "toolResult" && message.toolName === "view_source");
+    const renderedEvidence = readEvidence;
     const png = renderedEvidence.flatMap(message => message.content).find(item => item.type === "image");
     assert.ok(png && Buffer.from(png.data, "base64").readUInt32BE(16) > 100, "reviewer receives the real Poppler page, not a fake approval receipt");
     assert.equal(section.attempts.length, 0);
@@ -374,6 +377,123 @@ try {
         assert.deepEqual(section.learnQuality.reviews, [], "cancelled approval cannot write passing review receipts");
       } else assert.deepEqual(after, before, "cancelled question write cannot change prior approval, progress, or the note");
     }
+  });
+  await check("Structured equation edits preserve other prose and receipts and invalidate approval atomically", async()=>{
+    const h=await harness();success(await h.execute({...notes(),lessonComplete:true}));
+    const before=active(await h.load()), entry=before.transcript.find(item=>item.lesson);
+    const old=[...entry.markdown.matchAll(/^>[^\n]*(?:\n>[^\n]*)*/gm)].find(match=>match[0].startsWith('> [!note] Key equation'))[0];
+    const equation={...notes().lesson.keyEquations[0],symbols:[{symbol:'t',definition:'elapsed travel time'},...notes().lesson.keyEquations[0].symbols.slice(1)]};
+    success(await h.execute({action:'notes',lessonPatch:{id:entry.id,expectedContentHash:entry.lesson.contentHash,calloutEdits:[{oldText:old,equation}]}}));
+    const after=active(await h.load()), updated=after.transcript.find(item=>item.lesson);
+    assert.equal(updated.markdown.replace('elapsed travel time','travel time'),entry.markdown);
+    assert.deepEqual(updated.lesson.keyEquationIds,entry.lesson.keyEquationIds);
+    assert.equal(updated.createdAt,entry.createdAt);
+    assert.equal(lesson.lessonReady(after),false);
+    const snapshot=await h.load();
+    const invalid=await h.execute({action:'notes',lessonPatch:{id:entry.id,expectedContentHash:updated.lesson.contentHash,calloutEdits:[{oldText:old,equation:{...equation,sourcePages:[2]}}]}});
+    assert.ok(['error','retry'].includes(invalid.details.tone));assert.deepEqual(await h.load(),snapshot);
+    const stale=await h.execute({action:'notes',lessonPatch:{id:entry.id,expectedContentHash:entry.lesson.contentHash,calloutEdits:[{oldText:old,equation}]}});
+    assert.match(textOf(stale),/Stale/);
+  });
+  await check("Provider failure actively aborts the author loop and blocks follow-on rewrites", async()=>{
+    const h=await harness();let aborts=0;const context=h.context;
+    h.context=()=>({...context(),abort(){aborts++;}});
+    h.onRequest=async({role})=>{if(role==='source')throw new Error('Connection reset');};
+    const result=await h.execute({...notes(),lessonComplete:true});
+    assert.match(textOf(result),/Generation stopped/);assert.equal(aborts,1);
+    const before=await h.load(), calls=h.requests.length;
+    assert.match(textOf(await h.execute(notes())),/Generation stopped/);
+    assert.deepEqual(await h.load(),before);assert.equal(h.requests.length,calls);
+    assert.match(textOf(await h.execute({action:'read',startPage:1,endPage:1})),/Generation stopped/);
+    success(await h.execute({action:'status'}));
+  });
+  await check("The third unresolved content review stops the author before any fourth repair", async()=>{
+    const h=await harness();h.verdicts.source=changes;let aborts=0;const context=h.context;
+    h.context=()=>({...context(),abort(){aborts++;}});
+    for(let round=0;round<3;round++) {
+      const result=await h.execute(round===0?{...notes(),lessonComplete:true}:{action:'notes',lessonComplete:true});
+      assert.equal(result.details.tone,'review');
+    }
+    assert.equal(aborts,1);
+    const before=await h.load(),calls=h.requests.length;
+    assert.match(textOf(await h.execute(notes())),/three review rounds/);
+    assert.equal(h.requests.length,calls);assert.deepEqual(await h.load(),before);
+  });
+  await check("Replacing one literal crop updates only that callout and cannot bypass figure validation", async()=>{
+    const h=await harness();
+    const viewed=active(await h.load()).figureCoverage.pages[0].viewed;
+    const capture=async x=>success(await h.execute({action:'snapshot',page:1,x,y:30,width:600,height:180,
+      canvasWidth:viewed.width,canvasHeight:viewed.height,caption:`Source equation crop at offset ${x}.`}));
+    await capture(10);await capture(20);
+    const [first,second]=active(await h.load()).snapshots;
+    const input=notes();input.lesson.markdown+=`\n\n[[scholar-figure:${first.id}]]`;
+    input.figureReviews=[{page:1,observation:'The text source contains the stated equation, retained as a literal crop.',figures:[{label:'Source equation',snapshotId:first.id}]}];
+    input.sourceCoverage.push({id:'source-crop',kind:'figure',objective,description:'Inspect the literal equation',sourcePages:[1],lessonId:'delay',evidence:meaning,snapshotId:first.id});
+    success(await h.execute({...input,lessonComplete:true}));
+    const before=active(await h.load()),entry=before.transcript.find(item=>item.lesson);
+    const old=[...entry.markdown.matchAll(/^>[^\n]*(?:\n>[^\n]*)*/gm)].find(match=>match[0].startsWith('> [!example] Figure'))[0];
+    const patch={id:entry.id,expectedContentHash:entry.lesson.contentHash,calloutEdits:[{oldText:old,snapshotId:second.id,replacesSnapshotId:first.id}]};
+    success(await h.execute({action:'notes',lessonPatch:patch,
+      figureReviews:[{...input.figureReviews[0],figures:[{label:'Source equation',snapshotId:second.id}]}],
+      coverageUpdates:[{id:'source-crop',snapshotId:second.id}]}));
+    const current=active(await h.load()),updated=current.transcript.find(item=>item.lesson);
+    const changed=[...updated.markdown.matchAll(/^>[^\n]*(?:\n>[^\n]*)*/gm)].find(match=>match[0].startsWith('> [!example] Figure'))[0];
+    assert.equal(updated.markdown.replace(changed,old),entry.markdown);
+    assert.deepEqual(updated.lesson.embeddedSnapshotIds,[second.id]);
+    assert.deepEqual(updated.lesson.keyEquationIds,entry.lesson.keyEquationIds);
+    assert.equal(current.snapshots.length,2);assert.equal(lesson.lessonReady(current),false);
+    const durable=await h.load();
+    assert.ok(['retry','error'].includes((await h.execute({action:'notes',lessonPatch:{...patch,expectedContentHash:updated.lesson.contentHash,
+      calloutEdits:[{oldText:changed,snapshotId:'missing-crop',replacesSnapshotId:second.id}]}})).details.tone));
+    assert.deepEqual(await h.load(),durable);
+    success(await h.execute({action:'notes',lessonComplete:true}));
+    assert(lesson.lessonReady(active(await h.load())));
+  });
+  await check("Reopening a saved draft starts no generation; explicit continue starts exactly one turn", async()=>{
+    const h=await harness();success(await h.execute(notes()));
+    const {handleScholarCommand}=await loadModule('commands.ts');
+    const {parseScholarCommand}=await loadModule('command-syntax.ts');
+    assert.deepEqual(parseScholarCommand('learn "1.1" continue'),{action:'learn',value:'1.1',continue:true});
+    assert.deepEqual(parseScholarCommand('learn "continue"'),{action:'learn',value:'continue'});
+    const notifications=[];let generations=0,locks=0;
+    const ctx={hasUI:false,isIdle:()=>true,ui:{notify:message=>notifications.push(message)}};
+    const coordinator={runtimeSession:h.session,getConfig:()=>h.config,loadFreshConfig:async()=>h.config,
+      getNavigationRun:()=>undefined,getSetupRun:()=>undefined,getScholarTurnRun:()=>undefined,
+      hasConfiguredLibrary:()=>true,hasConfiguredObsidian:()=>true,mutateBook:h.mutate,
+      beginNavigation(){locks++;return()=>{locks--;};},activateBook:async(book,_ctx,mode,id)=>h.session.activate(book.id,mode,id),
+      startScholarModeTurn:async()=>{generations++;}};
+    await handleScholarCommand('learn "1.1"',ctx,coordinator);
+    assert.equal(generations,0);assert.equal(locks,0);assert(notifications.some(message=>message.includes('No generation started')));
+    await handleScholarCommand('learn "1.1" continue',ctx,coordinator);
+    assert.equal(generations,1);assert.equal(locks,0);
+  });
+  await check("The total Learn deadline stops a long writer, excludes learner waiting, and cannot stop a later session", async()=>{
+    const h=await harness();const book=await h.load();
+    const {ScholarRuntimeCoordinator}=await loadModule('runtime-coordinator.ts');
+    const {ScholarLoadingProgress}=await loadModule('loading-progress.ts');
+    let clock=0,stops=0;const timers=new Set();
+    const originalSet=globalThis.setInterval,originalClear=globalThis.clearInterval;
+    globalThis.setInterval=callback=>{const timer={callback,unref(){}};timers.add(timer);return timer;};
+    globalThis.clearInterval=timer=>timers.delete(timer);
+    try{
+      const coordinator=new ScholarRuntimeCoordinator({},()=>()=>{},()=>{});
+      Object.defineProperty(coordinator,'loading',{value:new ScholarLoadingProgress(()=>clock)});
+      coordinator.runtimeSession.activate(book.id,'learn','s1');
+      coordinator.toolController={stopDelivery:()=>{stops++;}};
+      const ctx={hasUI:false,ui:{}};
+      const run=coordinator.ensureScholarTurnInputLock(book,ctx,'Learn response');
+      assert.equal(timers.size,1);
+      clock=60_000;
+      await coordinator.loading.withUserInput(async()=>{clock+=30*60_000;});
+      [...timers].forEach(timer=>timer.callback());assert.equal(stops,0);
+      clock+=19*60_000;[...timers].forEach(timer=>timer.callback());
+      assert.equal(stops,1);assert.equal(timers.size,0);
+      run.releaseInput();coordinator.scholarTurnRun=undefined;
+      const next=coordinator.ensureScholarTurnInputLock(book,ctx,'Learn response');
+      const late=[...timers][0];next.releaseInput();coordinator.scholarTurnRun=undefined;
+      late.callback();assert.equal(stops,1);assert.equal(timers.size,0);
+      coordinator.loading.clear();
+    }finally{globalThis.setInterval=originalSet;globalThis.clearInterval=originalClear;}
   });
   console.log(`Scholar Learn review integration: ${checks} passed.`);
 } finally {

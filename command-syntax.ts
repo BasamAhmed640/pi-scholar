@@ -7,6 +7,7 @@ export type ParsedScholarCommand = {
   action: string;
   value?: string;
   submit?: true;
+  continue?: true;
 };
 
 export function cleanArgument(value: string): string {
@@ -25,6 +26,13 @@ export function parseScholarCommand(input: string): ParsedScholarCommand {
   const action = match[1]!.toLowerCase();
   let rawValue = match[2]?.trim();
   let submit = false;
+  let continueLearn = false;
+  if (action === "learn" && rawValue && /(?:^|\s)continue$/i.test(rawValue)) {
+    const target = rawValue.replace(/(?:^|\s)continue$/i, "").trim();
+    if (!target || !/^["']/.test(target) || target.length > 1 && target.endsWith(target[0]!)) {
+      continueLearn = true; rawValue = target;
+    }
+  }
   if (action === "exam" && rawValue) {
     // Recognize the verb before stripping quotes: "submit" can be a title.
     const trailing = /(?:^|\s)submit$/i.exec(rawValue);
@@ -39,7 +47,7 @@ export function parseScholarCommand(input: string): ParsedScholarCommand {
   }
   const value = rawValue ? cleanArgument(rawValue) : undefined;
   if (value && ["close", "help"].includes(action)) return { action: "invalid" };
-  return { action, ...(value ? { value } : {}), ...(submit ? { submit: true as const } : {}) };
+  return { action, ...(value ? { value } : {}), ...(submit ? { submit: true as const } : {}), ...(continueLearn ? { continue: true as const } : {}) };
 }
 
 export const SCHOLAR_COMMAND_ACTIONS = [

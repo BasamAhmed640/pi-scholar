@@ -90,31 +90,25 @@ try {
     const role = /Assigned role: (\w+)\./.exec(context.systemPrompt)[1];
     const prompt = context.messages[0].content;
     const payload = JSON.parse(prompt.slice(prompt.indexOf('\n{"source":') + 1));
-    if (context.messages.length === 1) {
-      const toolCall = (name, args, id) => ({ type: "toolCall", name, arguments: args, id });
-      if (role === "source") return reply([toolCall("read_source", { startPage: payload.source.startPage, endPage: payload.source.endPage }, "source-pages")], "toolUse");
-      if (role === "visual") return reply([
-        ...Array.from({ length: payload.source.endPage - payload.source.startPage + 1 }, (_, index) => {
-          const page = payload.source.startPage + index;
-          return toolCall("view_source", { page }, `page-${page}`);
-        }),
-        ...(payload.figures || []).map((crop, index) => toolCall("view_crop", { id: crop.id }, `crop-${index}`)),
-      ], "toolUse");
-    }
-    for (const result of context.messages.filter(message => message.role === "toolResult")) {
-      if (result.toolName === "read_source") {
-        const text = result.content.filter(item => item.type === "text").map(item => item.text).join("\n");
+    assert.deepEqual(context.tools, [], "Learn reviews inspect runner-prepared evidence in one request");
+    const evidence = context.messages[1].content;
+    assert.ok(Array.isArray(evidence));
+    if (role === "source" || role === "teaching") {
+        const text = evidence.filter(item => item.type === "text").map(item => item.text).join("\n");
         for (let page = payload.source.startPage; page <= payload.source.endPage; page++) {
           assert.ok(text.includes(`[Page ${page}]`), "source approval requires actual complete-page evidence"); readPages.add(page);
         }
-      }
-      if (result.toolName === "view_source" || result.toolName === "view_crop") {
-        const image = result.content.find(item => item.type === "image");
+    }
+    if (role === "visual") {
+      for (let index = 0; index < evidence.length; index++) {
+        const image = evidence[index];
+        if (image.type !== "image") continue;
+        const label = evidence[index - 1].text;
         assert.equal(image?.mimeType, "image/png");
         const bytes = Buffer.from(image.data, "base64");
         assert.ok(bytes.readUInt32BE(16) >= 32 && bytes.readUInt32BE(20) >= 32, "review image must be a real rendered page or crop");
-        if (result.toolName === "view_crop") reviewedCrops.add(createHash("sha256").update(bytes).digest("hex"));
-        else reviewedPages.add(Number(result.toolCallId.replace("page-", "")));
+        if (label.startsWith("Saved crop ")) reviewedCrops.add(createHash("sha256").update(bytes).digest("hex"));
+        else { assert.match(label, /^Full source PDF page \d+$/); reviewedPages.add(Number(label.match(/\d+$/)[0])); }
       }
     }
     return reply();
