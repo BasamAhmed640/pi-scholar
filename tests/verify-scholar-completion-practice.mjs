@@ -1,3 +1,4 @@
+import { sdkAliases } from "./sdk.mjs";
 // Synthetic fixtures only: exercise Pi events, durable vault saves and projections.
 import assert from "node:assert/strict";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -8,7 +9,7 @@ import { extensionPath, piPackageRoot, jitiPath, loaderPath, resolvePiDependency
 import { saveFixtureLesson } from "./lesson-fixture.mjs";
 
 const { createJiti } = await import(pathToFileURL(jitiPath).href);
-const jiti = createJiti(import.meta.url, { moduleCache: false, alias: {
+const jiti = createJiti(import.meta.url, { moduleCache: false, alias: { ...sdkAliases,
   "@earendil-works/pi-coding-agent": join(piPackageRoot, "dist", "index.js"),
   "@earendil-works/pi-tui": resolvePiDependency("@earendil-works/pi-tui"),
   typebox: resolvePiDependency("typebox"),

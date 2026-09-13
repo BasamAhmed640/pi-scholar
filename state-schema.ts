@@ -2,6 +2,7 @@ import { basename, extname, isAbsolute } from "node:path";
 import { isQuestionGrounding } from "./question-grounding.ts";
 import { isFrozenScholarQuiz } from "./quiz-contract.ts";
 import { isLessonReceipt, isLessonCommit, isObjectiveChecks } from "./lesson.ts";
+import { isSourceCoverageLedger, isReviewReceipt } from "./learn-quality.ts";
 import { isOpenAssessmentContract, isOpenAssessmentEvaluation, isOpenAssessmentSubmission } from "./open-assessment.ts";
 import { pageInRanges, scopedPageRanges } from "./page-scope.ts";
 
@@ -317,7 +318,7 @@ function isSection(value: unknown): value is ScholarSection {
       "requiredChecks", "status", "keyPoints", "misconceptions", "attempts", "transcript",
       "createdAt", "updatedAt",
     ],
-    ["number", "synthesis", "snapshots", "figureCoverage", "legacyCompletion", "legacyLessonCompletion", "lessonCommit", "lessonEntryIds", "objectiveChecks"],
+    ["number", "synthesis", "snapshots", "figureCoverage", "legacyCompletion", "legacyLessonCompletion", "lessonCommit", "lessonEntryIds", "objectiveChecks", "learnQuality"],
   )) return false;
   const valid = (
     isStableId(value.id) &&
@@ -331,6 +332,13 @@ function isSection(value: unknown): value is ScholarSection {
     (value.lessonEntryIds === undefined || isStringArray(value.lessonEntryIds, { nonEmpty: true, unique: true })) &&
     (value.legacyLessonCompletion === undefined || value.legacyLessonCompletion === true) &&
     (value.objectiveChecks === undefined || isObjectiveChecks(value.objectiveChecks)) &&
+    (value.learnQuality === undefined || (isRecord(value.learnQuality) && hasOnlyKeys(value.learnQuality, ["version", "coverage", "reviews"], ["earnedDelivery"])
+      && value.learnQuality.version === 1 && isSourceCoverageLedger(value.learnQuality.coverage)
+      && Array.isArray(value.learnQuality.reviews) && value.learnQuality.reviews.every(isReviewReceipt)
+      && (value.learnQuality.earnedDelivery === undefined || (isRecord(value.learnQuality.earnedDelivery)
+        && hasOnlyKeys(value.learnQuality.earnedDelivery, ["sourceHash", "objectiveHash"], [])
+        && typeof value.learnQuality.earnedDelivery.sourceHash === "string" && /^[a-f\d]{64}$/.test(value.learnQuality.earnedDelivery.sourceHash)
+        && typeof value.learnQuality.earnedDelivery.objectiveHash === "string" && /^[a-f\d]{64}$/.test(value.learnQuality.earnedDelivery.objectiveHash))))) &&
     isStringArray(value.objectives, { nonEmpty: true, unique: true }) &&
     isStringArray(value.coveredObjectives, { nonEmpty: true, unique: true }) &&
     Array.isArray(value.requiredChecks) &&

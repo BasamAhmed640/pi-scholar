@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { AssessmentAttempt, ScholarBook } from "./types.ts";
 import { findSection } from "./types.ts";
 import type { ScholarRuntimeSession } from "./runtime-session.ts";
+import { normalizeObsidianMath } from "./math-formatting.ts";
 
 export interface OpenAssessmentContract { expectedAnswer: string; criteria: string[] }
 export interface OpenAssessmentEvaluation {
@@ -38,9 +39,14 @@ export function isOpenAssessmentSubmission(value: unknown): value is OpenAssessm
     && typeof value.questionHash === "string" && /^[a-f0-9]{64}$/.test(value.questionHash);
 }
 
+/** Only for new prompts, before they are validated, saved, or fingerprinted. */
+export function prepareOpenQuestionText(value: string): string {
+  return normalizeObsidianMath(value.trim());
+}
+
 export function prepareOpenAssessment(expectedAnswer: unknown, criteria: unknown): OpenAssessmentContract {
-  const contract = { expectedAnswer: typeof expectedAnswer === "string" ? expectedAnswer.trim() : expectedAnswer,
-    criteria: Array.isArray(criteria) ? criteria.map((item) => typeof item === "string" ? item.trim() : item) : criteria };
+  const contract = { expectedAnswer: typeof expectedAnswer === "string" ? prepareOpenQuestionText(expectedAnswer) : expectedAnswer,
+    criteria: Array.isArray(criteria) ? criteria.map((item) => typeof item === "string" ? prepareOpenQuestionText(item) : item) : criteria };
   if (!isOpenAssessmentContract(contract)) throw new Error("Prepare the expectedAnswer and 1–12 distinct observable grading criteria before presenting an open question.");
   return contract;
 }

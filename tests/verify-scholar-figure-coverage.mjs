@@ -1,3 +1,4 @@
+import { sdkAliases } from "./sdk.mjs";
 import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiPath as sdkJitiPath, resolvePiDependency } from "./sdk.mjs";
 // Real Poppler, source routing, crops, receipt persistence and missing-asset gates.
 // Everything writable is confined to a disposable vault and library.
@@ -13,7 +14,7 @@ const piRoot = sdkRoot;
 const piRequire = createRequire(join(piRoot, "package.json"));
 const { createJiti } = await import(pathToFileURL(sdkJitiPath).href);
 const extension = dirname(resolve(process.env.PI_SCHOLAR_EXTENSION || packagedExtensionPath));
-const jiti = createJiti(import.meta.url, { moduleCache: false, alias: {
+const jiti = createJiti(import.meta.url, { moduleCache: false, alias: { ...sdkAliases,
   "@earendil-works/pi-coding-agent": join(piRoot, "dist", "index.js"),
   "@earendil-works/pi-tui": piRequire.resolve("@earendil-works/pi-tui"),
   typebox: piRequire.resolve("typebox"),
@@ -24,6 +25,7 @@ const storage = await jiti.import(join(extension, "storage.ts"));
 const { snapshotAssetPath } = await jiti.import(join(extension, "obsidian-paths.ts"));
 const { ScholarRuntimeSession } = await jiti.import(join(extension, "runtime-session.ts"));
 const { createScholarToolController } = await jiti.import(join(extension, "tool-controller.ts"));
+const { ModelRegistry } = await import(pathToFileURL(join(piRoot, "dist/core/model-registry.js")));
 const root = await mkdtemp(join(tmpdir(), "scholar-figure-coverage-"));
 const envKeys = ["PI_SCHOLAR_OBSIDIAN_ROOT", "PI_SCHOLAR_LIBRARY_ROOT", "PI_SCHOLAR_STATE_ROOT"];
 const oldEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
@@ -78,12 +80,64 @@ try {
   let tool;
   createScholarToolController({ pi: { registerTool(definition) { tool = definition; } }, session, getConfig: () => config, loadBook: load, mutateBook, isActiveAuthority: () => true, isSetupActive: () => false }).ensureRegistered();
   let call = 0;
-  const execute = (params) => tool.execute(`figure-fixture-${++call}`, params, undefined, undefined, { hasUI: false });
+  const model = { id: "figure-review", provider: "fixture-provider", api: "fixture-api", input: ["text", "image"], contextWindow: 300_000, maxTokens: 32_000 };
+  const reviewedCrops = new Set(), reviewedPages = new Set(), readPages = new Set();
+  const reply = (content = [{ type: "text", text: JSON.stringify({ status: "pass", findings: [] }) }], stopReason = "stop") => ({ role: "assistant", content, stopReason,
+    api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), usage: { input: 200, output: 40, cacheRead: 0, cacheWrite: 0, totalTokens: 240,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
+  const modelRegistry = new ModelRegistry({ complete: async (selected, context) => {
+    assert.equal(selected, model);
+    const role = /Assigned role: (\w+)\./.exec(context.systemPrompt)[1];
+    const prompt = context.messages[0].content;
+    const payload = JSON.parse(prompt.slice(prompt.indexOf('\n{"source":') + 1));
+    if (context.messages.length === 1) {
+      const toolCall = (name, args, id) => ({ type: "toolCall", name, arguments: args, id });
+      if (role === "source") return reply([toolCall("read_source", { startPage: payload.source.startPage, endPage: payload.source.endPage }, "source-pages")], "toolUse");
+      if (role === "visual") return reply([
+        ...Array.from({ length: payload.source.endPage - payload.source.startPage + 1 }, (_, index) => {
+          const page = payload.source.startPage + index;
+          return toolCall("view_source", { page }, `page-${page}`);
+        }),
+        ...(payload.figures || []).map((crop, index) => toolCall("view_crop", { id: crop.id }, `crop-${index}`)),
+      ], "toolUse");
+    }
+    for (const result of context.messages.filter(message => message.role === "toolResult")) {
+      if (result.toolName === "read_source") {
+        const text = result.content.filter(item => item.type === "text").map(item => item.text).join("\n");
+        for (let page = payload.source.startPage; page <= payload.source.endPage; page++) {
+          assert.ok(text.includes(`[Page ${page}]`), "source approval requires actual complete-page evidence"); readPages.add(page);
+        }
+      }
+      if (result.toolName === "view_source" || result.toolName === "view_crop") {
+        const image = result.content.find(item => item.type === "image");
+        assert.equal(image?.mimeType, "image/png");
+        const bytes = Buffer.from(image.data, "base64");
+        assert.ok(bytes.readUInt32BE(16) >= 32 && bytes.readUInt32BE(20) >= 32, "review image must be a real rendered page or crop");
+        if (result.toolName === "view_crop") reviewedCrops.add(createHash("sha256").update(bytes).digest("hex"));
+        else reviewedPages.add(Number(result.toolCallId.replace("page-", "")));
+      }
+    }
+    return reply();
+  } });
+  const execute = (params) => tool.execute(`figure-fixture-${++call}`, params, undefined, undefined, { hasUI: false, model, modelRegistry });
   const successful = (result) => assert.ok(!["error", "retry", "review"].includes(result.details.tone), result.content[0].text);
-  const notes = (figureReviews) => ({ action: "notes", synthesis: "The physical model connects each design choice to the resulting source behavior through a clear causal chain.", objectives: ["Explain the physical model"], coveredObjectives: ["Explain the physical model"], keyPoints: ["The model connects physical causes to observable behavior."], requiredChecks: ["conceptual"],
-    objectiveChecks: [{ objective: "Explain the physical model", checks: ["conceptual"] }],
-    lesson: { id: "physical-model", title: "Following causes through a model", markdown: "### Following causes through a model\n\nA physical model represents how changes in a design affect observable behavior. Begin at the input of the source diagram and follow each connection to its output. Each connection expresses a relationship, so changing an input can change the outcome through the intermediate steps.\n\nTo explain the model, name the changing input and trace the relationships to the measured result. The direction of each arrow tells you which step supplies the next one.", objectives: ["Explain the physical model"], keyPoints: ["The model connects physical causes to observable behavior."], sourcePages: session.recordId === "section-3" ? [3] : [1, 2] },
-    lessonComplete: true, ...(figureReviews ? { figureReviews } : {}) });
+  const lessonSnapshots = new Map();
+  const explanation = "A physical model represents how changes in a design affect observable behavior. Begin at the input of the source diagram and follow each connection to its output. Each connection expresses a relationship, so changing an input can change the outcome through the intermediate steps.";
+  const figureExplanation = "To explain the model, name the changing input and trace the relationships to the measured result. The direction of each arrow tells you which step supplies the next one.";
+  const notes = (figureReviews) => {
+    const sourcePages = session.recordId === "section-3" ? [3] : [1, 2];
+    const snapshots = lessonSnapshots.get(session.recordId) || [];
+    return { action: "notes", synthesis: "The physical model connects each design choice to the resulting source behavior through a clear causal chain.", objectives: ["Explain the physical model"], coveredObjectives: ["Explain the physical model"], keyPoints: ["The model connects physical causes to observable behavior."], requiredChecks: ["conceptual"],
+      objectiveChecks: [{ objective: "Explain the physical model", checks: ["conceptual"] }],
+      sourceCoverage: [{ id: "model-concept", kind: "concept", description: "Explain how a source model relates a design change to observed behavior", sourcePages,
+        objective: "Explain the physical model", lessonId: "physical-model", evidence: explanation },
+        ...snapshots.map(snapshot => ({ id: `figure-${snapshot.id}`, kind: "figure", description: "Walk through the source diagram's directed connections", sourcePages: [snapshot.page],
+          objective: "Explain the physical model", lessonId: "physical-model", evidence: figureExplanation, snapshotId: snapshot.id }))],
+      lesson: { id: "physical-model", title: "Following causes through a model", markdown: ["### Following causes through a model", explanation,
+        ...snapshots.map(snapshot => `[[scholar-figure:${snapshot.id}]]`), figureExplanation].join("\n\n"),
+        objectives: ["Explain the physical model"], keyPoints: ["The model connects physical causes to observable behavior."], sourcePages },
+      lessonComplete: true, ...(figureReviews ? { figureReviews } : {}) };
+  };
   const noFigures = (page) => ({ page, observation: "Visual inspection confirms this portion contains only text and no source figures.", figures: [] });
 
   await check("caption detection excludes inline and line-wrapped Figure references", async () => {
@@ -152,16 +206,31 @@ try {
   let savedSnapshot, imagePath, originalImage;
   await check("a real saved PDF crop fulfills the durable review and survives book reload", async () => {
     const book = await load(), viewed = active(book).figureCoverage.pages.find((page) => page.page === 2).viewed;
-    successful(await execute({ action: "snapshot", page: 2, x: 120, y: 800, width: 620, height: 350, canvasWidth: viewed.width, canvasHeight: viewed.height, caption: "Figure 3-1: physical process flow." }));
+    const captured = await execute({ action: "snapshot", page: 2, x: 120, y: 800, width: 620, height: 350, canvasWidth: viewed.width, canvasHeight: viewed.height, caption: "Figure 3-1: physical process flow." });
+    successful(captured);
     savedSnapshot = active(await load()).snapshots[0];
+    lessonSnapshots.set(session.recordId, [savedSnapshot]);
     successful(await execute(notes([noFigures(1), { page: 2, observation: "Figure 3-1 belongs before the next section heading and is saved as a literal crop.", figures: [{ label: "Figure 3-1", snapshotId: savedSnapshot.id }] }])));
     const reloaded = await load();
     await coverage.assertLearnFigureCoverage(config, reloaded, active(reloaded));
     assert.ok(storage.isScholarBook(reloaded));
+    assert.equal(active(reloaded).learnQuality.version, 1, "fresh fixture uses the current quality contract");
+    assert.deepEqual(active(reloaded).learnQuality.reviews.map(review => review.role), ["source", "teaching", "visual"]);
+    assert.ok(reviewedCrops.has(savedSnapshot.sha256), "visual reviewer must inspect the actual immutable crop");
+    assert.ok([1, 2].every(page => readPages.has(page) && reviewedPages.has(page)));
+    assert.deepEqual(active(reloaded).transcript[0].lesson.embeddedSnapshotIds, [savedSnapshot.id]);
     assert.equal(active(reloaded).figureCoverage.pages[1].review.figures[0].snapshotId, savedSnapshot.id);
     imagePath = snapshotAssetPath(config, reloaded, savedSnapshot);
     originalImage = await readFile(imagePath);
     assert.ok(originalImage.length > 100);
+    const returnedImages = captured.content.filter(item => item.type === "image");
+    assert.equal(returnedImages.length, 1, "Learn must expose the actual saved crop for visual review");
+    assert.equal(returnedImages[0].mimeType, "image/png");
+    const returnedBytes = Buffer.from(returnedImages[0].data, "base64");
+    assert.deepEqual(returnedBytes, originalImage, "model-visible crop bytes must be the exact durable asset");
+    assert.equal(createHash("sha256").update(returnedBytes).digest("hex"), savedSnapshot.sha256);
+    assert.equal(returnedBytes.readUInt32BE(16), 620);
+    assert.equal(returnedBytes.readUInt32BE(20), 350);
   });
   await check("new completion requires figures while previously completed legacy work stays complete", async () => {
     const book = await load(), section = active(book);
@@ -219,9 +288,12 @@ try {
     const viewed = active(await load(), 2).figureCoverage.pages[0].viewed;
     successful(await execute({ action: "snapshot", page: 3, x: 120, y: 240, width: 1100, height: 250, canvasWidth: viewed.width, canvasHeight: viewed.height, caption: "Uncaptioned vector process diagram from this source section." }));
     const snapshot = active(await load(), 2).snapshots[0];
+    lessonSnapshots.set(session.recordId, [snapshot]);
     successful(await execute(notes([{ page: 3, observation: "This page contains an uncaptained vector diagram connecting two process boxes.", figures: [{ label: "Uncaptioned vector process diagram", snapshotId: snapshot.id }] }])));
     const reloaded = await load();
     await coverage.assertLearnFigureCoverage(config, reloaded, active(reloaded, 2));
+    assert.ok(reviewedPages.has(3) && readPages.has(3), "vector-only page still reaches real source readers");
+    assert.ok(reviewedCrops.has(snapshot.sha256), "a vector-only crop must also reach independent visual review");
   });
   await check("unmapped chapter context remains readable without adding invalid section receipt pages", async () => {
     let contextBook = structuredClone(initial);

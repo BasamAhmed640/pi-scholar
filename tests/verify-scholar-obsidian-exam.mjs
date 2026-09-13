@@ -1,3 +1,4 @@
+import { sdkAliases } from "./sdk.mjs";
 import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiPath as sdkJitiPath, resolvePiDependency } from "./sdk.mjs";
 // Isolated acceptance gate: edit an Obsidian paper, explicitly submit in Pi,
 // preserve the frozen submission and reconstruct its saved grading report.
@@ -13,7 +14,7 @@ import { pathToFileURL } from "node:url";
 const piRoot = sdkRoot;
 const piRequire = createRequire(join(piRoot, "package.json"));
 const { createJiti } = await import(pathToFileURL(sdkJitiPath).href);
-const jiti = createJiti(import.meta.url, { moduleCache: false, alias: {
+const jiti = createJiti(import.meta.url, { moduleCache: false, alias: { ...sdkAliases,
   "@earendil-works/pi-coding-agent": join(piRoot, "dist", "index.js"),
   "@earendil-works/pi-tui": piRequire.resolve("@earendil-works/pi-tui"),
   typebox: piRequire.resolve("typebox"),

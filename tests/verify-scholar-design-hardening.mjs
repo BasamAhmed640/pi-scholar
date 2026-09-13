@@ -1,3 +1,4 @@
+import { sdkAliases } from "./sdk.mjs";
 import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiPath as sdkJitiPath, resolvePiDependency } from "./sdk.mjs";
 // Disposable integration coverage for backup authority, PDF read envelopes,
 // and the diagnostic companion to the unchanged schema-v3 exam validator.
@@ -12,7 +13,7 @@ import { pathToFileURL } from "node:url";
 const piRoot = sdkRoot;
 const piRequire = createRequire(join(piRoot, "package.json"));
 const { createJiti } = await import(pathToFileURL(sdkJitiPath).href);
-const jiti = createJiti(import.meta.url, { moduleCache: false, alias: {
+const jiti = createJiti(import.meta.url, { moduleCache: false, alias: { ...sdkAliases,
   "@earendil-works/pi-coding-agent": join(piRoot, "dist", "index.js"),
   typebox: piRequire.resolve("typebox"),
 } });

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { scopedPageRanges, type PageRange } from "./page-scope.ts";
 import { isProvisionalOutline } from "./outline-validation.ts";
 import { questionCountsTowardCompletion } from "./question-grounding.ts";
-import { lessonReady, isObjectiveChecks } from "./lesson.ts";
+import { lessonReady, isObjectiveChecks, lessonObjectiveHash } from "./lesson.ts";
 import {
   allSections,
   deriveStatus,
@@ -94,7 +94,7 @@ function checksComplete(section: ScholarSection): boolean {
   );
 }
 
-export function sectionCompletionBlockers(section: ScholarSection): string[] {
+export function sectionCompletionBlockers(section: ScholarSection, sourceHash?: string): string[] {
   const objectives = section.objectives || [];
   const objectiveSet = new Set(objectives);
   const coveredSet = new Set((section.coveredObjectives || []).filter((objective) => objectiveSet.has(objective)));
@@ -117,7 +117,7 @@ export function sectionCompletionBlockers(section: ScholarSection): string[] {
     ...(!notesComplete ? ["saved synthesis and key points"] : []),
     ...(!figuresComplete ? ["source-page and figure review"] : []),
     ...(section.legacyLessonCompletion ? [] : [
-      ...(!lessonReady(section) ? ["complete saved instructional lesson"] : []),
+      ...(!lessonReady(section, sourceHash) ? ["complete saved instructional lesson"] : []),
       ...objectiveMasteryBlockers(section),
     ]),
     ...(section.legacyCompletion === true ? [] : requiredChecks(section.requiredChecks)
@@ -212,7 +212,10 @@ export function recomputeProgress(book: ScholarBook, changedSection?: ScholarSec
       && (checksComplete(changedSection) || hasResolvedMasteryEvidence(changedSection))) {
       delete changedSection.legacyCompletion;
     }
-    if (sectionCompletionBlockers(changedSection).length === 0) {
+    if (sectionCompletionBlockers(changedSection, book.source?.fingerprint?.sha256).length === 0) {
+      if (changedSection.learnQuality && changedSection.lessonCommit) changedSection.learnQuality.earnedDelivery = {
+        sourceHash: changedSection.lessonCommit.sourceHash, objectiveHash: lessonObjectiveHash(changedSection),
+      };
       changedSection.status = "complete";
     } else {
       const last = changedSection.attempts.at(-1);

@@ -10,7 +10,9 @@ import {
   unansweredQuestionMessage,
 } from "../domain.ts";
 import { assertQuestionGrounding, normalizeQuestionGrounding } from "../question-grounding.ts";
-import { prepareOpenAssessment, type OpenAssessmentEvaluation, type OpenResponseGate } from "../open-assessment.ts";
+import { prepareOpenAssessment, prepareOpenQuestionText, type OpenAssessmentEvaluation, type OpenResponseGate } from "../open-assessment.ts";
+import { normalizeObsidianMath } from "../math-formatting.ts";
+import { isSourceCoverageLedger, sourceCoverageIssues, type SourceCoverageItem } from "../learn-quality.ts";
 import type { ScholarRuntimeSession } from "../runtime-session.ts";
 import type { ToolDetails } from "../tool-contract.ts";
 import { saveLesson, commitLesson, validLessonEntries, isObjectiveChecks, type LessonInput, type ObjectiveCheck } from "../lesson.ts";
@@ -55,15 +57,17 @@ export async function handleNotes(
     lesson?: LessonInput;
     lessonComplete?: boolean;
     objectiveChecks?: ObjectiveCheck[];
+    sourceCoverage?: SourceCoverageItem[];
   },
   requireLearnSection: (book: ScholarBook) => ScholarSection,
   mutateBook: MutateBook,
   toolResult: ToolResultFn,
   config?: ScholarConfig,
+  deferCommit = false,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: ToolDetails }> {
   const synthesis = params.synthesis?.trim();
   const keyPoints = compactStrings(params.keyPoints);
-  if (!params.lesson && !params.lessonComplete && (!synthesis || synthesis.length < 40 || keyPoints.length === 0)) {
+  if (!params.lesson && !params.lessonComplete && !params.sourceCoverage && (!synthesis || synthesis.length < 40 || keyPoints.length === 0)) {
     throw new Error("Scholar notes require a substantive synthesis and at least one key point.");
   }
   if (session.mode === "tutor") {
@@ -89,6 +93,8 @@ export async function handleNotes(
   const mutation = await mutateBook(book.id, (state) => {
     const section = findSection(state, sectionId);
     if (!section) throw new Error(`Unknown Scholar section: ${sectionId}`);
+    const editorial = Boolean(section.learnQuality && section.status !== "complete"
+      && !section.attempts.some(attempt => attempt.grounding?.purpose !== "diagnostic"));
     const sameMembers = (left: string[], right: string[]) => left.length === right.length && left.every((value) => right.includes(value));
     if (section.status === "complete" && (
       !sameMembers(objectives, section.objectives)
@@ -112,22 +118,30 @@ export async function handleNotes(
       );
     }
     section.objectives = objectives;
+    if (params.sourceCoverage !== undefined) {
+      if (section.status === "complete" && JSON.stringify(params.sourceCoverage) !== JSON.stringify(section.learnQuality?.coverage)) throw new Error("Practice cannot adopt or replace the completed section's source coverage contract.");
+      if (!isSourceCoverageLedger(params.sourceCoverage)) throw new Error("Provide a valid sourceCoverage checklist.");
+      const issues = sourceCoverageIssues(params.sourceCoverage, { ...section, lessons: [] });
+      if (issues.length) throw new Error(`Repair the source coverage plan: ${issues.join("; ")}`);
+      section.learnQuality ||= { version: 1, coverage: [], reviews: [] };
+      section.learnQuality.coverage = params.sourceCoverage;
+    }
     if (params.objectiveChecks !== undefined) {
       if (!isObjectiveChecks(params.objectiveChecks) || params.objectiveChecks.some(item => !objectives.includes(item.objective))) throw new Error("objectiveChecks must map declared objectives to nonempty conceptual/application/computation/discrimination checks.");
       const changed = (section.objectiveChecks || []).some(old => !params.objectiveChecks!.some(next => next.objective === old.objective && old.checks.every(kind => next.checks.includes(kind))));
-      if (changed) throw new Error("Keep existing objective checks; do not lower the mastery requirements after teaching starts.");
+      if (changed && !editorial) throw new Error("Keep existing objective checks; do not lower the mastery requirements after teaching starts.");
       if (section.status === "complete" && JSON.stringify(params.objectiveChecks) !== JSON.stringify(section.objectiveChecks)) throw new Error("Practice cannot change the completed section's objective checks.");
       section.objectiveChecks = params.objectiveChecks;
     }
     const checks = params.requiredChecks === undefined
-      ? requiredChecks(section.requiredChecks) : requiredChecks(params.requiredChecks);
+      ? requiredChecks(editorial && params.objectiveChecks ? params.objectiveChecks.flatMap(item => item.checks) : section.requiredChecks) : requiredChecks(params.requiredChecks);
     const droppedChecks = section.requiredChecks.filter((kind) => !checks.includes(kind));
-    if (section.status !== "not-started" && droppedChecks.length > 0) {
+    if (!editorial && section.status !== "not-started" && droppedChecks.length > 0) {
       throw new Error(`Scholar Learn checks are fixed once teaching begins. Keep these required checks: ${droppedChecks.join(", ")}.`);
     }
     section.requiredChecks = requiredChecks([...checks, ...(section.objectiveChecks || []).flatMap(item => item.checks)]);
     if (synthesis) section.synthesis = synthesis;
-    section.keyPoints = compactStrings([...section.keyPoints, ...keyPoints, ...(params.lesson?.keyPoints || [])]);
+    section.keyPoints = compactStrings([...(editorial && params.keyPoints !== undefined ? [] : section.keyPoints), ...keyPoints, ...(params.lesson?.keyPoints || [])]);
     if (params.misconceptions !== undefined) section.misconceptions = compactStrings(params.misconceptions);
     if (params.lesson) saveLesson(section, state, params.lesson, config);
     const taught = compactStrings(validLessonEntries(section, state.source.fingerprint.sha256).flatMap(entry => entry.lesson!.objectives));
@@ -135,11 +149,11 @@ export async function handleNotes(
       throw new Error("Coverage needs an explicitly saved explanation for each objective; a summary or label cannot mark it taught. Save notes.lesson first.");
     }
     if (section.status !== "complete") section.coveredObjectives = taught;
-    if (params.lessonComplete) commitLesson(section, state);
+    if (params.lessonComplete && !deferCommit) commitLesson(section, state);
     recomputeProgress(state, section);
   });
   const section = findSection(mutation.book, sectionId)!;
-  return toolResult("notes", `Saved ${params.lesson ? "instructional explanation" : "notes"} for ${sectionLabel(mutation.book, section)}.${params.lessonComplete ? " Full lesson committed." : ""} Status: ${section.status}. ${sectionProgressMessage(section)}`, { bookId: book.id, sectionId });
+  return toolResult("notes", `Saved ${params.lesson ? "instructional explanation" : "notes"} for ${sectionLabel(mutation.book, section)}.${params.lessonComplete ? deferCommit ? " Draft saved; independent review pending." : " Full lesson committed." : ""} Status: ${section.status}. ${sectionProgressMessage(section)}`, { bookId: book.id, sectionId });
 }
 
 export async function handleAssess(
@@ -164,6 +178,7 @@ export async function handleAssess(
   mutateBook: MutateBook,
   toolResult: ToolResultFn,
   responseGate?: OpenResponseGate,
+  reviewQuestion?: (attempt: AssessmentAttempt, section: ScholarSection) => Promise<(current: ScholarSection) => void>,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: ToolDetails }> {
   const outcome = params.outcome as AssessmentOutcome | undefined;
   const attemptId = params.attemptId?.trim();
@@ -180,7 +195,7 @@ export async function handleAssess(
       throw new Error(`Scholar assess kind must be one of ${ASSESSMENT_KINDS.join(", ")}; received ${JSON.stringify(params.kind)}.`);
     }
 
-    const question = params.question.trim();
+    const question = prepareOpenQuestionText(params.question);
     const openAssessment = prepareOpenAssessment(params.expectedAnswer, params.criteria);
     let grounding = normalizeQuestionGrounding(params.grounding) as QuestionGrounding;
     const preparedId = `assessment-${toolCallId}`;
@@ -212,12 +227,14 @@ export async function handleAssess(
       createdAt: now,
     };
 
+    const verifyReview = sectionId && reviewQuestion ? await reviewQuestion(attempt, requireLearnSection(book)) : undefined;
     await mutateBook(book.id, (state) => {
       const target = session.mode === "tutor"
         ? state.tutorSessions.find((item) => item.id === session.recordId && item.status === "active")
         : findSection(state, sectionId);
       if (!target) throw new Error(`The active ${session.mode} record changed while Scholar prepared the question.`);
       if (session.mode === "learn") {
+        verifyReview?.(target as ScholarSection);
         if (sectionId !== session.recordId) throw new Error("The frozen Learn target changed while Scholar prepared the question.");
         grounding = learnQuestionGrounding(target as ScholarSection, grounding);
         attempt.grounding = grounding;
@@ -305,7 +322,7 @@ export async function handleAssess(
       attempt.evaluation = graded.evaluation;
     }
     attempt.outcome = outcome;
-    attempt.feedback = params.feedback?.trim() || undefined;
+    attempt.feedback = params.feedback?.trim() ? normalizeObsidianMath(params.feedback.trim()) : undefined;
     const now = new Date().toISOString();
     appendTranscript(target.transcript, {
       id: `open-result-${attemptId}`,

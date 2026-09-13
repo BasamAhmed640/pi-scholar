@@ -1,3 +1,4 @@
+import { sdkAliases } from "./sdk.mjs";
 import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiPath as sdkJitiPath } from "./sdk.mjs";
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -11,7 +12,7 @@ const extension = dirname(packagedExtensionPath);
 const packageRoot = sdkRoot;
 const { createJiti } = await import(pathToFileURL(sdkJitiPath).href);
 const piRequire = createRequire(join(packageRoot, 'package.json'));
-const jiti = createJiti(import.meta.url, { moduleCache: false, alias: {
+const jiti = createJiti(import.meta.url, { moduleCache: false, alias: { ...sdkAliases,
   '@earendil-works/pi-coding-agent': join(packageRoot, 'dist', 'index.js'),
   '@earendil-works/pi-tui': piRequire.resolve('@earendil-works/pi-tui'),
   typebox: piRequire.resolve('typebox'),

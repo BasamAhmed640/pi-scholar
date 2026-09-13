@@ -1,3 +1,4 @@
+import { sdkAliases } from "./sdk.mjs";
 import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiPath as sdkJitiPath, resolvePiDependency } from "./sdk.mjs";
 // Exercise the real grading boundary, controller presentation and vault save path.
 import assert from "node:assert/strict";
@@ -9,7 +10,7 @@ import { createRequire } from "node:module";
 
 const piRoot = sdkRoot;
 const { createJiti } = await import(pathToFileURL(sdkJitiPath).href);
-const jiti = createJiti(import.meta.url, { moduleCache: false, alias: {
+const jiti = createJiti(import.meta.url, { moduleCache: false, alias: { ...sdkAliases,
   "@earendil-works/pi-coding-agent": join(piRoot, "dist", "index.js"),
   "@earendil-works/pi-tui": resolvePiDependency("@earendil-works/pi-tui"),
   "typebox": createRequire(join(piRoot, "package.json")).resolve("typebox"),

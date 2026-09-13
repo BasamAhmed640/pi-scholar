@@ -1,8 +1,16 @@
 # How Scholar fits together
 
-Scholar is one Pi extension, not three separate agents or services. Learn,
+Scholar is one Pi extension. Learn,
 Exam, and Tutor are independent entry points for the same selected PDF book.
 You do not have to finish Learn before taking an Exam or opening Tutor.
+
+New Learn delivery uses the selected Pi model as lead author and four independent
+review responsibilities. Source, teaching and math/visual reviewers run after
+the saved draft is prepared; the assessment reviewer checks a new proposed
+question before the interactive form is persisted. These are fresh in-memory
+conversations with scoped, read-only source/image tools, not extension-loaded
+Pi sessions. They cannot access other modes' history, write notes, change progress,
+run shell commands, or grade the learner. No fixed model/provider is assumed.
 
 ## The Obsidian hierarchy
 
@@ -26,6 +34,28 @@ history. A Tutor answer does not change Learn progress, and Exam generation
 does not use Learn or Tutor performance to alter the test.
 
 ## Code boundaries
+
+`learn-quality.ts` defines coverage and review contracts. `equation-presentation.ts`
+builds equation callouts from validated fields and explicit placement markers.
+`learn-review.ts` binds reviewers to the saved section and its source evidence;
+`review-runtime.ts` bounds their tool loops and uses Pi's active model registry,
+authentication and supported reasoning interface. Source review must actually
+read every scoped page; visual review must see each full page and saved crop.
+Large visual sets are inspected in sequential batches to avoid silently dropping
+images from context. The model still judges semantic fidelity and readability.
+
+`tool-controller.ts` alone saves review receipts and commits approved delivery.
+Network review runs outside the book's mutation queue. It then reloads and checks
+the active vault/section, source identity, actual figure bytes and the exact draft
+hash before saving approval. The hash includes the lesson, coverage, recap,
+assessment plan and figure metadata. Changed content invalidates approval.
+Reviewer findings live in the same section note's collapsible details; model
+conversations and credentials are never written there. New Learn authoring
+activates this contract automatically; legacy delivered lessons remain usable.
+Once reviewed delivery and every required mastery check pass, a small earned
+delivery receipt preserves that achievement through later practice annotations.
+It is bound to the source, section scope and assessment plan. Deleting mastery
+answers still removes their evidence; adding a clarification does not erase them.
 
 Explicit lesson delivery uses `lesson.ts` and `lesson-figures.ts`. `notes.lesson`
 saves instructional Markdown once in the visible section or Tutor note; its small

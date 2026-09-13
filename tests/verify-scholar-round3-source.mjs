@@ -1,3 +1,4 @@
+import { sdkAliases } from "./sdk.mjs";
 import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiPath as sdkJitiPath, resolvePiDependency } from "./sdk.mjs";
 // DEFECT-10 regression: exercise the real coordinator, hashing, PDF tools,
 // authoritative storage and source readers. Only the Pi UI/model boundary is
@@ -15,7 +16,7 @@ const piRequire = createRequire(join(piPackageRoot, "package.json"));
 const { createJiti } = await import(pathToFileURL(sdkJitiPath).href);
 const jiti = createJiti(import.meta.url, {
   moduleCache: false,
-  alias: {
+  alias: { ...sdkAliases,
     "@earendil-works/pi-coding-agent": join(piPackageRoot, "dist", "index.js"),
     "@earendil-works/pi-tui": piRequire.resolve("@earendil-works/pi-tui"),
     typebox: piRequire.resolve("typebox"),

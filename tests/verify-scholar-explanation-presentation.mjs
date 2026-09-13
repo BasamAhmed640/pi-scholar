@@ -131,7 +131,7 @@ for (const policy of [learnPolicy, tutorPolicy]) {
   assert.match(policy, /concrete meaning before relying on its technical term/);
   assert.match(policy, /Distinguish a definition from a derived result/);
   assert.match(policy, /one focused editorial review/);
-  assert.match(policy, /current author's review, not a new agent/);
+  assert.match(policy, /Independent Learn reviewers then inspect the saved draft/);
   assert.match(policy, /symbol → definition/);
   assert.match(policy, /\[\[scholar-figure:ID\]\]/);
   assert.match(policy, /Refer to an inspected source figure when it makes the explanation easier to understand/);

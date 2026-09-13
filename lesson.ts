@@ -3,10 +3,12 @@ import { markdownText } from "./render/common.ts";
 import { pageInRanges, scopedPageRanges } from "./page-scope.ts";
 import { resolveLessonFigures } from "./lesson-figures.ts";
 import { normalizeObsidianMath } from "./math-formatting.ts";
+import { renderKeyEquations, type KeyEquation } from "./equation-presentation.ts";
+import { sourceCoverageIssues, reviewGateIssues } from "./learn-quality.ts";
 import type { AssessmentKind, ScholarBook, ScholarConfig, ScholarSection, TranscriptEntry, TutorSession } from "./types.ts";
 
-export type LessonInput = { id: string; title: string; markdown: string; objectives: string[]; keyPoints: string[]; sourcePages: number[]; expectedContentHash?: string };
-export type LessonReceipt = Omit<LessonInput, "id" | "markdown" | "expectedContentHash"> & { contentHash: string; sourceHash: string };
+export type LessonInput = { id: string; title: string; markdown: string; objectives: string[]; keyPoints: string[]; sourcePages: number[]; keyEquations?: KeyEquation[]; expectedContentHash?: string };
+export type LessonReceipt = Omit<LessonInput, "id" | "markdown" | "expectedContentHash" | "keyEquations"> & { contentHash: string; sourceHash: string; keyEquationIds?: string[]; embeddedSnapshotIds?: string[] };
 export type LessonCommit = { entryIds: string[]; contentHash: string; sourceHash: string };
 export type ObjectiveCheck = { objective: string; checks: AssessmentKind[] };
 const checks = new Set(["conceptual", "application", "computation", "discrimination"]);
@@ -15,7 +17,9 @@ const hash = (value: unknown): value is string => typeof value === "string" && /
 export const lessonHash = (value: string): string => createHash("sha256").update(value.replace(/\r\n/g, "\n").trim()).digest("hex");
 
 export function isLessonReceipt(value: any): value is LessonReceipt {
-  return value && Object.keys(value).every(key => ["title", "objectives", "keyPoints", "sourcePages", "contentHash", "sourceHash"].includes(key))
+  return value && Object.keys(value).every(key => ["title", "objectives", "keyPoints", "sourcePages", "contentHash", "sourceHash", "keyEquationIds", "embeddedSnapshotIds"].includes(key))
+    && (value.keyEquationIds === undefined || strings(value.keyEquationIds))
+    && (value.embeddedSnapshotIds === undefined || strings(value.embeddedSnapshotIds))
     && typeof value.title === "string" && value.title.trim().length > 0
     && strings(value.objectives) && strings(value.keyPoints)
     && Array.isArray(value.sourcePages) && value.sourcePages.length > 0
@@ -124,13 +128,17 @@ export function saveLesson(record: ScholarSection | TutorSession, book: ScholarB
   const ranges = learn ? [{ startPage: record.startPage, endPage: record.endPage }] : scopedPageRanges(book, book.chapters.flatMap(chapter => chapter.sections).filter(section => record.scope.sectionIds.includes(section.id)));
   if (input.sourcePages.some(page => !Number.isSafeInteger(page) || !pageInRanges(page, ranges)) || new Set(input.sourcePages).size !== input.sourcePages.length) throw new Error("Lesson sourcePages must be unique pages in this active source scope.");
   let markdown = normalizeObsidianMath(markdownText(input.markdown)).trim().replace(/\n\s*\n/g, "\n\n");
+  if (input.keyEquations !== undefined || markdown.includes("[[scholar-equation:")) markdown = renderKeyEquations(markdown, input.keyEquations || [], input.sourcePages);
+  const embeddedSnapshotIds = [...markdown.matchAll(/\[\[scholar-figure:([^\]]+)\]\]/g)].map(match => match[1]!);
   const issues = lessonMarkdownIssues(markdown);
   if (!/^#{1,6}\s/.test(markdown)) markdown = `### ${input.title.trim().replace(/[\r\n]+/g, " ")}\n\n${markdown}`;
   if (issues.length) throw new Error(`Repair the lesson presentation: ${issues.join("; ")}.`);
-  markdown = normalizeObsidianMath(resolveLessonFigures(markdown, record, book, input.sourcePages, config));
+  markdown = normalizeObsidianMath(resolveLessonFigures(markdown, record, book, input.sourcePages, config)).replace(/\n\s*\n/g, "\n\n").trim();
   if (/\[\[scholar-figure:/.test(markdown)) throw new Error("An inline figure reference is incomplete.");
   const receipt: LessonReceipt = { title: input.title.trim(), objectives: input.objectives, keyPoints: input.keyPoints,
-    sourcePages: input.sourcePages, sourceHash: book.source.fingerprint.sha256, contentHash: lessonHash(markdown) };
+    sourcePages: input.sourcePages, sourceHash: book.source.fingerprint.sha256, contentHash: lessonHash(markdown),
+    ...(input.keyEquations?.length ? { keyEquationIds: input.keyEquations.map(item => item.id) } : {}),
+    ...(embeddedSnapshotIds.length ? { embeddedSnapshotIds } : {}) };
   const id = `lesson-${input.id}`;
   const finalIssues = lessonMarkdownIssues(markdown);
   if (finalIssues.length) throw new Error(`Repair the composed lesson: ${finalIssues.join("; ")}.`);
@@ -147,13 +155,39 @@ export function saveLesson(record: ScholarSection | TutorSession, book: ScholarB
 
 function commitHash(section: ScholarSection, entries: TranscriptEntry[]): string {
   return lessonHash(JSON.stringify([section.id, section.objectives, section.objectiveChecks,
-    entries.map(entry => [entry.id, entry.lesson])]));
+    entries.map(entry => [entry.id, entry.lesson]), ...(section.learnQuality ? [learnReviewHash(section)] : [])]));
+}
+
+/** Exact editorial state; review receipts themselves never contribute to this hash. */
+export function learnReviewHash(section: ScholarSection): string {
+  return lessonHash(JSON.stringify([section.id, section.startPage, section.endPage, section.objectives,
+    section.objectiveChecks, section.requiredChecks, section.synthesis, section.keyPoints, section.misconceptions,
+    section.transcript.filter(entry => entry.lesson).map(entry => [entry.id, entry.markdown, entry.lesson]),
+    section.snapshots, section.figureCoverage, section.learnQuality?.coverage]));
+}
+
+export function learnDeliveryIssues(section: ScholarSection, sourceHash?: string): string[] {
+  if (!section.learnQuality) return [];
+  return sourceCoverageIssues(section.learnQuality.coverage, {
+    startPage: section.startPage, endPage: section.endPage, objectives: section.objectives, objectiveChecks: section.objectiveChecks,
+    lessons: validLessonEntries(section, sourceHash).map(entry => ({ id: entry.id, markdown: entry.markdown,
+      keyEquationIds: entry.lesson!.keyEquationIds, embeddedSnapshotIds: entry.lesson!.embeddedSnapshotIds })),
+  }, { delivered: true });
+}
+
+export function learnReviewIssues(section: ScholarSection, sourceHash: string): string[] {
+  return section.learnQuality ? reviewGateIssues(section.learnQuality.reviews, { contentHash: learnReviewHash(section), sourceHash }) : [];
+}
+
+export function lessonObjectiveHash(section: ScholarSection): string {
+  return lessonHash(JSON.stringify([section.id, section.startPage, section.endPage, section.objectives, section.objectiveChecks, section.requiredChecks]));
 }
 
 export function lessonCoverageIssues(section: ScholarSection, sourceHash?: string): string[] {
   const entries = validLessonEntries(section, sourceHash);
   const covered = new Set(entries.flatMap(entry => entry.lesson!.objectives));
   return [
+    ...learnDeliveryIssues(section, sourceHash),
     ...(!entries.length ? ["save the actual instructional explanation"] : []),
     ...section.objectives.filter(objective => !covered.has(objective)).map(objective => `explain: ${objective}`),
     ...(!isObjectiveChecks(section.objectiveChecks) || section.objectives.some(objective => !section.objectiveChecks!.some(item => item.objective === objective))
@@ -163,17 +197,20 @@ export function lessonCoverageIssues(section: ScholarSection, sourceHash?: strin
 }
 
 export function commitLesson(section: ScholarSection, book: ScholarBook): void {
-  const issues = lessonCoverageIssues(section, book.source.fingerprint.sha256);
+  const issues = [...lessonCoverageIssues(section, book.source.fingerprint.sha256), ...learnReviewIssues(section, book.source.fingerprint.sha256)];
   if (issues.length) throw new Error(`The lesson is not ready: ${issues.join("; ")}. Save explanations in parts, then set lessonComplete=true.`);
   const entries = validLessonEntries(section, book.source.fingerprint.sha256);
   section.lessonCommit = { entryIds: entries.map(entry => entry.id), contentHash: commitHash(section, entries), sourceHash: book.source.fingerprint.sha256 };
 }
 
 export function lessonReady(section: ScholarSection, sourceHash?: string): boolean {
+  const earned = section.learnQuality?.earnedDelivery;
+  if (earned && earned.sourceHash === (sourceHash || section.lessonCommit?.sourceHash) && earned.objectiveHash === lessonObjectiveHash(section)) return true;
   const commit = section.lessonCommit;
   if (!isLessonCommit(commit) || (sourceHash && commit.sourceHash !== sourceHash)) return false;
   const entries = validLessonEntries(section, commit.sourceHash).filter(entry => commit.entryIds.includes(entry.id));
   return entries.length === commit.entryIds.length && lessonCoverageIssues(section, commit.sourceHash).length === 0
+    && learnReviewIssues(section, commit.sourceHash).length === 0
     && commit.contentHash === commitHash(section, entries);
 }
 

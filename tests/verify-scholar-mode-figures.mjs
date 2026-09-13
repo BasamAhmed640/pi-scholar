@@ -1,3 +1,4 @@
+import { sdkAliases } from "./sdk.mjs";
 import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiPath as sdkJitiPath } from "./sdk.mjs";
 // Independent Exam/Tutor PDF figures through the real tool, Poppler, and vault
 // storage. No model is invoked; every writable path is a disposable fixture.
@@ -13,7 +14,7 @@ const piRoot = sdkRoot;
 const piRequire = createRequire(join(piRoot, "package.json"));
 const { createJiti } = await import(pathToFileURL(sdkJitiPath).href);
 const extension = dirname(packagedExtensionPath);
-const jiti = createJiti(import.meta.url, { moduleCache: false, alias: {
+const jiti = createJiti(import.meta.url, { moduleCache: false, alias: { ...sdkAliases,
   "@earendil-works/pi-coding-agent": join(piRoot, "dist", "index.js"),
   "@earendil-works/pi-tui": piRequire.resolve("@earendil-works/pi-tui"),
   typebox: piRequire.resolve("typebox"),
@@ -113,17 +114,27 @@ try {
   for (const mode of ["exam", "tutor"]) {
     await check(`${mode} saves a real crop without prior Learn; metadata and assets survive reload`, async () => {
       const h = await harness(mode), view = await h.view();
-      success(await h.crop(view));
+      const captured = await h.crop(view);
+      success(captured);
       const state = await unchanged(h), record = h.record(state), snapshot = record.snapshots[0];
       assert.ok(storage.isScholarBook(state));
       const image = await readFile(snapshotAssetPath(h.config, state, snapshot));
       assert.equal(createHash("sha256").update(image).digest("hex"), snapshot.sha256);
+      const returnedImages = captured.content.filter(item => item.type === "image");
+      assert.equal(returnedImages.length, 1, "capture must return the actual saved crop for inspection");
+      assert.equal(returnedImages[0].mimeType, "image/png");
+      const returnedBytes = Buffer.from(returnedImages[0].data, "base64");
+      assert.deepEqual(returnedBytes, image, "model-visible pixels must be the immutable vault asset, not a full page or unrelated preview");
+      assert.equal(createHash("sha256").update(returnedBytes).digest("hex"), snapshot.sha256);
       assert.equal(image.readUInt32BE(16), 800); assert.equal(image.readUInt32BE(20), 240);
       const note = mode === "exam" ? render.examAnswerNoteText(h.config, state, record) : render.renderTutorSession(h.config, state, record);
       assert.ok(note.includes(snapshot.assetFile));
       if (mode === "exam") assert.ok(render.renderExam(h.config, state, record).includes(snapshot.assetFile));
       assert.equal((mode === "exam" ? state.tutorSessions[0] : state.exams[0]).snapshots, undefined);
-      success(await h.crop(view, { caption: "A revised concise source caption." }));
+      const reused = await h.crop(view, { caption: "A revised concise source caption." });
+      success(reused);
+      assert.equal(reused.details.reused, true);
+      assert.deepEqual(Buffer.from(reused.content.find(item => item.type === "image").data, "base64"), image, "reused snapshots remain visually inspectable");
       assert.equal(h.record(await h.load()).snapshots.length, 1);
       assert.equal((await readdir(h.config.stateRoot).catch(() => [])).length, 0);
     });

@@ -184,6 +184,10 @@ export type ScholarSection = {
   /** Preserves completion earned before explicit instructional delivery was required. */
   legacyLessonCompletion?: true;
   objectiveChecks?: import("./lesson.ts").ObjectiveCheck[];
+  /** New Learn deliveries only; lives in this section's visible vault note. */
+  learnQuality?: { version: 1; coverage: import("./learn-quality.ts").SourceCoverageItem[]; reviews: import("./learn-quality.ts").ReviewReceipt[];
+    /** Earned delivery survives later practice edits; mastery answers are still checked. */
+    earnedDelivery?: { sourceHash: string; objectiveHash: string } };
   /**
    * Set only by migration, on a section that was already complete under the
    * pre-grounding rule where an ungrounded attempt could certify mastery.

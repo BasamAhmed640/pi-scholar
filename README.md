@@ -41,6 +41,36 @@ selected PDF library contains the source books, not your learning history.
 
 ## Installation
 
+### Reviewed Learn delivery (0.4.0)
+
+New Learn lessons now use a source checklist that links essential definitions,
+derivations, assumptions, examples, equations and figures to actual saved
+explanations. Central equations are built as native Obsidian callouts with
+symbol definitions, assumptions, meaning and source pages. Literal PDF crops are
+returned to the author for inspection as well as saved beside the lesson.
+
+The current Pi model remains the lead author. Three isolated supporting reviews
+check source fidelity, teaching clarity, and mathematics/visuals before the lesson
+is committed. A fourth role reviews each new question before it is shown. These
+use the selected Pi model and supported thinking level, including custom
+providers; there are no fixed model names or extra services. Visual review needs
+an image-capable model. Image-heavy sections are inspected in sequential batches
+within the visual role, while the three lesson roles run independently.
+
+Reviews have finite context, output, tool and time limits. A failed, cancelled or
+incomplete review cannot approve a lesson. Specific findings return to the author
+for repair, with at most three review rounds per user turn. The Pi status line
+shows review stages and elapsed time. This adds model calls and can take longer
+than one-pass lesson generation; it is intended to improve the result, not speed.
+
+Draft lessons and review records stay in the section's Obsidian note. Reviewer
+conversations are temporary memory only. Existing lessons, earned progress and
+unanswered questions are preserved; this update does not regenerate them. New
+question math is normalized before freezing, so old unanswered forms still resume
+exactly as saved. Passing review establishes delivery readiness, not learner
+mastery or a guarantee of scientific correctness. Judge teaching quality with
+fresh sections and your own reading feedback.
+
 ### Obsidian equation compatibility (0.3.1)
 
 Lesson saves automatically convert `\(...\)` and `\[...\]` mathematics to
@@ -67,7 +97,8 @@ Mastery is tracked against each objective's planned checks. Open questions have
 frozen expected reasoning and criteria; grading requires an actual typed or image
 response to that question. Source support and mathematical correctness still need
 model judgment: the code checks delivery and assessment integrity, not semantic
-truth. No additional runtime agent, service, or dependency was added.
+truth. That 0.3.0 release added no runtime agents, services, or dependencies;
+0.4.0 adds the supporting review roles described above.
 
 Existing completed sections retain their earned completion. Unanswered questions
 remain resumable. An older open question may need its missing scoring contract

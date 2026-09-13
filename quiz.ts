@@ -9,6 +9,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Key, Text, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { QuestionGroundingSchema } from "./question-grounding-schema.ts";
+import { normalizeObsidianMath } from "./math-formatting.ts";
 import {
   SCHOLAR_QUIZ_TOOL_NAME,
   assertScholarQuizDistractors,
@@ -100,13 +101,18 @@ function isManualUncertainty(label: string, value: string): boolean {
 
 function normalizeOptions(
   options: Array<{ label: string; value?: string; description?: string; misconception?: string }> | undefined,
+  normalizeMath: boolean,
 ): QuizOption[] {
   const values = new Set<string>();
   const labels = new Set<string>();
   return (options || []).map((raw, position) => {
-    const label = raw.label.trim();
-    const value = raw.value?.trim() || label;
-    const description = raw.description?.trim() || undefined;
+    const originalLabel = raw.label.trim();
+    const label = normalizeMath ? normalizeObsidianMath(originalLabel) : originalLabel;
+    // The implicit answer value belongs to the original input, not its visual
+    // normalization. Changing it would silently invalidate correctAnswer.
+    const value = raw.value?.trim() || originalLabel;
+    const rawDescription = raw.description?.trim();
+    const description = rawDescription ? normalizeMath ? normalizeObsidianMath(rawDescription) : rawDescription : undefined;
     const misconception = raw.misconception?.trim() || undefined;
     if (!label) throw new Error(`option ${position + 1} has an empty label`);
     if (!value) throw new Error(`option ${position + 1} has an empty value`);
@@ -475,12 +481,15 @@ function answeredResult(
 
 /** Freeze validation and shuffling before showing a question; reuse the result on every delivery. */
 export function prepareScholarQuiz(params: any, displayedLabels?: string[]): FrozenScholarQuiz {
-  const question = typeof params?.question === "string" ? params.question.trim() : "";
-  const explanation = typeof params?.explanation === "string" ? params.explanation.trim() : "";
+  // Existing displayed labels identify the legacy reconstruction path. Never
+  // normalize a form that has already been shown or alter its frozen identity.
+  const normalizeText = displayedLabels ? (value: string) => value : normalizeObsidianMath;
+  const question = typeof params?.question === "string" ? normalizeText(params.question.trim()) : "";
+  const explanation = typeof params?.explanation === "string" ? normalizeText(params.explanation.trim()) : "";
   if (!question) throw new Error("scholar_quiz requires a question");
   if (!explanation) throw new Error("scholar_quiz requires a non-empty explanation");
   const mode: QuizMode = params.multiSelect ? "multi-select" : "single-select";
-  let options = normalizeOptions(params.options);
+  let options = normalizeOptions(params.options, !displayedLabels);
   if (options.length < 2) throw new Error("scholar_quiz requires at least two options");
   if (displayedLabels) {
     if (displayedLabels.length !== options.length || new Set(displayedLabels).size !== options.length
@@ -492,7 +501,7 @@ export function prepareScholarQuiz(params: any, displayedLabels?: string[]): Fro
   const resolved = resolveCorrect(params.correctAnswer, options, mode);
   if (resolved.error) throw new Error(`scholar_quiz ${resolved.error}`);
   assertScholarQuizDistractors(options, resolved.indices.map((index) => options[index - 1]!.value));
-  const context = typeof params.details === "string" ? params.details.trim() : "";
+  const context = typeof params.details === "string" ? normalizeText(params.details.trim()) : "";
   return { question, ...(context ? { context } : {}), mode, options, correctValues: resolved.indices.map((index) => options[index - 1]!.value), explanation };
 }
 

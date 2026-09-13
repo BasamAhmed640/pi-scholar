@@ -1,3 +1,4 @@
+import { sdkAliases } from "./sdk.mjs";
 import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiPath as sdkJitiPath } from "./sdk.mjs";
 // In-memory exam size gate: no vault, config, or saved bookstate is touched.
 // Question counts are uncapped; form quality, completeness and storage guards remain.
@@ -10,7 +11,7 @@ const piRoot = sdkRoot;
 const piRequire = createRequire(join(piRoot, "package.json"));
 const { createJiti } = await import(pathToFileURL(sdkJitiPath).href);
 const { Check } = await import(pathToFileURL(piRequire.resolve("typebox/value")).href);
-const jiti = createJiti(import.meta.url, { moduleCache: false, alias: {
+const jiti = createJiti(import.meta.url, { moduleCache: false, alias: { ...sdkAliases,
   "@earendil-works/pi-coding-agent": join(piRoot, "dist", "index.js"),
   "@earendil-works/pi-tui": piRequire.resolve("@earendil-works/pi-tui"),
   typebox: piRequire.resolve("typebox"),

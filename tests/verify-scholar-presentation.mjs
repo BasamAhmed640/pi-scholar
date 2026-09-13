@@ -83,7 +83,7 @@ try {
   await writeFile(paperPath,filled);await installScholarAppearance(config);await renderScholarWorkspace(config,[book]);assert.equal(await readFile(paperPath,"utf8"),filled);
   pass("native checkboxes stay inside their question and an existing filled paper is never restyled by rewriting");
   const policy=await readFile(join(extension,"policies.ts"),"utf8");
-  assert.match(policy,/When an equation is the main topic of a section/);assert.match(policy,/Optionally use a small fenced mermaid/);
+  assert.match(policy,/notes\.lesson\.keyEquations/);assert.match(policy,/Optionally use a small fenced mermaid/);
   const exported=await mod("policies.ts");assert.match(exported.learnInstructions(book,section),/Key equation/);assert.match(exported.tutorInstructions(book,tutor),/mermaid/);assert.doesNotMatch(exported.examInstructions(book,exam),/Native Obsidian presentation/);
   pass("central equations are explicitly framed and Mermaid is optional in Learn/Tutor presentation guidance");
   if(preview){

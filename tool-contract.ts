@@ -96,6 +96,22 @@ const FigurePageReviewSchema = Type.Object({
   figures: Type.Array(FigureReviewItemSchema, { maxItems: 40 }),
 });
 
+const KeyEquationSchema = Type.Object({
+  id: Type.String({ minLength: 1, maxLength: 120 }), title: Type.String({ minLength: 1 }),
+  latex: Type.String({ minLength: 1, description: "Display mathematics without outer delimiters." }),
+  symbols: Type.Array(Type.Object({ symbol: Type.String({ minLength: 1 }), definition: Type.String({ minLength: 1 }) }), { minItems: 1 }),
+  assumptions: Type.String({ minLength: 1 }), meaning: Type.String({ minLength: 1 }),
+  sourcePages: Type.Array(Type.Integer({ minimum: 1 }), { minItems: 1 }),
+});
+const SourceCoverageSchema = Type.Object({
+  id: Type.String({ minLength: 1, maxLength: 120 }),
+  kind: Type.Union(["concept", "definition", "derivation", "equation", "assumption", "example", "counterexample", "figure"].map(kind => Type.Literal(kind))),
+  description: Type.String({ minLength: 1 }), sourcePages: Type.Array(Type.Integer({ minimum: 1 }), { minItems: 1 }),
+  objective: Type.String({ minLength: 1 }),
+  lessonId: Type.Optional(Type.String()), evidence: Type.Optional(Type.String({ description: "Exact explanatory passage in the saved lesson; required at completion, not just a heading or label." })),
+  equationId: Type.Optional(Type.String()), snapshotId: Type.Optional(Type.String()),
+});
+
 export const ScholarParams = Type.Object({
   action: Type.Union([
     Type.Literal("read"),
@@ -140,6 +156,7 @@ export const ScholarParams = Type.Object({
   coveredObjectives: Type.Optional(Type.Array(Type.String())),
   requiredChecks: Type.Optional(Type.Array(CheckKindSchema)),
   synthesis: Type.Optional(Type.String()),
+  sourceCoverage: Type.Optional(Type.Array(SourceCoverageSchema, { description: "Source-based checklist of essential concepts, derivations, central equations, assumptions, examples/counterexamples and useful figures. Map each to exact saved lesson evidence before completion." })),
   lesson: Type.Optional(Type.Object({
     id: Type.String({ minLength: 1, maxLength: 120 }),
     expectedContentHash: Type.Optional(Type.String({ description: "For an intentional editorial replacement, hash of the currently visible entry. Omit for new entries and identical retries." })),
@@ -148,6 +165,7 @@ export const ScholarParams = Type.Object({
     objectives: Type.Array(Type.String()),
     keyPoints: Type.Array(Type.String()),
     sourcePages: Type.Array(Type.Integer({ minimum: 1 }), { minItems: 1 }),
+    keyEquations: Type.Optional(Type.Array(KeyEquationSchema, { description: "Central equations. Place each exactly once using its own-line [[scholar-equation:ID]] marker; Scholar builds the equation callout." })),
   })),
   lessonComplete: Type.Optional(Type.Boolean({ description: "Commit the full saved Learn lesson after all declared objectives have real explanations and the editorial review is complete. Does not award mastery." })),
   lessonId: Type.Optional(Type.String({ description: "With action=status, read this saved lesson entry and its current content hash before an intentional revision." })),

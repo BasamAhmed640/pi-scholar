@@ -41,6 +41,11 @@ type ToolResultFn = (
   details?: Partial<ToolDetails>,
 ) => { content: Array<{ type: "text"; text: string }>; details: ToolDetails };
 
+type SnapshotToolResult = {
+  content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: "image/png" }>;
+  details: ToolDetails;
+};
+
 export async function handleSnapshot(
   book: ScholarBook,
   section: ScholarSection,
@@ -58,7 +63,7 @@ export async function handleSnapshot(
   mutateBook: MutateBook,
   toolResult: ToolResultFn,
   assertActiveTarget?: (book: ScholarBook) => void,
-): Promise<{ content: Array<{ type: "text"; text: string }>; details: ToolDetails }> {
+): Promise<SnapshotToolResult> {
   const config = { ...getConfig() };
   if (book.outlineStatus !== "ready") throw new Error("Scholar snapshot requires an active section from a verified outline.");
   const page = params.page;
@@ -140,8 +145,8 @@ export async function handleSnapshot(
     return assetDisposition === "reused" || Boolean(existing);
   });
   const reused = mutation.result;
-  const summary = `${reused ? "Reused" : "Saved"} an exact ${rendered.width}x${rendered.height} snapshot from PDF page ${page} in ${sectionLabel(mutation.book, findSection(mutation.book, section.id))}. Use snapshotId=${id} when recording this figure in notes.figureReviews.`;
-  return toolResult("snapshot", summary, {
+  const summary = `${reused ? "Reused" : "Saved"} an exact ${rendered.width}x${rendered.height} snapshot from PDF page ${page} in ${sectionLabel(mutation.book, findSection(mutation.book, section.id))}. Inspect the returned crop for complete labels, arrows, and relevant geometry before using it. Use snapshotId=${id} when recording this figure in notes.figureReviews.`;
+  const result = toolResult("snapshot", summary, {
     bookId: book.id,
     sectionId: section.id,
     page,
@@ -150,6 +155,9 @@ export async function handleSnapshot(
     height: rendered.height,
     reused,
   });
+  // Return the same renderer bytes just committed to the vault. A success
+  // receipt alone cannot reveal clipped labels or a misplaced crop rectangle.
+  return { ...result, content: [...result.content, { type: "image", data: rendered.data, mimeType: rendered.mimeType }] };
 }
 
 /** Exam/Tutor own their crops; no Learn coverage or progress is read or written. */
@@ -204,10 +212,11 @@ export async function handleModeSnapshot(
     current.updatedAt = new Date().toISOString();
     return assetDisposition === "reused" || Boolean(existing);
   });
-  const summary = `${mutation.result ? "Reused" : "Saved"} an exact ${rendered.width}x${rendered.height} snapshot from PDF page ${page} in the active ${target.mode} record. Snapshot ID: ${id}.`;
-  return toolResult("snapshot", summary, {
+  const summary = `${mutation.result ? "Reused" : "Saved"} an exact ${rendered.width}x${rendered.height} snapshot from PDF page ${page} in the active ${target.mode} record. Inspect the returned crop for complete labels, arrows, and relevant geometry before using it. Snapshot ID: ${id}.`;
+  const result = toolResult("snapshot", summary, {
     bookId: book.id, page, bytes: rendered.bytes, width: rendered.width, height: rendered.height, reused: mutation.result,
   });
+  return { ...result, content: [...result.content, { type: "image", data: rendered.data, mimeType: rendered.mimeType }] };
 }
 
 export async function handleImageSearch(

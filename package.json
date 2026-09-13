@@ -1,6 +1,6 @@
 {
   "name": "pi-scholar",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
   "description": "Local PDF study workflows for Pi and Obsidian",
   "type": "module",
@@ -74,7 +74,11 @@
     "lesson.ts",
     "open-assessment.ts",
     "lesson-figures.ts",
-    "math-formatting.ts"
+    "math-formatting.ts",
+    "equation-presentation.ts",
+    "learn-quality.ts",
+    "learn-review.ts",
+    "review-runtime.ts"
   ],
   "devDependencies": {
     "marked": "18.0.5"

@@ -157,6 +157,18 @@ try {
 
   const context = {
     cwd: root,
+    model: { id: "ui-fixture", provider: "fixture", api: "openai-responses", name: "UI fixture", input: ["text", "image"], reasoning: false, contextWindow: 262144, maxTokens: 16384 },
+    // Exercise the production review preflight without a network/model account.
+    modelRegistry: { complete: async (model, review) => {
+      const prompt = review.messages[0].content;
+      let content = [{ type: "text", text: JSON.stringify({ status: "pass", findings: [] }) }], stopReason = "stop";
+      if (review.messages.length === 1 && /Required read_source pages: 1\./.test(prompt)) {
+        content = [{ type: "toolCall", id: "read-ui", name: "read_source", arguments: { startPage: 1, endPage: 1 } }]; stopReason = "toolUse";
+      } else if (review.messages.length === 1 && /Required view_source pages: 1\./.test(prompt)) {
+        content = [{ type: "toolCall", id: "view-ui", name: "view_source", arguments: { page: 1 } }]; stopReason = "toolUse";
+      }
+      return { role: "assistant", content, stopReason, api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), usage: { input: 100, output: 100, cacheRead: 0, cacheWrite: 0 } };
+    } },
     hasUI: true,
     isIdle: () => true,
     abort: async () => {},
@@ -372,6 +384,7 @@ try {
       misconceptions: [],
       figureReviews: [{ page: 1, observation: "Rendered page contains only the source paragraphs; no figures or tables.", figures: [] }],
       objectiveChecks: [{ objective: "Explain why the compact renderer avoids padded cards.", checks: ["conceptual"] }],
+      sourceCoverage: [{ id: "compact-meaning", kind: "concept", description: "Remove redundant borders while retaining the passage", objective: "Explain why the compact renderer avoids padded cards.", sourcePages: [1], lessonId: "compact-explanation", evidence: "Extra nested cards repeat visual boundaries without adding evidence." }],
       lesson: { id: "compact-explanation", title: "Keep information, remove repeated framing", objectives: ["Explain why the compact renderer avoids padded cards."],
         keyPoints: ["Compact source reads remain visible without redundant framing."], sourcePages: [1],
         markdown: "### Keep information, remove repeated framing\n\nA source read is one bounded passage fetched from the PDF. The learner needs that passage and its page reference. Extra nested cards repeat visual boundaries without adding evidence. Keep one informative row so the passage stays visible while repeated padding disappears." },
@@ -384,7 +397,7 @@ try {
   const notesText = notesResult.content?.map((item) => item.type === "text" ? item.text : "").join("\n") || "";
   check(
     "Learn notes persist through the extracted tool controller",
-    !notesText.startsWith("Scholar error:") && notesText.includes("Saved instructional explanation") && notesText.includes("Full lesson committed"),
+    !notesText.startsWith("Scholar error:") && notesText.includes("Full lesson committed"),
     JSON.stringify(notesText),
   );
 
@@ -549,6 +562,8 @@ try {
     clarification.details?.action === "notes"
       && (await readFixtureBook(bookStatePath)).chapters[0].sections[0].transcript.some(entry => entry.id === "lesson-compact-clarification"),
     clarification.content?.[0]?.text || "no saved clarification");
+  const revisedCommit = await definition.execute("learn-clarification-review", { action: "notes", lessonComplete: true }, undefined, undefined, context);
+  check("an editorial addition is reviewed before the revised lesson is considered delivered", revisedCommit.content[0].text.includes("Full lesson committed"), revisedCommit.content[0].text);
   const sectionDirectory = join(obsidian, "Scholar", "Books", bookDirectories[0].name, "Sections");
   const sectionFile = (await readdir(sectionDirectory)).find((name) => name.endsWith(".md"));
   if (!sectionFile) throw new Error("Expected the active Scholar section note.");

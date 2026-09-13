@@ -275,7 +275,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
     }
   });
 
-  pi.on("tool_call", async (event) => {
+  pi.on("tool_call", async (event, ctx) => {
     if (!coordinator.hasConfiguredLibrary() || !coordinator.runtimeSession.active || !coordinator.runtimeSession.bookId || event.toolName !== SCHOLAR_QUIZ_TOOL_NAME) return;
     if (!modeCan(coordinator.runtimeSession.mode, "assesses")) return;
     const input = parseScholarQuizInput(event.input);
@@ -332,16 +332,21 @@ export default function scholarExtension(pi: ExtensionAPI) {
       // Invalid forms still receive the quiz tool's field-level error. Only a
       // validated form can be shown or become a resumable unanswered question.
       const frozen = prepareScholarQuiz(event.input);
+      const verifyReview = section && frozen && !section.attempts.some(item => item.toolCallId === event.toolCallId)
+        ? await toolController.reviewQuestion(book, section, { quiz: frozen, grounding: input.grounding, kind: input.kind, difficulty: input.difficulty }, input.grounding!.sourcePages, ctx)
+        : undefined;
       await coordinator.mutateBook(coordinator.runtimeSession.bookId, async (targetBook) => {
         if (!coordinator.ownsActiveAuthority(targetBook)) throw new Error("Scholar blocked this question because the active book authority changed.");
         const currentSection = coordinator.runtimeSession.mode === "learn" ? findSection(targetBook, coordinator.runtimeSession.recordId) : undefined;
         const currentTutor = coordinator.runtimeSession.mode === "tutor" ? targetBook.tutorSessions.find((item) => item.id === coordinator.runtimeSession.recordId) : undefined;
         if (coordinator.runtimeSession.mode === "learn") {
           if (!currentSection) throw new Error("Scholar blocked this question before presentation: no Learn section is active.");
+          verifyReview?.(currentSection);
           if (input.grounding) input.grounding = learnQuestionGrounding(currentSection, input.grounding);
           assertQuestionGrounding(input.grounding, targetBook, { mode: "learn", section: currentSection });
           if (input.grounding.purpose === "mastery" && input.grounding.basis.filter(basis => basis.kind === "objective").length !== 1) throw new Error("A mastery multiple-choice question must assess one focused objective.");
           if (input.grounding.purpose !== "diagnostic") await assertLearnFigureCoverage(coordinator.getConfig(), targetBook, currentSection);
+          verifyReview?.(currentSection);
         } else {
           if (!currentTutor || currentTutor.status !== "active") throw new Error("Scholar blocked this question before presentation: no Tutor session is active.");
           assertQuestionGrounding(input.grounding, targetBook, { mode: "tutor", tutor: currentTutor });

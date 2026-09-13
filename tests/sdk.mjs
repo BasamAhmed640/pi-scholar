@@ -53,6 +53,34 @@ export const jitiPath = join(dirname(piRequire.resolve("jiti/package.json")), "l
 export const resolvePiDependency = (name) => piRequire.resolve(name);
 export const piVersion = JSON.parse(readFileSync(join(piPackageRoot, "package.json"), "utf8")).version;
 
+// Some Pi packages expose ESM imports without a require export. Resolve them
+// relative to the selected SDK, including hoisted/nonstandard installations.
+export function resolvePiImport(name) {
+  try { return resolvePiDependency(name); } catch { /* Try the import entry. */ }
+  for (const modules of piRequire.resolve.paths(name) || []) {
+    const directory = join(modules, name);
+    try {
+      const manifest = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
+      if (manifest.name !== name) continue;
+      const entry = manifest.exports?.["."]?.import ?? manifest.exports?.import ?? manifest.module ?? manifest.main;
+      if (typeof entry === "string" && existsSync(resolve(directory, entry))) return resolve(directory, entry);
+    } catch { /* Try the next SDK dependency search location. */ }
+  }
+  throw new Error(`Cannot resolve the ${name} import entry from the installed Pi SDK.`);
+}
+
+// Specific aliases must precede their package root: Jiti matches prefixes, so
+// aliasing typebox alone otherwise rewrites typebox/value to index.mjs/value.
+export const sdkAliases = Object.freeze({
+  "typebox/value": resolvePiDependency("typebox/value"),
+  "typebox/compile": resolvePiDependency("typebox/compile"),
+  typebox: resolvePiDependency("typebox"),
+  "@earendil-works/pi-ai/compat": join(dirname(resolvePiImport("@earendil-works/pi-ai")), "compat.js"),
+  "@earendil-works/pi-ai": resolvePiImport("@earendil-works/pi-ai"),
+  "@earendil-works/pi-tui": resolvePiDependency("@earendil-works/pi-tui"),
+  "@earendil-works/pi-coding-agent": join(piPackageRoot, "dist", "index.js"),
+});
+
 export function checkSdkFiles() {
   for (const path of [extensionPath, loaderPath, jitiPath]) {
     if (!existsSync(path)) throw new Error(`Required test input is missing: ${path}. Install or repair Pi; the verified SDK version is 0.85.1.`);

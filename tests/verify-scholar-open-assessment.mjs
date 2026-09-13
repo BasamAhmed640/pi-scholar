@@ -1,10 +1,11 @@
+import { sdkAliases } from "./sdk.mjs";
 import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { extensionPath, piPackageRoot, jitiPath, resolvePiDependency } from "./sdk.mjs";
 
 const { createJiti } = await import(pathToFileURL(jitiPath));
-const jiti = createJiti(import.meta.url, { moduleCache: false, alias: {
+const jiti = createJiti(import.meta.url, { moduleCache: false, alias: { ...sdkAliases,
   "@earendil-works/pi-coding-agent": join(piPackageRoot, "dist/index.js"),
   "@earendil-works/pi-tui": resolvePiDependency("@earendil-works/pi-tui"), typebox: resolvePiDependency("typebox"),
 } });

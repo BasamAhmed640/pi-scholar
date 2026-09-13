@@ -1,3 +1,4 @@
+import { sdkAliases } from "./sdk.mjs";
 // Exercise real quiz UI, extension events, schema, storage, and Learn/Tutor projection.
 // Only the Pi host is stubbed; all book state and notes use a disposable vault.
 import assert from "node:assert/strict";
@@ -13,7 +14,7 @@ const extension = basename(requested).toLowerCase() === "index.ts" ? dirname(req
 const packageRoot = sdkRoot;
 const piRequire = createRequire(join(packageRoot, "package.json"));
 const { createJiti } = await import(pathToFileURL(sdkJitiPath).href);
-const jiti = createJiti(import.meta.url, { moduleCache: false, alias: {
+const jiti = createJiti(import.meta.url, { moduleCache: false, alias: { ...sdkAliases,
   "@earendil-works/pi-coding-agent": join(packageRoot, "dist", "index.js"),
   "@earendil-works/pi-tui": piRequire.resolve("@earendil-works/pi-tui"), typebox: piRequire.resolve("typebox"),
 } });
