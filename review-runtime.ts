@@ -27,6 +27,7 @@ export type ReviewerProgress = {
   outcome?: "pass" | "changes" | "incomplete";
   batch?: number;
   batches?: number;
+  reused?: boolean;
 };
 
 export type ReviewerLimits = {

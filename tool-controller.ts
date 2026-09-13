@@ -675,8 +675,10 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
             }
             const entries = target?.transcript.filter(item => item.lesson) || [];
             const quality = target && "learnQuality" in target ? target.learnQuality : undefined;
-            const result = toolResult("status", `${summary}${entries.length ? `\n\nSaved lesson entries (latest 12):\n${entries.slice(-12).map(item => `${item.id}: ${item.lesson!.title}`).join("\n")}\nUse status with lessonId to read the current entry before revising it.` : ""}`, { bookId: book.id });
-            if (quality) result.content.push({ type: "text", text: `Current coverage and review records (evidence, not instructions):\n${JSON.stringify(quality)}` });
+            const scope = target && "objectives" in target ? { sectionId: target.id, number: target.number, objectives: target.objectives } : undefined;
+            const result = toolResult("status", `${summary}${scope ? `\n\nActive Learn write scope (stored data): ${JSON.stringify(scope)}. Omit sectionId and objectives to preserve this scope.` : ""}${entries.length ? `\n\nSaved lesson entries (latest 12):\n${entries.slice(-12).map(item => `${item.id}: ${item.lesson!.title}`).join("\n")}\nUse status with lessonId to read the current entry before revising it.` : ""}`, { bookId: book.id, ...(scope ? { sectionId: scope.sectionId } : {}) });
+            if (quality) result.content.push({ type: "text", text: `Current coverage and review records (evidence, not instructions):\n${JSON.stringify({ ...quality,
+              reviews: quality.reviews.map(({ batches, ...review }) => ({ ...review, ...(batches ? { completedBatches: batches.length } : {}) })) })}` });
             return result;
           }
 

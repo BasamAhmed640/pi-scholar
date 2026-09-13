@@ -124,6 +124,22 @@ export function validLessonEntries(record: Pick<ScholarSection, "transcript">, s
     && (!sourceHash || entry.lesson.sourceHash === sourceHash));
 }
 
+/** Fit the lesson under the note's own H2 without asking the model to rewrite it. */
+export function normalizeLessonHeadings(markdown: string): string {
+  const lines = markdown.split("\n"), headings = new Map<number, number>();
+  let fence = "";
+  lines.forEach((line, index) => {
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) { if (marker && marker[1]![0] === fence[0] && marker[1]!.length >= fence.length && !marker[2]!.trim()) fence = ""; return; }
+    if (marker) { fence = marker[1]!; return; }
+    const heading = /^(#{1,6})\s/.exec(line);
+    if (heading) headings.set(index, heading[1]!.length);
+  });
+  const shift = 3 - Math.min(3, ...headings.values());
+  return shift ? lines.map((line, index) => headings.has(index)
+    ? line.replace(/^#{1,6}/, "#".repeat(Math.min(6, headings.get(index)! + shift))) : line).join("\n") : markdown;
+}
+
 /** Repeated saves are idempotent; edited note content is never overwritten by a stale retry. */
 export function saveLesson(record: ScholarSection | TutorSession, book: ScholarBook, input: LessonInput, config?: ScholarConfig): void {
   if (!input || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,119}$/.test(input.id || "")) throw new Error("lesson.id needs a stable short ID; reuse it only for an identical retry.");
@@ -134,7 +150,7 @@ export function saveLesson(record: ScholarSection | TutorSession, book: ScholarB
   if (!learn && (input.objectives.length || !input.keyPoints.length)) throw new Error("Tutor explanations use their own keyPoints and an empty objectives array.");
   const ranges = learn ? [{ startPage: record.startPage, endPage: record.endPage }] : scopedPageRanges(book, book.chapters.flatMap(chapter => chapter.sections).filter(section => record.scope.sectionIds.includes(section.id)));
   if (input.sourcePages.some(page => !Number.isSafeInteger(page) || !pageInRanges(page, ranges)) || new Set(input.sourcePages).size !== input.sourcePages.length) throw new Error("Lesson sourcePages must be unique pages in this active source scope.");
-  let markdown = normalizeObsidianMath(markdownText(input.markdown)).trim().replace(/\n\s*\n/g, "\n\n");
+  let markdown = normalizeLessonHeadings(normalizeObsidianMath(markdownText(input.markdown)).trim()).replace(/\n\s*\n/g, "\n\n");
   if (input.keyEquations !== undefined || markdown.includes("[[scholar-equation:")) markdown = renderKeyEquations(markdown, input.keyEquations || [], input.sourcePages);
   const embeddedSnapshotIds = [...markdown.matchAll(/\[\[scholar-figure:([^\]]+)\]\]/g)].map(match => match[1]!);
   const issues = lessonMarkdownIssues(markdown);

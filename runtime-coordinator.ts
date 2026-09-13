@@ -145,12 +145,22 @@ export class ScholarRuntimeCoordinator {
   public loadingProblem?: string;
   private loadingRound = 0;
   private loadingSourcePrepared = false;
+  private loadingNeedsWriting = false;
+  private loadingRepair = false;
+
+  loadingReviewOutcome(message?: string): void {
+    this.loadingProblem = message;
+    this.loadingRepair = Boolean(message);
+    this.loadingNeedsWriting = Boolean(message);
+  }
 
   loadingModelActivity(): void {
     this.loading.activity();
-    if (this.loading.active && this.loadingTarget?.kind === "learn" && this.loadingSourceActive && this.loadingSourcePrepared) {
+    if (this.loading.active && this.loadingTarget?.kind === "learn" && (this.loadingNeedsWriting || this.loadingSourceActive && this.loadingSourcePrepared)) {
       this.loadingSourceActive = false;
-      this.loading.update(2, "Planning and writing the explanation");
+      this.loadingNeedsWriting = false;
+      this.loading.update(2, this.loadingRepair ? `Repair round ${this.loadingRound}` : "Planning and writing the explanation", this.loading.token,
+        this.loadingRepair ? "Repairing after review" : undefined);
     }
   }
 
@@ -163,6 +173,7 @@ export class ScholarRuntimeCoordinator {
     this.loadingFailed = false;
     this.loadingProblem = undefined;
     this.loadingRound = 0;
+    this.loadingRepair = this.loadingNeedsWriting = false;
     this.loading.bindSignal(ctx.signal);
   }
   public runtimeSession = new ScholarRuntimeSession();
@@ -332,7 +343,8 @@ export class ScholarRuntimeCoordinator {
     } else if (action === "outline" || action === "outline_validate") {
       this.loading.update(2, "Checking chapter boundaries against the PDF");
     } else if (action === "notes") {
-      this.loading.update(2, "Saving and checking the explanation");
+      this.loading.update(2, this.loadingRepair ? `Saving repairs · round ${this.loadingRound}` : "Saving and checking the explanation", this.loading.token,
+        this.loadingRepair ? "Repairing after review" : undefined);
     } else if (["assess", "exam_build", "exam_present", "exam_grade"].includes(action)) {
       this.loading.update(2, action === "exam_grade" ? "Checking submitted answers" : "Preparing learner questions");
     }
@@ -343,13 +355,14 @@ export class ScholarRuntimeCoordinator {
     this.loadingSourceActive = false;
     if (!event) {
       this.loadingReviews.clear();
+      this.loadingNeedsWriting = false;
       this.loadingRound++;
-      this.loading.update(3, total === 3 ? `Lesson review · round ${this.loadingRound}` : "Checking the next question");
+      this.loading.update(3, total === 3 ? `Lesson review · round ${this.loadingRound} · 12m shared deadline` : "Checking the next question");
       return;
     }
     if (event.stage === "complete") this.loadingReviews.add(event.role);
     const detail = event.stage === "complete" ? `${event.role}: ${event.outcome || "returned"}`
-      : `${event.role}${event.batch ? ` batch ${event.batch}/${event.batches}` : ""} · ${event.toolName || "checking"}`;
+      : `${event.role}${event.batch ? ` batch ${event.batch}/${event.batches}` : ""} · ${event.reused ? "saved pass reused" : event.toolName || "checking"}`;
     this.loading.update(3, `${detail} · ${this.loadingReviews.size}/${total} returned`);
   }
 
@@ -479,6 +492,7 @@ export class ScholarRuntimeCoordinator {
     this.loadingFailed = false;
     this.loadingProblem = undefined;
     this.loadingRound = 0;
+    this.loadingRepair = this.loadingNeedsWriting = false;
     this.loading.update(isProvisionalOutline(book) ? 2 : 1);
     this.toolController.prepareOutlineValidation(book);
     try {
@@ -525,6 +539,7 @@ export class ScholarRuntimeCoordinator {
       this.loadingFailed = false;
       this.loadingProblem = undefined;
       this.loadingRound = 0;
+      this.loadingRepair = this.loadingNeedsWriting = false;
       this.loadingSourcePrepared = false;
     }
     return this.scholarTurnRun;

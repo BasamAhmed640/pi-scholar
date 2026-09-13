@@ -78,7 +78,10 @@ console.log("[PASS] edits and deletion invalidate readiness, stale retries canno
 assert.throws(()=>lesson.saveLesson(section,book,input("broken","Interpret direction","```mermaid\nflowchart LR\nA-->B")),/fence/);
 assert.throws(()=>lesson.saveLesson(section,book,input("reserved","Interpret direction","<!-- scholar:entry:end -->")),/boundaries/);
 assert.throws(()=>lesson.saveLesson(section,book,input("code-math","Interpret direction","> [!note] Key equation\n> `t = l / v`")),/display math/);
-assert.throws(()=>lesson.saveLesson(section,book,input("h1","Interpret direction","# Duplicate page title\n\nAn explanation.")),/top-level page title/);
+lesson.saveLesson(section,book,input("h1","Interpret direction","# Lesson topic\n\n## A connected subtopic\n\nAn explanation."));
+assert.match(section.transcript.find(entry=>entry.id==='lesson-h1').markdown,/^### Lesson topic\n\n#### A connected subtopic/);
+assert.equal(lesson.normalizeLessonHeadings('## A topic\n\n```text\n# literal code\n```\n\n> # quoted source'),
+  '### A topic\n\n```text\n# literal code\n```\n\n> # quoted source');
 assert.equal(lesson.lessonMarkdownIssues("> [!note] Key equation\n> $$\n> t = \\frac{l}{v}\n> $$\n> Meaning: a longer path takes longer.").length,0);
 assert.throws(()=>lesson.saveLesson(section,book,{...input("scope","Interpret direction"),sourcePages:[2]}),/scope/);
 assert.throws(()=>lesson.saveLesson(section,book,input("figure","Interpret direction","A figure illustrates the reversal.\n\n[[scholar-figure:missing]]")),/vault configuration/);

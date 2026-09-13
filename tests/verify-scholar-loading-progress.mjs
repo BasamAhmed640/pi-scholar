@@ -31,11 +31,19 @@ try {
   loader.update(2, '2/3 checks returned');
   assert.match(loader.lines(160)[1], /Stage 3\/4.*Review/);
   clock += 120_000;
+  assert.match(loader.lines(160)[0], /02:00 in stage/);
   loader.activity();
   assert.doesNotMatch(loader.lines(160).join('\n'), /No new activity/);
   loader.update(1, 'Repair round 2');
+  assert.match(loader.lines(160)[0], /00:00 in stage/);
   assert.match(loader.lines(160)[1], /Stage 2\/4.*Repair round 2/);
   pass('real events update stages and a repair can return to writing without a fake percentage');
+  loader.update(1,'Repair round 2',loader.token,'Repairing after review');
+  clock += 2000;
+  loader.update(1,'Saving repaired prose',loader.token,'Repairing after review');
+  assert.match(loader.lines(160)[1],/Repairing after review/);
+  assert.match(loader.lines(160)[0],/00:02 in stage/);
+  clock -= 2000;
 
   const before = loader.lines(160)[0];
   const wrapped = loader.inputContext(ctx);

@@ -41,6 +41,32 @@ selected PDF library contains the source books, not your learning history.
 
 ## Installation
 
+### Bounded reviews and fewer retries (0.5.1)
+
+One **12-minute deadline covers the entire lesson review round**, across all
+three roles and their sequential batches. A new batch receives only the time
+remaining. A timeout preserves the draft and successful batch receipts in its
+existing vault note; retrying unchanged content resumes unfinished work. Edits
+to the lesson or source invalidate those receipts. This bounds the review round,
+not the duration of writing a whole lesson or subsequent repairs.
+
+Visual review inspects the figures currently referenced by the lesson or its
+source-figure inventory. Replaced, unused crops remain in history without being
+reviewed again. After recropping, the writer updates both the lesson reference
+and the figure inventory. Each visual batch focuses on its assigned evidence.
+
+Notes fields can be saved independently. Learn notes default to the active
+section and also accept its displayed number; another section remains forbidden.
+`coverageUpdates` changes only selected existing evidence pointers/excerpts, so
+the writer need not resend the full source plan. The source scope, exact evidence
+checks and mastery requirements remain enforced. Heading levels are adjusted to
+fit the note without regenerating its prose, code blocks or equation callouts.
+
+The Pi display shows total elapsed time **and time in the current stage**, labels
+repair rounds explicitly, and reports reused review batches. Draft saves return
+a short next-step message instead of repeatedly listing every future learner test.
+No extra agents, dependencies, model changes or hidden storage are introduced.
+
 ### Lesson revisions and loading progress (0.5.0)
 
 Validated edits now replace the intended lesson entry through the shared vault

@@ -134,6 +134,32 @@ async function harness(fresh = false) {
 let checks = 0;
 async function check(name, test) { await test(); checks++; console.log(`[PASS] ${name}`); }
 try {
+  await check("Independent notes updates and displayed section numbers preserve authority and avoid prose regeneration", async () => {
+    const h=await harness();
+    success(await h.execute({action:'notes',sectionId:'1.1',objectiveChecks:notes().objectiveChecks}));
+    success(await h.execute({action:'notes',figureReviews:notes().figureReviews}));
+    success(await h.execute({action:'notes',synthesis:notes().synthesis}));
+    success(await h.execute({action:'notes',keyPoints:notes().keyPoints}));
+    assert.equal(active(await h.load()).transcript.length,0);
+    const before=await h.load();
+    assert.match(textOf(await h.execute({action:'notes',sectionId:'1.2',keyPoints:['Wrong section']})),/frozen Learn section s1/);
+    assert.deepEqual(await h.load(),before);
+    const input=notes(); input.lesson.markdown=input.lesson.markdown.replace('### Understanding','# Understanding');
+    success(await h.execute(input));
+    const saved=active(await h.load());
+    assert.match(saved.transcript[0].markdown,/^### Understanding/);
+    const evidence=explanation.split('. ')[0]+'.';
+    const result=await h.execute({action:'notes',coverageUpdates:[{id:'time-concept',evidence}]});
+    success(result);
+    assert(textOf(result).length<1000,'draft saves do not list every future mastery check');
+    const updated=active(await h.load());
+    assert.equal(updated.learnQuality.coverage[0].evidence,evidence);
+    assert.equal(updated.learnQuality.coverage.length,saved.learnQuality.coverage.length);
+    assert.equal(updated.transcript[0].markdown,saved.transcript[0].markdown);
+    success(await h.execute({action:'notes',lessonComplete:true}));
+    assert.equal(lesson.lessonReady(active(await h.load())),true);
+  });
+
   await check("Exact prose patches preserve equation receipts, reject stale/structural edits, and require fresh review", async () => {
     const h = await harness();
     success(await h.execute({...notes(), lessonComplete:true}));

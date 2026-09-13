@@ -8,6 +8,8 @@ type ProgressRun = {
   title: string;
   stages: readonly string[];
   stage: number;
+  stageBegan: number;
+  stageLabel?: string;
   detail: string;
   started: number;
   lastActivity: number;
@@ -52,7 +54,7 @@ export class ScholarLoadingProgress {
     this.clear();
     const token = Symbol("scholar-loading");
     this.run = { token, title: plain(title), stages: stages.length ? stages : ["Working"], stage: 0, detail: "",
-      started: this.now() - elapsed, lastActivity: this.now(), pausedMs: 0, inputWaits: 0 };
+      started: this.now() - elapsed, lastActivity: this.now(), pausedMs: 0, inputWaits: 0, stageBegan: elapsed };
     this.context = ctx;
     if (ctx.hasUI) {
       try {
@@ -70,10 +72,13 @@ export class ScholarLoadingProgress {
     return token;
   }
 
-  update(stage: number, detail = "", token = this.token): void {
+  update(stage: number, detail = "", token = this.token, label?: string): void {
     if (!this.active || token !== this.token) return;
     // The current segment stays animated until saved readiness is verified.
-    this.run!.stage = Math.max(0, Math.min(this.run!.stages.length - 1, stage));
+    const next = Math.max(0, Math.min(this.run!.stages.length - 1, stage));
+    if (next !== this.run!.stage || label !== this.run!.stageLabel) this.run!.stageBegan = this.elapsed();
+    this.run!.stage = next;
+    this.run!.stageLabel = label ? plain(label) : undefined;
     this.run!.detail = plain(detail);
     this.activity(token);
     this.paint();
@@ -191,12 +196,12 @@ export class ScholarLoadingProgress {
     const bar = run.stages.map((_, index) => index < run.stage || run.outcome === "ready"
       ? color(run.outcome === "ready" ? "success" : "accent", this.ascii ? "===" : "━━━")
       : index === run.stage && !run.outcome && run.pausedAt === undefined ? color("accent", pulse) : color("muted", this.ascii ? "..." : "···")).join(" ");
-    const stage = run.pausedAt !== undefined && !run.outcome ? "Waiting for you" : run.outcome === "paused" ? "Incomplete" : run.outcome === "stopped" ? "Stopped" : run.stages[run.stage];
+    const stage = run.pausedAt !== undefined && !run.outcome ? "Waiting for you" : run.outcome === "paused" ? "Incomplete" : run.outcome === "stopped" ? "Stopped" : run.stageLabel || run.stages[run.stage];
     const quiet = !run.outcome && run.pausedAt === undefined && this.now() - run.lastActivity >= 60_000
       ? ` · No new activity for ${elapsedLabel(this.now() - run.lastActivity)}` : "";
     const label = run.outcome === "ready" ? "Ready" : `Stage ${run.stage + 1}/${run.stages.length}`;
     return [
-      `${color("accent", "Scholar")} · ${color("accent", elapsedLabel(elapsed))} elapsed${quiet || ` · ${run.title}`}`,
+      `${color("accent", "Scholar")} · ${color("accent", elapsedLabel(elapsed))} elapsed${run.outcome ? "" : ` · ${elapsedLabel(elapsed - run.stageBegan)} in stage`}${quiet || ` · ${run.title}`}`,
       `${bar}  ${label} · ${stage}${run.detail ? ` · ${run.detail}` : ""}`,
     ].map(line => truncateToWidth(line, width));
   }

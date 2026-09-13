@@ -12,10 +12,10 @@ import {
 import { assertQuestionGrounding, normalizeQuestionGrounding } from "../question-grounding.ts";
 import { prepareOpenAssessment, prepareOpenQuestionText, type OpenAssessmentEvaluation, type OpenResponseGate } from "../open-assessment.ts";
 import { normalizeObsidianMath } from "../math-formatting.ts";
-import { isSourceCoverageItem, isSourceCoverageLedger, sourceCoverageIssues, type SourceCoverageItem } from "../learn-quality.ts";
+import { isSourceCoverageItem, isSourceCoverageLedger, sourceCoverageIssues, updateCoverageEvidence, type CoverageUpdate, type SourceCoverageItem } from "../learn-quality.ts";
 import type { ScholarRuntimeSession } from "../runtime-session.ts";
 import type { ToolDetails } from "../tool-contract.ts";
-import { saveLesson, patchLesson, commitLesson, validLessonEntries, isObjectiveChecks, type LessonInput, type LessonPatch, type ObjectiveCheck } from "../lesson.ts";
+import { saveLesson, patchLesson, commitLesson, lessonReady, validLessonEntries, isObjectiveChecks, type LessonInput, type LessonPatch, type ObjectiveCheck } from "../lesson.ts";
 import type { ScholarConfig } from "../types.ts";
 import {
   findSection,
@@ -59,6 +59,8 @@ export async function handleNotes(
     lessonComplete?: boolean;
     objectiveChecks?: ObjectiveCheck[];
     sourceCoverage?: SourceCoverageItem[];
+    coverageUpdates?: CoverageUpdate[];
+    figureReviews?: unknown[];
   },
   requireLearnSection: (book: ScholarBook) => ScholarSection,
   mutateBook: MutateBook,
@@ -69,8 +71,10 @@ export async function handleNotes(
   const synthesis = params.synthesis?.trim();
   const keyPoints = compactStrings(params.keyPoints);
   if (params.lesson && params.lessonPatch) throw new Error("Use either lesson or lessonPatch in one notes call, not both.");
-  if (!params.lesson && !params.lessonPatch && !params.lessonComplete && !params.sourceCoverage && (!synthesis || synthesis.length < 40 || keyPoints.length === 0)) {
-    throw new Error("Nothing saved. A standalone recap needs synthesis (at least 40 characters) and keyPoints. To save the initial Learn plan instead, send top-level objectives with sourceCoverage; to save teaching, send lesson. Retain other intended fields when retrying this rejected call.");
+  if (params.sourceCoverage && params.coverageUpdates) throw new Error("Use sourceCoverage or coverageUpdates in one notes call, not both.");
+  if (![params.lesson, params.lessonPatch, params.lessonComplete, params.sourceCoverage, params.coverageUpdates, params.figureReviews,
+    params.synthesis, params.keyPoints, params.objectives, params.coveredObjectives, params.objectiveChecks, params.requiredChecks, params.misconceptions].some(value => value !== undefined)) {
+    throw new Error("Nothing saved. Supply a lesson, recap, source plan, figureReviews, objectiveChecks or coverageUpdates. These fields may be saved independently.");
   }
   if (session.mode === "tutor") {
     if (!session.recordId) throw new Error("No Tutor session is active.");
@@ -86,8 +90,10 @@ export async function handleNotes(
     return toolResult("notes", `Saved source-grounded Tutor notes for ${mutation.book.tutorSessions.find((item) => item.id === session.recordId)?.title}.`, { bookId: book.id });
   }
   const activeSection = requireLearnSection(book);
-  const sectionId = params.sectionId || activeSection.id;
-  if (sectionId !== activeSection.id) throw new Error("Scholar Learn notes must target the frozen Learn section.");
+  const sectionId = activeSection.id;
+  if (params.sectionId && params.sectionId !== sectionId && params.sectionId !== activeSection.number) {
+    throw new Error(`Scholar Learn notes must target the frozen Learn section ${sectionId} (${activeSection.number}). Omit sectionId to use it; this call saved nothing.`);
+  }
   const objectives = params.objectives === undefined ? activeSection.objectives : compactStrings(params.objectives);
   const covered = compactStrings(params.coveredObjectives);
   if (objectives.length === 0) throw new Error("Nothing saved. Declare the section's source-grounded objectives in the top-level objectives field of action=notes. lesson.objectives and objectiveChecks reference that declaration; they do not create it. After declaration, omit objectives to preserve them. Retry the intended notes fields after fixing this declaration; do not call outline.");
@@ -121,18 +127,19 @@ export async function handleNotes(
       );
     }
     section.objectives = objectives;
-    if (params.sourceCoverage !== undefined) {
-      if (section.status === "complete" && JSON.stringify(params.sourceCoverage) !== JSON.stringify(section.learnQuality?.coverage)) throw new Error("Practice cannot adopt or replace the completed section's source coverage contract.");
-      const rawCoverage: unknown = params.sourceCoverage;
+    const sourceCoverage = params.coverageUpdates ? updateCoverageEvidence(section.learnQuality?.coverage || [], params.coverageUpdates) : params.sourceCoverage;
+    if (sourceCoverage !== undefined) {
+      if (section.status === "complete" && JSON.stringify(sourceCoverage) !== JSON.stringify(section.learnQuality?.coverage)) throw new Error("Practice cannot adopt or replace the completed section's source coverage contract.");
+      const rawCoverage: unknown = sourceCoverage;
       if (!isSourceCoverageLedger(rawCoverage)) {
         const invalid = Array.isArray(rawCoverage) ? rawCoverage.flatMap((item, index) =>
           isSourceCoverageItem(item) ? [] : [`${index + 1}${typeof item?.id === "string" ? ` (${item.id})` : ""}`]) : [];
         throw new Error(`Nothing saved. Invalid sourceCoverage ${invalid.length ? `item(s): ${invalid.join(", ")}` : "checklist (expected an array with unique IDs)"}. Each item needs id, kind, description, sourcePages and objective. Optional IDs must be nonempty identifiers; optional evidence must be a nonempty exact passage. Omit unused optional fields. Equation and snapshot references may accompany any item, but must identify content rendered in that lesson at completion. Correct those fields and retry; do not discard the lesson or change its objectives.`);
       }
-      const issues = sourceCoverageIssues(params.sourceCoverage, { ...section, lessons: [] });
+      const issues = sourceCoverageIssues(sourceCoverage, { ...section, lessons: [] });
       if (issues.length) throw new Error(`Repair the source coverage plan: ${issues.join("; ")}`);
       section.learnQuality ||= { version: 1, coverage: [], reviews: [] };
-      section.learnQuality.coverage = params.sourceCoverage;
+      section.learnQuality.coverage = sourceCoverage;
     }
     if (params.objectiveChecks !== undefined) {
       if (!isObjectiveChecks(params.objectiveChecks) || params.objectiveChecks.some(item => !objectives.includes(item.objective))) throw new Error("objectiveChecks must map declared objectives to nonempty conceptual/application/computation/discrimination checks.");
@@ -162,7 +169,10 @@ export async function handleNotes(
     recomputeProgress(state, section);
   });
   const section = findSection(mutation.book, sectionId)!;
-  return toolResult("notes", `Saved ${params.lesson || params.lessonPatch ? "instructional explanation" : "notes"} for ${sectionLabel(mutation.book, section)}.${params.lessonComplete ? deferCommit ? " Draft saved; independent review pending." : " Full lesson committed." : ""} Status: ${section.status}. ${sectionProgressMessage(section)}`, { bookId: book.id, sectionId });
+  const progress = section.learnQuality && !lessonReady(section, mutation.book.source.fingerprint.sha256)
+    ? `Draft saved; lesson preparation is still in progress. ${!section.synthesis || !section.keyPoints.length ? "Save the recap and key points. " : ""}${!section.objectiveChecks?.length ? "Save the objectiveChecks plan. " : ""}When the explanation and exact evidence links are complete, submit lessonComplete for review. Learner mastery checks come after lesson approval.`
+    : sectionProgressMessage(section);
+  return toolResult("notes", `Saved ${params.lesson || params.lessonPatch ? "instructional explanation" : "notes"} for ${sectionLabel(mutation.book, section)}.${params.lessonComplete ? deferCommit ? " Draft saved; independent review pending." : " Full lesson committed." : ""} Status: ${section.status}. ${progress}`, { bookId: book.id, sectionId });
 }
 
 export async function handleAssess(

@@ -18,6 +18,25 @@ export type SourceCoverageItem = {
   equationId?: string;
   snapshotId?: string;
 };
+export type CoverageUpdate = Pick<SourceCoverageItem, "id"> & Partial<Pick<SourceCoverageItem, "lessonId" | "evidence" | "equationId" | "snapshotId">>;
+
+/** Change delivery pointers without retransmitting or shrinking the source plan. */
+export function updateCoverageEvidence(ledger: SourceCoverageItem[], updates: CoverageUpdate[]): SourceCoverageItem[] {
+  if (!Array.isArray(updates) || !updates.length || updates.length > 200
+    || !updates.every(update => object(update) && keys(update, ["id", "lessonId", "evidence", "equationId", "snapshotId"]) && id(update.id)
+      && Object.keys(update).length > 1) || new Set(updates.map(update => update.id)).size !== updates.length) {
+    throw new Error("coverageUpdates needs unique existing item IDs and only lessonId/evidence/equationId/snapshotId fields.");
+  }
+  const result = ledger.map(item => ({ ...item }));
+  for (const update of updates) {
+    const index = result.findIndex(item => item.id === update.id);
+    if (index < 0) throw new Error(`Unknown source item ${update.id}; coverageUpdates cannot add or remove source requirements.`);
+    const next = { ...result[index]!, ...update };
+    if (!isSourceCoverageItem(next)) throw new Error(`Invalid delivery evidence for source item ${update.id}.`);
+    result[index] = next;
+  }
+  return result;
+}
 export type SourceCoverageLesson = {
   id: string;
   markdown: string;
@@ -137,6 +156,7 @@ export type ReviewResult = { status: "pass" | "changes"; findings: ReviewFinding
 export type ReviewerVerdict = ReviewResult;
 export const REVIEW_FAILURE_CODES = ["cancelled", "timeout", "limit", "provider", "tool", "invalid-output", "configuration", "evidence"] as const;
 export type ReviewFailure = { code: typeof REVIEW_FAILURE_CODES[number]; message: string };
+export type ReviewBatchPass = { key: string; findings: ReviewFinding[] };
 export type ReviewReceipt = ReviewResult & {
   role: ReviewRole;
   contentHash: string;
@@ -146,6 +166,8 @@ export type ReviewReceipt = ReviewResult & {
   createdAt: string;
   /** Runner-owned execution failure, never a model-authored content verdict. */
   failure?: ReviewFailure;
+  /** Successful scoped work, stored with the parent lesson/source hashes in the vault. */
+  batches?: ReviewBatchPass[];
 };
 
 export function isReviewFinding(value: unknown): value is ReviewFinding {
@@ -180,13 +202,17 @@ export function parseReviewerVerdict(raw: string): ReviewerVerdict {
 }
 
 export function isReviewReceipt(value: unknown): value is ReviewReceipt {
-  if (!object(value) || !keys(value, ["role", "contentHash", "sourceHash", "model", "createdAt", "status", "findings", "failure"])
+  if (!object(value) || !keys(value, ["role", "contentHash", "sourceHash", "model", "createdAt", "status", "findings", "failure", "batches"])
     || !validReviewFields(value) || !REVIEW_ROLES.includes(value.role as ReviewRole)
     || !sha256(value.contentHash) || !sha256(value.sourceHash) || !text(value.model, 300)
     || typeof value.createdAt !== "string") return false;
   if (value.failure !== undefined && (value.status !== "changes" || !object(value.failure)
     || !keys(value.failure, ["code", "message"]) || !REVIEW_FAILURE_CODES.includes(value.failure.code as ReviewFailure["code"])
     || !text(value.failure.message))) return false;
+  if (value.batches !== undefined && (!Array.isArray(value.batches) || value.batches.length > 128
+    || !value.batches.every(batch => object(batch) && keys(batch, ["key", "findings"]) && sha256(batch.key)
+      && Array.isArray(batch.findings) && batch.findings.length <= 40 && batch.findings.every(finding => isReviewFinding(finding) && finding.severity === "advice"))
+    || new Set(value.batches.map(batch => batch.key)).size !== value.batches.length)) return false;
   const time = new Date(value.createdAt);
   return Number.isFinite(time.getTime()) && time.toISOString() === value.createdAt;
 }

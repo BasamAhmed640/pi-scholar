@@ -58,7 +58,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
     isSetupActive: (book) => coordinator.isSetupActive(book),
     onLoadingActivity: (action, ctx, signal) => coordinator.loadingActivity(action, ctx, signal),
     onReviewProgress: (event, total) => coordinator.loadingReview(event, total),
-    onReviewOutcome: message => { coordinator.loadingProblem = message; },
+    onReviewOutcome: message => coordinator.loadingReviewOutcome(message),
     inputContext: ctx => coordinator.loading.inputContext(ctx),
   });
   coordinator.toolController = toolController;

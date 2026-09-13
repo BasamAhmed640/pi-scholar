@@ -14,7 +14,7 @@ const jiti = createJiti(import.meta.url, { moduleCache: false, alias: {
   "typebox/value": resolvePiDependency("typebox/value"), typebox: resolvePiDependency("typebox"),
 } });
 const load = name => jiti.import(join(dirname(extensionPath), name));
-const { reviewOne, reviewLearnDraft, reviewLearnQuestion } = await load("learn-review.ts");
+const { reviewOne, reviewLearnDraft, reviewLearnQuestion, currentReviewSnapshots } = await load("learn-review.ts");
 const { lessonHash, learnReviewHash } = await load("lesson.ts");
 const { isReviewReceipt } = await load("learn-quality.ts");
 const { ModelRegistry } = await import(pathToFileURL(join(piPackageRoot, "dist/core/model-registry.js")).href);
@@ -268,6 +268,7 @@ await check("Adaptive visual batches inspect every crop with its full page while
   options.ctx.model = { ...model, contextWindow: 128_000 };
   options.section.snapshots = Array.from({ length: 15 }, (_, i) => ({ ...options.section.snapshots[0], id: `crowded-${i}`, caption: `Saved crowded-page crop ${i}` }));
   options.section.snapshots.push({ ...options.section.snapshots[0], id: "page-two", page: 2 });
+  options.section.transcript[0].lesson.embeddedSnapshotIds = options.section.snapshots.map(crop => crop.id);
   const results = await reviewLearnDraft(options);
   assert(results.every(result => isReviewReceipt(result) && result.status === "pass"), JSON.stringify(results));
   assert(batches.length > 1, "Crowded pages must be split before exhausting the model window");
@@ -294,6 +295,7 @@ await check("One blocked visual batch prevents aggregate approval without droppi
   });
   options.ctx.model = { ...model, contextWindow: 128_000 };
   options.section.snapshots = Array.from({ length: 15 }, (_, i) => ({ ...options.section.snapshots[0], id: `crowded-${i}` }));
+  options.section.transcript[0].lesson.embeddedSnapshotIds = options.section.snapshots.map(crop => crop.id);
   const result = (await reviewLearnDraft(options)).find(item => item.role === "visual");
   assert.equal(result.status, "changes");
   assert(result.findings.some(finding => finding.target === "crowded-0" && finding.severity === "blocking"));
@@ -342,6 +344,55 @@ await check("A later failed source batch preserves earlier content findings with
   assert.equal(source.status,'changes');
   assert(source.findings.some(finding=>finding.target==='lesson-sign'));
   assert(isReviewReceipt(source));
+});
+
+await check("Replaced crops stay in history but only current lesson/inventory figures are reviewed", async () => {
+  const options = fixture(withTools(visualCalls()));
+  options.section.snapshots.push({...options.section.snapshots[0],id:'old-clipped-crop'});
+  assert.deepEqual(currentReviewSnapshots(options.section,options.book.source.fingerprint.sha256).map(crop=>crop.id),['crop-1','crop-2']);
+  const result=await reviewOne(options,'visual');
+  assert.equal(result.status,'pass');
+  assert.deepEqual(options.observations.crops,['crop-1','crop-2']);
+  assert.equal(options.section.snapshots.length,3,'no crop or user history is deleted');
+});
+
+await check("A shared deadline preserves batch passes in serializable receipts and retries only unfinished work", async () => {
+  let stalled=true; const sourceBudgets=[];
+  const options=fixture(async (_model,context,request)=>{
+    const role=roleOf(context), prompt=context.messages[0].content;
+    if(role==='source' && context.messages.length===1){
+      const pages=/Required read_source pages: ([^\n]+)\./.exec(prompt)[1].split(', ').map(Number);
+      sourceBudgets.push(request.timeoutMs);
+      if(stalled && pages[0]===1) await new Promise(resolve=>setTimeout(resolve,80));
+      if(stalled && pages[0]===9) return new Promise(()=>{}); // provider ignores abort
+      return message([readCall(pages[0],pages.at(-1))],'toolUse');
+    }
+    if(role==='visual' && context.messages.length===1){
+      const pages=/Required view_source pages: ([^\n]+)\./.exec(prompt)[1].split(', ').map(Number);
+      return message(pages.map(page=>call('view_source',{page},`p${page}`)),'toolUse');
+    }
+    return message();
+  });
+  options.section.endPage=11; options.section.snapshots=[]; options.reviewTimeoutMs=300;
+  const receipts=await reviewLearnDraft(options);
+  const source=receipts.find(receipt=>receipt.role==='source');
+  assert.equal(source.failure.code,'timeout');
+  assert.equal(source.batches.length,1);
+  assert(sourceBudgets[1]<sourceBudgets[0]-50,'later batches receive only the remaining shared time');
+  assert(receipts.every(isReviewReceipt));
+  assert(receipts.filter(receipt=>receipt.role!=='source').every(receipt=>receipt.status==='pass'));
+  options.section.learnQuality.reviews=JSON.parse(JSON.stringify(receipts));
+  stalled=false; options.reviewTimeoutMs=1000;
+  const resumed=await reviewLearnDraft(options);
+  assert(resumed.every(receipt=>receipt.status==='pass'&&!receipt.failure));
+  assert.deepEqual(options.observations.reads,[[1,8],[9,11]],'the persisted first batch is not reread');
+  assert.equal(resumed.find(receipt=>receipt.role==='source').batches.length,2);
+  // A lesson edit invalidates the entire cached scope; it cannot inherit approval.
+  options.section.transcript[0].markdown+='\n\nA changed explanation needs another review.';
+  options.section.transcript[0].lesson.contentHash=lessonHash(options.section.transcript[0].markdown);
+  await reviewLearnDraft(options);
+  assert.deepEqual(options.observations.reads.slice(-2),[[1,8],[9,11]]);
+  assert.equal(options.observations.reads.length,4);
 });
 
 console.log(`Scholar Learn review service: ${checks} checks passed with mock completions and injected evidence; no network or study-vault access.`);

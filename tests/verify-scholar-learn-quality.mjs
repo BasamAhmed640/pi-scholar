@@ -62,6 +62,14 @@ assert(check([{ ...equation, equationId: undefined }]).length);
 assert(check([equation], { lessons: [{ ...context.lessons[0], keyEquationIds: [] }] }).some(issue => /Key equation ID/.test(issue)));
 assert(check([figure], { lessons: [{ ...context.lessons[0], embeddedSnapshotIds: [] }] }).some(issue => /snapshot ID/.test(issue)));
 console.log("[PASS] equations and figures require actual rendered IDs in their own saved lesson unit");
+const updatedEvidence=quality.updateCoverageEvidence(delivered,[{id:delivered[0].id,evidence:explanation, equationId:'normal-jump'}]);
+assert.equal(updatedEvidence[0].equationId,'normal-jump');
+assert.equal(delivered[0].equationId,undefined);
+for(const updates of [[{id:'unknown',evidence:explanation}],[{id:delivered[0].id,objective:'Less work'}],
+  [{id:delivered[0].id,evidence:''}],[{id:delivered[0].id}],[{id:delivered[0].id,evidence:explanation},{id:delivered[0].id,evidence:explanation}]]){
+  assert.throws(()=>quality.updateCoverageEvidence(delivered,updates));
+}
+assert.deepEqual(check(updatedEvidence),[]);
 
 assert(check(delivered, { objectiveChecks: [{ objective, checks: ["conceptual"] }] }).some(issue => /application or computation/.test(issue)));
 assert(check(delivered, { objectiveChecks: [{ objective, checks: ["discrimination", "conceptual"] }] }).some(issue => /application or computation/.test(issue)));
@@ -101,6 +109,12 @@ assert(!quality.isReviewReceipt({ ...incomplete, status: "pass", findings: [] })
 assert(!quality.isReviewReceipt({ ...incomplete, failure: { code: "claimed", message: "Unchecked" } }));
 assert(quality.reviewGateIssues([incomplete, ...receipts.slice(1)], current).some(issue => /Resume the review, not a rewrite/.test(issue)));
 assert.throws(() => quality.parseReviewerVerdict(JSON.stringify({ ...pass, failure: incomplete.failure })));
+const batch={key:'c'.repeat(64),findings:[advice]};
+assert(quality.isReviewReceipt({...incomplete,batches:[batch]}));
+assert(!quality.isReviewReceipt({...incomplete,batches:[batch,batch]}));
+assert(!quality.isReviewReceipt({...incomplete,batches:[{...batch,findings:[blocking]}]}));
+assert(!quality.isReviewReceipt({...incomplete,batches:[{...batch,key:'unverified'}]}));
+assert.throws(()=>quality.parseReviewerVerdict(JSON.stringify({...pass,batches:[batch]})));
 console.log("[PASS] execution failures are runner-owned, persist as incomplete, and cannot be model-authored approvals");
 assert.deepEqual(quality.reviewGateIssues(receipts, current), []);
 assert(quality.reviewGateIssues(receipts.slice(0, 2), current).some(issue => /visual/.test(issue)));
