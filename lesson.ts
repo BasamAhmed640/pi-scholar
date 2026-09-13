@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { markdownText } from "./render/common.ts";
 import { pageInRanges, scopedPageRanges } from "./page-scope.ts";
 import { resolveLessonFigures } from "./lesson-figures.ts";
+import { normalizeObsidianMath } from "./math-formatting.ts";
 import type { AssessmentKind, ScholarBook, ScholarConfig, ScholarSection, TranscriptEntry, TutorSession } from "./types.ts";
 
 export type LessonInput = { id: string; title: string; markdown: string; objectives: string[]; keyPoints: string[]; sourcePages: number[]; expectedContentHash?: string };
@@ -37,29 +38,73 @@ export function lessonMarkdownIssues(markdown: string): string[] {
   if (!markdown.trim()) issues.push("save an actual explanation, not an empty lesson");
   if (/<!--\s*scholar:|^\s*>\s*\[!info\]- Scholar|^## (?:Questions|Lesson)\s*$/mi.test(markdown)) issues.push("lesson text must not contain Scholar record boundaries or reserved headings");
   let fence = "";
-  let math = false;
-  const keyEquations: string[] = [];
-  let equation: { depth: number; lines: string[] } | undefined;
+  let display: { depth: number; body: string } | undefined;
+  const keyEquations: Array<{ depth: number; rendered: boolean }> = [];
+  let equation: { depth: number; rendered: boolean } | undefined;
+  const escaped = (line: string, index: number) => (/(\\*)$/.exec(line.slice(0, index))![1]!.length % 2) === 1;
   for (const raw of markdown.split(/\r?\n/)) {
-    const line = raw.replace(/^(?:> ?)+/, "");
-    const depth = (/^(?:> ?)+/.exec(raw)?.[0].match(/>/g) || []).length;
+    const line = raw.replace(/^(?: {0,3}> ?)+/, "");
+    const depth = (/^(?: {0,3}> ?)+/.exec(raw)?.[0].match(/>/g) || []).length;
     if (!fence && equation && (depth < equation.depth || /^\[!/.test(line))) {
-      keyEquations.push(equation.lines.join("\n")); equation = undefined;
+      keyEquations.push(equation); equation = undefined;
     }
-    if (!fence && /^\[!note\][+-]?\s+Key equation\b/i.test(line)) equation = { depth, lines: [] };
-    else if (equation) equation.lines.push(line);
+    if (!fence && /^\[!note\][+-]?\s+Key equation\b/i.test(line)) equation = { depth, rendered: false };
     if (!fence && /^#\s/.test(raw)) issues.push("use a subsection heading (###), not another top-level page title inside the lesson");
-    const match = /^\s*(`{3,}|~{3,})/.exec(line);
-    if (match) {
-      if (!fence) fence = match[1]!;
-      else if (match[1]![0] === fence[0] && match[1]!.length >= fence.length && line.slice(match[0].length).trim() === "") fence = "";
-    } else if (!fence && /^\s*\$\$\s*$/.test(line)) math = !math;
+    const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      if (match && match[1]![0] === fence[0] && match[1]!.length >= fence.length && !match[2]!.trim()) fence = "";
+      continue;
+    }
+    if (match && !display) {
+      fence = match[1]!;
+      if (/^(?:math|latex|tex|equation)\s*$/i.test(match[2]!.trim())) issues.push("typeset equations with $$...$$, not a math/LaTeX code fence");
+      continue;
+    }
+    // Code examples are not mathematics. Only flag unambiguous math notation
+    // inside prose code spans; plain assignments such as `x = 2` remain valid code.
+    const visible = line.replace(/(`+)([^`]*?)\1(?!`)/g, (_span, _ticks, body: string) => {
+      if (/(?:\\(?:frac|dfrac|sqrt|mathbf|vec|hat|cdot|times|sum|int)\b|[∑∫√×·])/.test(body)
+        || /^\${1,2}[^$]+\${1,2}$/.test(body.trim())) issues.push("put mathematical notation in $...$ or $$...$$, not inline code backticks");
+      return " ";
+    });
+    if (display && depth !== display.depth) {
+      issues.push("keep both display-math delimiters inside the same callout or prose block");
+      display = undefined;
+    }
+    let inlineStart: number | undefined;
+    for (let i = 0; i < visible.length; i++) {
+      if (!display && inlineStart === undefined && visible[i] === "\\" && !escaped(visible, i)) {
+        if (/^[()[\]]/.test(visible.slice(i + 1))) issues.push("use Obsidian math delimiters $...$ and $$...$$ instead of \\(…\\) or \\[…\\]");
+        else if (/^\\(?:frac|dfrac|sqrt|mathbf|boldsymbol|vec|hat|cdot|times|theta|alpha|beta|sum|int)\b/.test(visible.slice(i))) issues.push("wrap LaTeX notation in $...$ or $$...$$ so Obsidian renders it as mathematics");
+      }
+      if (visible[i] !== "$" || escaped(visible, i)) {
+        if (display) display.body += visible[i];
+        continue;
+      }
+      if (visible[i + 1] === "$") {
+        if (inlineStart !== undefined) issues.push("close inline mathematics with $ before starting a display equation");
+        inlineStart = undefined;
+        if (display) {
+          if (!display.body.trim()) issues.push("a display equation must contain mathematics");
+          else if (equation) equation.rendered = true;
+          display = undefined;
+        } else display = { depth, body: "" };
+        i++;
+      } else if (!display) {
+        if (inlineStart !== undefined) inlineStart = undefined;
+        else if (/\S/.test(visible[i + 1] || "")) inlineStart = i;
+        else issues.push("pair inline mathematics with $...$ on the same line; escape a literal dollar sign as \\$");
+      }
+    }
+    // A lone $5 is ordinary currency, not a broken equation. Numeric equations
+    // with TeX commands still need their closing delimiter.
+    if (inlineStart !== undefined && !/^\d[\d,.]*(?:\s|$)/.test(visible.slice(inlineStart + 1))) issues.push("close inline mathematics with $ on the same line");
   }
-  if (equation) keyEquations.push(equation.lines.join("\n"));
-  if (keyEquations.some(body => !/\$\$[\s\S]*?\S[\s\S]*?\$\$/.test(body))) issues.push("a Key equation callout must contain rendered display math using $$...$$, not code backticks");
+  if (equation) keyEquations.push(equation);
+  if (keyEquations.some(item => !item.rendered)) issues.push("a Key equation callout must contain rendered display math using $$...$$, not code backticks");
   if (fence) issues.push("close the Markdown/Mermaid code fence");
-  if (math) issues.push("close the display-math block");
-  return issues;
+  if (display) issues.push("close the display-math block");
+  return [...new Set(issues)];
 }
 
 export function validLessonEntries(record: Pick<ScholarSection, "transcript">, sourceHash?: string): TranscriptEntry[] {
@@ -78,11 +123,11 @@ export function saveLesson(record: ScholarSection | TutorSession, book: ScholarB
   if (!learn && (input.objectives.length || !input.keyPoints.length)) throw new Error("Tutor explanations use their own keyPoints and an empty objectives array.");
   const ranges = learn ? [{ startPage: record.startPage, endPage: record.endPage }] : scopedPageRanges(book, book.chapters.flatMap(chapter => chapter.sections).filter(section => record.scope.sectionIds.includes(section.id)));
   if (input.sourcePages.some(page => !Number.isSafeInteger(page) || !pageInRanges(page, ranges)) || new Set(input.sourcePages).size !== input.sourcePages.length) throw new Error("Lesson sourcePages must be unique pages in this active source scope.");
-  const issues = lessonMarkdownIssues(input.markdown);
-  let markdown = markdownText(input.markdown).trim().replace(/\n\s*\n/g, "\n\n");
+  let markdown = normalizeObsidianMath(markdownText(input.markdown)).trim().replace(/\n\s*\n/g, "\n\n");
+  const issues = lessonMarkdownIssues(markdown);
   if (!/^#{1,6}\s/.test(markdown)) markdown = `### ${input.title.trim().replace(/[\r\n]+/g, " ")}\n\n${markdown}`;
   if (issues.length) throw new Error(`Repair the lesson presentation: ${issues.join("; ")}.`);
-  markdown = resolveLessonFigures(markdown, record, book, input.sourcePages, config);
+  markdown = normalizeObsidianMath(resolveLessonFigures(markdown, record, book, input.sourcePages, config));
   if (/\[\[scholar-figure:/.test(markdown)) throw new Error("An inline figure reference is incomplete.");
   const receipt: LessonReceipt = { title: input.title.trim(), objectives: input.objectives, keyPoints: input.keyPoints,
     sourcePages: input.sourcePages, sourceHash: book.source.fingerprint.sha256, contentHash: lessonHash(markdown) };

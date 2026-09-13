@@ -134,6 +134,8 @@ for (const policy of [learnPolicy, tutorPolicy]) {
   assert.match(policy, /current author's review, not a new agent/);
   assert.match(policy, /symbol → definition/);
   assert.match(policy, /\[\[scholar-figure:ID\]\]/);
+  assert.match(policy, /Refer to an inspected source figure when it makes the explanation easier to understand/);
+  assert.match(policy, /Refer back to the same figure for later reasoning/);
 }
 assert.match(learnPolicy, /before its confirmation questions/);
 assert.match(learnPolicy, /notes\.lessonComplete=true/);

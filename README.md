@@ -41,6 +41,15 @@ selected PDF library contains the source books, not your learning history.
 
 ## Installation
 
+### Obsidian equation compatibility (0.3.1)
+
+Lesson saves automatically convert `\(...\)` and `\[...\]` mathematics to
+Obsidian's `$...$` and `$$...$$` delimiters, preserving the expressions, code
+examples, and existing native math. Broken math wrappers and equations hidden in
+code formatting are checked before the lesson is saved. Figure explanations
+explicitly refer to the useful labels, arrows, axes, and relationships in the
+inspected source instead of merely attaching a picture.
+
 ### Explained lessons and grounded assessment (0.3.0)
 
 Learn now saves the full section explanation before its confirmation questions.
