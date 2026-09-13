@@ -41,6 +41,51 @@ selected PDF library contains the source books, not your learning history.
 
 ## Installation
 
+### Lesson revisions and loading progress (0.5.0)
+
+Validated edits now replace the intended lesson entry through the shared vault
+commit path. Stale edits, deleted content and unrelated learning history remain
+protected. Existing notes are not regenerated automatically.
+
+The writer saves its source plan before long lesson units. Rejected note calls
+identify the missing objective declaration or malformed coverage item and make
+clear which work was saved, so a repair does not depend on guessed state.
+Small prose repairs use exact-text patches with a current content hash. They
+preserve equation/figure callouts and invalidate prior lesson approval, without
+resending a whole lesson. Changing a callout still uses a full validated revision.
+
+Learn emphasizes the difficult connections: field projections, signs,
+substitutions, physical meaning, and figure walkthroughs. Reviewers identify
+specific missing steps rather than require arbitrary extra length or solutions
+to every exercise. Analogies remain optional and must explain their limits.
+
+Source reviews use batches of up to eight pages; visual reviews retain their
+bounded image batches. Each role must cover its entire assigned evidence before
+approval. A provider error, timeout or incomplete output is recorded separately
+from a content finding. Retrying an unchanged draft reuses its successful reviews.
+
+While Scholar is open, a native Pi widget above the editor shows the current
+stage and elapsed time for book setup, lesson preparation and responses:
+
+```text
+Scholar · 04:18 elapsed · Learn 9.3
+━━━ ━━━ ▸·· ··· ···  Stage 3/5 · Writing explanation
+```
+
+Segments track stages, not a time estimate. Actual source counts and whole-role
+review results appear when available. The clock includes model/tool/network
+waiting and pauses for learner dialogs; quiz answering time is excluded and
+feedback starts a new clock. Parallel reviews share one timer. After 60 seconds
+without a new observable event, the display says so without claiming the model
+is stuck. Completion, incomplete reviews, cancellation and pending vault sync
+have distinct outcomes. Lesson readiness does not award section mastery.
+
+The widget uses the current theme and works alongside the rolling cat. It adds
+no external service, dependency, model call or timer database. Closing Scholar
+or reloading Pi clears its timers. Existing math callouts and centered figures
+remain; new lesson saves reject misplaced H1/H2 headings and unwrapped operator
+notation in prose.
+
 ### Reviewed Learn delivery (0.4.0)
 
 New Learn lessons now use a source checklist that links essential definitions,

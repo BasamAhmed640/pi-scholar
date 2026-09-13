@@ -5,9 +5,11 @@ import { resolveLessonFigures } from "./lesson-figures.ts";
 import { normalizeObsidianMath } from "./math-formatting.ts";
 import { renderKeyEquations, type KeyEquation } from "./equation-presentation.ts";
 import { sourceCoverageIssues, reviewGateIssues } from "./learn-quality.ts";
+import { recordValidatedLessonRevision } from "./history.ts";
 import type { AssessmentKind, ScholarBook, ScholarConfig, ScholarSection, TranscriptEntry, TutorSession } from "./types.ts";
 
 export type LessonInput = { id: string; title: string; markdown: string; objectives: string[]; keyPoints: string[]; sourcePages: number[]; keyEquations?: KeyEquation[]; expectedContentHash?: string };
+export type LessonPatch = { id: string; expectedContentHash: string; edits: Array<{ oldText: string; newText: string }> };
 export type LessonReceipt = Omit<LessonInput, "id" | "markdown" | "expectedContentHash" | "keyEquations"> & { contentHash: string; sourceHash: string; keyEquationIds?: string[]; embeddedSnapshotIds?: string[] };
 export type LessonCommit = { entryIds: string[]; contentHash: string; sourceHash: string };
 export type ObjectiveCheck = { objective: string; checks: AssessmentKind[] };
@@ -15,6 +17,8 @@ const checks = new Set(["conceptual", "application", "computation", "discriminat
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === "string" && item.trim().length > 0) && new Set(value).size === value.length;
 const hash = (value: unknown): value is string => typeof value === "string" && /^[a-f\d]{64}$/.test(value);
 export const lessonHash = (value: string): string => createHash("sha256").update(value.replace(/\r\n/g, "\n").trim()).digest("hex");
+const savedLessonId = (record: ScholarSection | TutorSession, id: string): string => record.transcript.some(entry => entry.id === id && entry.lesson)
+  || record.lessonEntryIds?.includes(id) ? id : `lesson-${id}`;
 
 export function isLessonReceipt(value: any): value is LessonReceipt {
   return value && Object.keys(value).every(key => ["title", "objectives", "keyPoints", "sourcePages", "contentHash", "sourceHash", "keyEquationIds", "embeddedSnapshotIds"].includes(key))
@@ -53,7 +57,7 @@ export function lessonMarkdownIssues(markdown: string): string[] {
       keyEquations.push(equation); equation = undefined;
     }
     if (!fence && /^\[!note\][+-]?\s+Key equation\b/i.test(line)) equation = { depth, rendered: false };
-    if (!fence && /^#\s/.test(raw)) issues.push("use a subsection heading (###), not another top-level page title inside the lesson");
+    if (!fence && /^#{1,2}\s/.test(raw)) issues.push("use a subsection heading (###), not another top-level page title or H2 inside the lesson");
     const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
     if (fence) {
       if (match && match[1]![0] === fence[0] && match[1]!.length >= fence.length && !match[2]!.trim()) fence = "";
@@ -82,6 +86,9 @@ export function lessonMarkdownIssues(markdown: string): string[] {
         else if (/^\\(?:frac|dfrac|sqrt|mathbf|boldsymbol|vec|hat|cdot|times|theta|alpha|beta|sum|int)\b/.test(visible.slice(i))) issues.push("wrap LaTeX notation in $...$ or $$...$$ so Obsidian renders it as mathematics");
       }
       if (visible[i] !== "$" || escaped(visible, i)) {
+        if (!display && inlineStart === undefined && /^(?:[∇∂∑∫][²³]?[·×]?[A-Za-zΑ-ω]|[A-Za-zΑ-ω][₀-₉]+\s*[=+−])/.test(visible.slice(i))) {
+          issues.push("wrap equations in prose with $...$; plain Unicode operators and subscripts do not typeset as mathematics");
+        }
         if (display) display.body += visible[i];
         continue;
       }
@@ -139,18 +146,60 @@ export function saveLesson(record: ScholarSection | TutorSession, book: ScholarB
     sourcePages: input.sourcePages, sourceHash: book.source.fingerprint.sha256, contentHash: lessonHash(markdown),
     ...(input.keyEquations?.length ? { keyEquationIds: input.keyEquations.map(item => item.id) } : {}),
     ...(embeddedSnapshotIds.length ? { embeddedSnapshotIds } : {}) };
-  const id = `lesson-${input.id}`;
+  const id = savedLessonId(record, input.id);
   const finalIssues = lessonMarkdownIssues(markdown);
   if (finalIssues.length) throw new Error(`Repair the composed lesson: ${finalIssues.join("; ")}.`);
   const previous = record.transcript.find(entry => entry.id === id);
   if (previous && (lessonHash(previous.markdown) !== receipt.contentHash || JSON.stringify(previous.lesson) !== JSON.stringify(receipt))) {
     if (input.expectedContentHash !== lessonHash(previous.markdown)) throw new Error(`Lesson ${input.id} changed. Read the current visible entry before revising it and pass its expectedContentHash; a stale retry cannot overwrite it.`);
+    const before = JSON.stringify(previous);
     previous.markdown = markdown;
     previous.lesson = receipt;
+    recordValidatedLessonRevision(book, previous, before);
   }
   if (!previous && (input.expectedContentHash || record.lessonEntryIds?.includes(id))) throw new Error("This lesson was deleted. Do not restore it from an old retry; save a newly requested explanation with a new ID.");
   if (!previous) record.transcript.push({ id, kind: "assistant", markdown, lesson: receipt, createdAt: new Date().toISOString() });
   record.lessonEntryIds = [...new Set([...(record.lessonEntryIds || []), id])];
+}
+
+/** Small prose repairs do not need to regenerate every equation and crop.
+ * Keep all rendered callouts and image references byte-for-byte; structural or
+ * equation edits still use the complete, validated lesson input. */
+export function patchLesson(record: ScholarSection | TutorSession, book: ScholarBook, patch: LessonPatch): void {
+  if (!patch || typeof patch.id !== "string" || !hash(patch.expectedContentHash) || !Array.isArray(patch.edits)
+    || !patch.edits.length || patch.edits.length > 16 || patch.edits.some(edit => !edit || typeof edit.oldText !== "string"
+      || !edit.oldText.trim() || typeof edit.newText !== "string" || edit.oldText.length > 24000 || edit.newText.length > 24000)) {
+    throw new Error("lessonPatch needs id, current expectedContentHash and 1–16 exact oldText/newText edits (up to 24000 characters each).");
+  }
+  const id = savedLessonId(record, patch.id);
+  const entry = record.transcript.find(item => item.id === id);
+  if (!entry?.lesson) throw new Error("This lesson is absent from the active note. A prose patch cannot restore deleted explanations.");
+  if (lessonHash(entry.markdown) !== patch.expectedContentHash || entry.lesson.contentHash !== patch.expectedContentHash
+    || entry.lesson.sourceHash !== book.source.fingerprint.sha256) throw new Error("Stale lessonPatch. Read status with lessonId again; changes outside the validated lesson require a full structured revision.");
+  const original = entry.markdown;
+  let markdown = original;
+  for (const edit of patch.edits) {
+    const oldText = edit.oldText.replace(/\r\n/g, "\n"), newText = edit.newText.replace(/\r\n/g, "\n");
+    if (markdown.split(oldText).length !== 2) throw new Error("Each lessonPatch oldText must occur exactly once in the current lesson. No edits were saved.");
+    markdown = markdown.replace(oldText, () => newText);
+  }
+  markdown = normalizeObsidianMath(markdown).trim();
+  const protectedContent = (text: string) => [
+    // The renderer writes contiguous quoted callout blocks. Protect every
+    // quoted block, not just names that could be changed by a malformed patch.
+    ...text.matchAll(/^ {0,3}>[^\n]*(?:\n {0,3}>[^\n]*)*/gm),
+    ...text.matchAll(/!\[\[[^\]]+\]\]|!\[[^\]]*\]\([^\n]+?\)/g),
+  ].map(match => match[0]);
+  if (JSON.stringify(protectedContent(original)) !== JSON.stringify(protectedContent(markdown))
+    || markdown.includes("[[scholar-") || /<!--|-->/.test(markdown)) throw new Error("lessonPatch preserves rendered equation, figure and other callout blocks. Use a full lesson revision to change those blocks or their references.");
+  const issues = lessonMarkdownIssues(markdown);
+  if (issues.length) throw new Error(`Repair the prose patch presentation: ${issues.join("; ")}.`);
+  if (!markdown) throw new Error("A prose patch cannot empty the lesson.");
+  if (markdown === original) return;
+  const before = JSON.stringify(entry);
+  entry.markdown = markdown;
+  entry.lesson = { ...entry.lesson, contentHash: lessonHash(markdown) };
+  recordValidatedLessonRevision(book, entry, before);
 }
 
 function commitHash(section: ScholarSection, entries: TranscriptEntry[]): string {

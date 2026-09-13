@@ -300,4 +300,48 @@ await check("One blocked visual batch prevents aggregate approval without droppi
   assert(isReviewReceipt(result));
 });
 
+await check("An eleven-page source is fully inspected in bounded batches and completion events refer to whole roles", async () => {
+  const events = [];
+  const options = fixture(async (_model, context) => {
+    const role = roleOf(context), prompt = context.messages[0].content;
+    if (context.messages.length === 1 && role === 'source') {
+      const pages = /Required read_source pages: ([^\n]+)\./.exec(prompt)[1].split(', ').map(Number);
+      return message([readCall(pages[0], pages.at(-1))], 'toolUse');
+    }
+    if (context.messages.length === 1 && role === 'visual') {
+      const pages = /Required view_source pages: ([^\n]+)\./.exec(prompt)[1].split(', ').map(Number);
+      return message(pages.map(page => call('view_source', {page}, `p${page}`)), 'toolUse');
+    }
+    return message();
+  });
+  options.section.endPage = 11; options.section.snapshots = [];
+  options.onProgress = event => events.push(event);
+  const receipts = await reviewLearnDraft(options);
+  assert(receipts.every(receipt => receipt.status === 'pass' && !receipt.failure));
+  assert.deepEqual(options.observations.reads, [[1,8],[9,11]]);
+  assert.deepEqual([...new Set(options.observations.views)].sort((a,b)=>a-b), Array.from({length:11},(_,i)=>i+1));
+  assert.deepEqual(events.filter(event=>event.stage==='complete').map(event=>event.role).sort(), ['source','teaching','visual']);
+  assert(events.some(event=>event.role==='source'&&event.batch===2&&event.batches===2));
+});
+
+await check("A later failed source batch preserves earlier content findings without pretending the whole review finished", async () => {
+  const options = fixture(async (_model, context) => {
+    const role = roleOf(context), prompt = context.messages[0].content;
+    if (role === 'source' && /Required read_source pages: 9/.test(prompt)) throw new Error('Simulated second-batch outage');
+    if (context.messages.length === 1 && role === 'source') return message([readCall(1,8)], 'toolUse');
+    if (context.messages.length === 1 && role === 'visual') {
+      const pages = /Required view_source pages: ([^\n]+)\./.exec(prompt)[1].split(', ').map(Number);
+      return message(pages.map(page => call('view_source', {page}, `p${page}`)), 'toolUse');
+    }
+    return role === 'source' ? message({status:'changes',findings:[{severity:'blocking',target:'lesson-sign',sourcePages:[1],
+      issue:'The reflected field sign is reversed.',repair:'Correct the sign using the stated propagation direction.'}]}) : message();
+  });
+  options.section.endPage = 11; options.section.snapshots = [];
+  const source = (await reviewLearnDraft(options)).find(receipt=>receipt.role==='source');
+  assert.equal(source.failure.code,'provider');
+  assert.equal(source.status,'changes');
+  assert(source.findings.some(finding=>finding.target==='lesson-sign'));
+  assert(isReviewReceipt(source));
+});
+
 console.log(`Scholar Learn review service: ${checks} checks passed with mock completions and injected evidence; no network or study-vault access.`);

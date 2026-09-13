@@ -45,6 +45,17 @@ const aligned = { ...equation(), latex: String.raw`\begin{aligned}
 assert.ok(render(marker, [aligned], [200, 201]).includes(aligned.latex.split("\n").map(line => `> ${line}`).join("\n")));
 console.log("[PASS] adjacent boxes stay separate; multi-line derivations retain signs and TeX line spacing");
 
+const group = [String.raw`\omega=kv,`, String.raw`B_0=\frac{E_0}{v},`,
+  String.raw`u=\frac12\left(\epsilon E^2+\frac{B^2}{\mu}\right),`,
+  String.raw`\mathbf S=\frac1\mu(\mathbf E\times\mathbf B),`, String.raw`I=\frac12\epsilon v E_0^2`];
+const wrapped = render(marker, [{ ...equation(), latex: group.join(String.raw`\qquad `) }], [200,201]);
+assert.ok(wrapped.includes(String.raw`\begin{gathered}`));
+for (const part of group) assert.ok(wrapped.includes(part), 'every expression must retain its original signs and grouping');
+assert.equal((wrapped.match(/> .* \\\\/g)||[]).length, group.length-1);
+const nested = String.raw`\frac{a\qquad b}{c}`;
+assert.ok(render(marker, [{...equation(),latex:nested}], [200,201]).includes(nested));
+console.log('[PASS] wide equation groups wrap at explicit spacing without changing expressions or splitting nested TeX');
+
 for (const markdown of [
   `${marker}\n${marker}`, "[[scholar-equation:unknown]]", "[[scholar-equation:displacement]", `Refer to ${marker}.`, `> ${marker}`, `    ${marker}`,
   `\`${marker}\``, `\`\`\`text\n${marker}\n\`\`\``, `> ~~~~text\n> ${marker}\n> ~~~~`,

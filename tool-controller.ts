@@ -92,6 +92,10 @@ export type ScholarToolControllerPorts = {
   mutateBook: MutateBook;
   isActiveAuthority(book: ScholarBook): boolean;
   isSetupActive(book: ScholarBook): boolean;
+  onLoadingActivity?(action: string, ctx: ExtensionContext, signal?: AbortSignal): void;
+  onReviewProgress?(event: ReviewerProgress | undefined, total: number): void;
+  onReviewOutcome?(message?: string): void;
+  inputContext?(ctx: ExtensionContext): ExtensionContext;
 };
 
 export type ScholarToolController = {
@@ -123,30 +127,37 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
     reviewRounds.set(key, rounds + 1);
   };
   const withReview = async <T>(book: ScholarBook, ctx: ExtensionContext, signal: AbortSignal | undefined,
-    run: (stop: AbortSignal, progress: (event: ReviewerProgress) => void) => Promise<T>): Promise<T> => {
+    run: (stop: AbortSignal, progress: (event: ReviewerProgress) => void) => Promise<T>, total = 3): Promise<T> => {
     const activation = session.state, config = { ...ports.getConfig() }, stop = new AbortController();
     const combined = AbortSignal.any([stop.signal, signal, ctx.signal].filter((item): item is AbortSignal => Boolean(item)));
     reviewStops.add(stop);
     const started = Date.now(), stages = new Map<string, string>();
     const show = () => { try { if (ctx.hasUI) ctx.ui.setStatus("scholar-review", `Scholar review · ${Math.floor((Date.now() - started) / 1000)}s · ${[...stages].map(([role, stage]) => `${role}: ${stage}`).join(" · ")}`); } catch { /* UI cannot approve or fail review. */ } };
-    const timer = setInterval(show, 1000); timer.unref?.();
+    // Embedders without the shared loading widget retain the footer fallback.
+    const timer = ports.onReviewProgress ? undefined : setInterval(show, 1000); timer?.unref?.();
     try {
-      const result = await run(combined, event => { stages.set(event.role, event.stage === "complete" ? "done" : event.toolName || "checking"); show(); });
+      try { ports.onReviewProgress?.(undefined, total); } catch { /* display only */ }
+      const result = await run(combined, event => {
+        if (combined.aborted || activation !== session.state) return;
+        if (ports.onReviewProgress) {
+          try { ports.onReviewProgress(event, total); } catch { /* display only */ }
+        } else { stages.set(event.role, event.stage === "complete" ? "done" : event.toolName || "checking"); show(); }
+      });
       combined.throwIfAborted();
       if (activation !== session.state || !isSameVaultPath(config.obsidianRoot, ports.getConfig().obsidianRoot) || !ports.isActiveAuthority(book)) throw new Error("Scholar's active section or vault changed during review; the result was discarded.");
       await assertFreshSource(book);
       combined.throwIfAborted();
       return result;
     } finally {
-      clearInterval(timer); reviewStops.delete(stop);
-      try { if (ctx.hasUI) ctx.ui.setStatus("scholar-review", undefined); } catch { /* best-effort status cleanup */ }
+      if (timer) clearInterval(timer); reviewStops.delete(stop);
+      try { if (!ports.onReviewProgress && ctx.hasUI) ctx.ui.setStatus("scholar-review", undefined); } catch { /* best-effort status cleanup */ }
     }
   };
   const reviewQuestion: ScholarToolController["reviewQuestion"] = async (book, section, value, sourcePages, ctx, signal) => {
     if (!section.learnQuality) return () => {};
     reserveReview(`question:${section.id}:${section.attempts.length}`);
     const activation = session.state, vault = ports.getConfig().obsidianRoot;
-    const verify = await withReview(book, ctx, signal, (stop, onProgress) => reviewLearnQuestion({ book, section, config: { ...ports.getConfig() }, ctx, signal: stop, onProgress }, value, sourcePages));
+    const verify = await withReview(book, ctx, signal, (stop, onProgress) => reviewLearnQuestion({ book, section, config: { ...ports.getConfig() }, ctx, signal: stop, onProgress }, value, sourcePages), 1);
     return current => {
       signal?.throwIfAborted(); ctx.signal?.throwIfAborted();
       if (activation !== session.state || !isSameVaultPath(vault, ports.getConfig().obsidianRoot)) throw new Error("The active Scholar record changed during question review.");
@@ -410,6 +421,7 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
   // The command owns the navigation/input lock. No model tool can submit on
   // the learner's behalf; only this explicit, confirmed command path commits.
   const submitExam = async (bookId: string, examId: string, ctx: ExtensionContext): Promise<ExamSubmission> => {
+    ctx = ports.inputContext?.(ctx) || ctx;
     if (!ctx.hasUI || typeof ctx.ui?.confirm !== "function") throw new Error("Exam submission requires interactive confirmation in Pi.");
     const config = structuredClone(ports.getConfig());
     const book = await loadBook(bookId);
@@ -475,6 +487,7 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
           if (session.mode && book.outlineStatus !== "ready") {
             throw new Error("Scholar modes are locked until this PDF's outline is verified.");
           }
+          try { ports.onLoadingActivity?.(params.action, ctx, signal); } catch { /* display only */ }
 
           if (params.action === "read") {
             return await handleSourceRead(book, session, params, mutateBook);
@@ -596,10 +609,20 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
               return gaps;
             });
             if (final.result.length) {
-              const result = toolResult("notes", "Draft saved; specialist review found repairs. Fix the specific passages and submit lessonComplete again.", { bookId: book.id, sectionId: section.id, tone: "review" });
-              result.content.push({ type: "text", text: reviews.flatMap(review => review.findings.map(finding => `${review.role} / ${finding.severity} / ${finding.target} / PDF ${finding.sourcePages.join(", ")}: ${finding.issue}\nRepair: ${finding.repair}`)).join("\n\n") });
+              const incomplete = reviews.filter(review => review.failure);
+              const message = incomplete.length
+                ? `Draft saved; review incomplete (${incomplete.map(review => `${review.role}: ${review.failure!.code}`).join(", ")}). Resume the failed review with lessonComplete on this same saved draft. Do not rewrite it because a reviewer failed to execute. Address any separate content findings below.`
+                : "Draft saved; specialist review found repairs. Revise the named passages in their existing lesson IDs using the current expectedContentHash, update their exact coverage evidence, and submit lessonComplete again. Do not append a duplicate replacement lesson.";
+              try { ports.onReviewOutcome?.(incomplete.length ? `Draft saved · review incomplete: ${incomplete.map(review => review.failure!.code).join(", ")}` : "Draft saved · revisions needed"); } catch { /* display only */ }
+              const result = toolResult("notes", message, { bookId: book.id, sectionId: section.id, tone: "review" });
+              result.content.push({ type: "text", text: reviews.flatMap(review => [
+                ...(review.failure ? [`${review.role} / execution incomplete: ${review.failure.message}`] : []),
+                ...review.findings.filter(finding => !(review.failure && finding.target === "review evidence" && finding.issue === review.failure.message))
+                  .map(finding => `${review.role} / ${finding.severity} / ${finding.target} / PDF ${finding.sourcePages.join(", ")}: ${finding.issue}\nRepair: ${finding.repair}`),
+              ]).join("\n\n") });
               return result;
             }
+            try { ports.onReviewOutcome?.(); } catch { /* display only */ }
             return toolResult("notes", "Full lesson committed after source, teaching and visual review. Begin the planned learner checks; this does not award mastery.", { bookId: book.id, sectionId: section.id });
           }
 

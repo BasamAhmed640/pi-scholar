@@ -157,6 +157,39 @@ try {
   assert.equal(await readFile(authority, 'utf8'), beforeLowering);
   passed('omitted checks are preserved and a started lesson cannot quietly lower completion requirements');
 
+  const lessonInput = state => {
+    const record = sectionOf(state), current = record.transcript.find(item => item.lesson);
+    return { id: current.id.slice('lesson-'.length), title: current.lesson.title, markdown: current.markdown,
+      objectives: current.lesson.objectives, keyPoints: current.lesson.keyPoints, sourcePages: current.lesson.sourcePages,
+      expectedContentHash: lesson.lessonHash(current.markdown) };
+  };
+  const oldInput = lessonInput(await storage.loadBookState(config, initial.id));
+  await service.mutateBook(initial.id, state => lesson.saveLesson(sectionOf(state), state,
+    { ...oldInput, markdown: oldInput.markdown + '\n\nThe boundary determines which components must match; project each field before substituting into the relation.' }));
+  saved = await storage.loadBookState(config, initial.id);
+  const revised = lessonInput(saved), savedRevision = saved.revision;
+  assert.match(revised.markdown, /project each field/);
+  assert.equal(sectionOf(saved).transcript.filter(item => item.lesson).length, 1);
+  assert.equal(lesson.lessonReady(sectionOf(saved), saved.source.fingerprint.sha256), false);
+  await service.mutateBook(initial.id, state => lesson.saveLesson(sectionOf(state), state, revised));
+  assert.equal((await storage.loadBookState(config, initial.id)).revision, savedRevision);
+  await assert.rejects(service.mutateBook(initial.id, state => lesson.saveLesson(sectionOf(state), state, oldInput)), /stale retry/);
+  passed('validated correction survives real commit and reload, invalidates delivery, and identical retries do not duplicate lessons');
+
+  await assert.rejects(service.mutateBook(initial.id, state => {
+    lesson.saveLesson(sectionOf(state), state, { ...revised, markdown: revised.markdown + '\n\nA further checked explanation.' });
+    sectionOf(state).transcript.find(item => item.lesson).markdown += '\nUnvalidated later mutation';
+  }), /saved history/);
+  await assert.rejects(service.mutateBook(initial.id, state => {
+    lesson.saveLesson(sectionOf(state), state, { ...revised, markdown: revised.markdown + '\n\nA further checked explanation.' });
+    sectionOf(state).attempts[0].question = 'Silently replaced question';
+  }), /saved history/);
+  await assert.rejects(service.mutateBook(initial.id, state => {
+    sectionOf(state).transcript.find(item => item.lesson).lesson.title = 'Unvalidated receipt change';
+  }), /saved history/);
+  assert.equal((await storage.loadBookState(config, initial.id)).revision, savedRevision);
+  passed('lesson revision permission cannot authorize later tampering, receipt edits or rewritten assessments');
+
   const bookFolder = bookNoteDirectory(config, saved);
   assert.ok(!relative(root, bookFolder).startsWith('..'));
   await rename(bookFolder, join(root, 'removed-book-for-test'));

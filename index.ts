@@ -56,6 +56,10 @@ export default function scholarExtension(pi: ExtensionAPI) {
     mutateBook: coordinator.mutateBook,
     isActiveAuthority: (book) => coordinator.ownsActiveAuthority(book),
     isSetupActive: (book) => coordinator.isSetupActive(book),
+    onLoadingActivity: (action, ctx, signal) => coordinator.loadingActivity(action, ctx, signal),
+    onReviewProgress: (event, total) => coordinator.loadingReview(event, total),
+    onReviewOutcome: message => { coordinator.loadingProblem = message; },
+    inputContext: ctx => coordinator.loading.inputContext(ctx),
   });
   coordinator.toolController = toolController;
 
@@ -133,6 +137,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
       : "book setup";
     coordinator.toolController.bindOpenResponseTurn(book, event.prompt, event.images);
     if (coordinator.runtimeSession.mode) coordinator.ensureScholarTurnInputLock(book, ctx, title);
+    coordinator.loading.bindSignal(ctx.signal);
     return { systemPrompt: `${event.systemPrompt}\n\n${instructions}` };
   });
 
@@ -153,6 +158,18 @@ export default function scholarExtension(pi: ExtensionAPI) {
     }
     return { action: "handled" as const };
   });
+
+  pi.on("agent_end", (event) => {
+    if (!coordinator.loading.active) return;
+    const last = [...event.messages].reverse().find(message => message.role === "assistant");
+    coordinator.loadingFailed = last?.role === "assistant" && ["error", "aborted", "length"].includes(last.stopReason);
+    if (coordinator.loadingFailed && last?.role === "assistant") coordinator.loadingProblem = last.stopReason === "aborted" ? "Interrupted · saved work preserved"
+      : last.stopReason === "length" ? "Response reached its output limit · saved work preserved" : "Model connection failed · saved work preserved";
+  });
+
+  pi.on("message_update", () => coordinator.loadingModelActivity());
+  pi.on("tool_execution_start", () => coordinator.loading.activity());
+  pi.on("tool_execution_end", () => coordinator.loading.activity());
 
   pi.on("agent_settled", async (_event, ctx: ExtensionContext) => {
     if (!coordinator.runtimeSession.active && !coordinator.setupRun && !coordinator.scholarTurnRun) return;
@@ -228,6 +245,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
         await coordinator.setStatus(ctx);
       }
     } finally {
+      await coordinator.finishLoading();
       releaseInput();
     }
   });
@@ -408,6 +426,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
   pi.on("tool_result", async (event, ctx) => {
     if (!coordinator.hasConfiguredLibrary() || !coordinator.runtimeSession.active || !coordinator.runtimeSession.bookId || event.toolName !== SCHOLAR_QUIZ_TOOL_NAME) return;
     if (!modeCan(coordinator.runtimeSession.mode, "assesses")) return;
+    if (!coordinator.loading.active) coordinator.startFeedbackLoading(ctx);
     const details = parseScholarQuizDetails(event.details);
     const mutation = await coordinator.mutateBook(coordinator.runtimeSession.bookId, (book) => {
       if (!coordinator.ownsActiveAuthority(book)) throw new Error("The active book authority changed while saving this quiz.");

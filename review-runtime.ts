@@ -24,6 +24,9 @@ export type ReviewerProgress = {
   turn: number;
   toolCalls: number;
   toolName?: string;
+  outcome?: "pass" | "changes" | "incomplete";
+  batch?: number;
+  batches?: number;
 };
 
 export type ReviewerLimits = {
@@ -248,7 +251,9 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
         throw new ReviewerRunError("invalid-output", "The reviewer returned an invalid assistant message.");
       }
       if (response.stopReason !== "stop" && response.stopReason !== "toolUse") {
-        throw new ReviewerRunError(response.stopReason === "length" ? "limit" : "provider", "The reviewer did not finish cleanly; partial output cannot approve a lesson.");
+        throw new ReviewerRunError(response.stopReason === "length" ? "limit" : "provider", response.stopReason === "length"
+          ? "The reviewer reached the response output limit; its partial verdict cannot approve a lesson."
+          : "The reviewer did not finish cleanly; partial output cannot approve a lesson.");
       }
       const responseChars = JSON.stringify(response.content).length;
       if (responseChars > limits.maxResponseChars) limitError("The reviewer response exceeded its bounded size.");

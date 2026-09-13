@@ -20,6 +20,9 @@ import {
   titleFor,
 } from "./domain.ts";
 import { inspectBook, scanLibrary } from "./ingest.ts";
+import { ScholarLoadingProgress } from "./loading-progress.ts";
+import { lessonReady } from "./lesson.ts";
+import type { ReviewerProgress } from "./review-runtime.ts";
 import {
   createScholarInputLockController,
   type InputLockContext,
@@ -134,6 +137,34 @@ export function kickoffMessage(
 }
 
 export class ScholarRuntimeCoordinator {
+  public readonly loading = new ScholarLoadingProgress();
+  private loadingTarget?: { bookId: string; instanceId: string; kind: "book" | "learn" | "response"; sectionId?: string;
+    exam?: { id: string; expected: "active" | "graded" } };
+  private loadingReviews = new Set<string>();
+  public loadingFailed = false;
+  public loadingProblem?: string;
+  private loadingRound = 0;
+  private loadingSourcePrepared = false;
+
+  loadingModelActivity(): void {
+    this.loading.activity();
+    if (this.loading.active && this.loadingTarget?.kind === "learn" && this.loadingSourceActive && this.loadingSourcePrepared) {
+      this.loadingSourceActive = false;
+      this.loading.update(2, "Planning and writing the explanation");
+    }
+  }
+
+  inputContext(ctx: ExtensionCommandContext): ExtensionCommandContext { return this.loading.inputContext(ctx); }
+
+  startFeedbackLoading(ctx: ExtensionContext): void {
+    if (!this.runtimeSession.active || !this.scholarTurnRun) return;
+    this.loading.start(ctx, "Feedback", ["Checking answer", "Saving feedback"]);
+    if (this.loadingTarget) this.loadingTarget.kind = "response";
+    this.loadingFailed = false;
+    this.loadingProblem = undefined;
+    this.loadingRound = 0;
+    this.loading.bindSignal(ctx.signal);
+  }
   public runtimeSession = new ScholarRuntimeSession();
   public quizRegistered = false;
   private scholarToolRegistered = false;
@@ -181,6 +212,7 @@ export class ScholarRuntimeCoordinator {
       },
       onSave: (book) => {
         if (this.runtimeSession.bookId === book.id) this.persistSessionPointer(book);
+        this.observeLoading(book);
       },
       librarySetupMessage: this.librarySetupMessage,
     });
@@ -232,6 +264,8 @@ export class ScholarRuntimeCoordinator {
   }
 
   deactivateSession(): void {
+    this.loading.clear();
+    this.loadingTarget = undefined;
     this.runtimeSession.deactivate();
     this.activeAuthority = undefined;
     this.syncActiveTools();
@@ -266,7 +300,7 @@ export class ScholarRuntimeCoordinator {
   }
 
   acquireInputLock(ctx: InputLockContext | ExtensionContext, label?: string): () => void {
-    return this._acquireInputLock(ctx, label);
+    return this._acquireInputLock(this.loading.inputLockContext(ctx), label);
   }
 
   releaseAllInputLocks(): void {
@@ -278,10 +312,83 @@ export class ScholarRuntimeCoordinator {
     const run = { title, warned: false };
     const releaseInput = this.acquireInputLock(ctx, title);
     this.navigationRun = run;
+    this.loadingTarget = undefined;
+    const token = this.loading.start(ctx, title, ["Loading", "Ready"]);
     return () => {
       if (this.navigationRun === run) this.navigationRun = undefined;
       releaseInput();
+      // A mode/setup handoff gets its own token but keeps the original timer.
+      if (this.loading.active) this.loading.clear(token);
     };
+  }
+
+  loadingActivity(action: string, ctx: ExtensionContext, signal?: AbortSignal): void {
+    if (!this.loading.active || !this.loadingTarget) return;
+    this.loadingSourceActive = ["read", "view", "search", "snapshot", "image_search", "image_save"].includes(action);
+    this.loading.bindSignal(ctx.signal || signal);
+    const book = this.loadingTarget.kind === "book";
+    if (this.loadingSourceActive) {
+      this.loading.update(1, book ? "Reading contents and source boundaries" : "Inspecting source pages and figures");
+    } else if (action === "outline" || action === "outline_validate") {
+      this.loading.update(2, "Checking chapter boundaries against the PDF");
+    } else if (action === "notes") {
+      this.loading.update(2, "Saving and checking the explanation");
+    } else if (["assess", "exam_build", "exam_present", "exam_grade"].includes(action)) {
+      this.loading.update(2, action === "exam_grade" ? "Checking submitted answers" : "Preparing learner questions");
+    }
+  }
+
+  loadingReview(event: ReviewerProgress | undefined, total: number): void {
+    if (!this.loading.active) return;
+    this.loadingSourceActive = false;
+    if (!event) {
+      this.loadingReviews.clear();
+      this.loadingRound++;
+      this.loading.update(3, total === 3 ? `Lesson review · round ${this.loadingRound}` : "Checking the next question");
+      return;
+    }
+    if (event.stage === "complete") this.loadingReviews.add(event.role);
+    const detail = event.stage === "complete" ? `${event.role}: ${event.outcome || "returned"}`
+      : `${event.role}${event.batch ? ` batch ${event.batch}/${event.batches}` : ""} · ${event.toolName || "checking"}`;
+    this.loading.update(3, `${detail} · ${this.loadingReviews.size}/${total} returned`);
+  }
+
+  private observeLoading(book: ScholarBook): void {
+    const target = this.loadingTarget;
+    if (!this.loading.active || !target || target.bookId !== book.id || target.instanceId !== book.instanceId) return;
+    if (target.kind === "book") {
+      if (isProvisionalOutline(book)) this.loading.update(2, "Verifying the saved outline");
+      return;
+    }
+    const section = target.sectionId ? findSection(book, target.sectionId) : undefined;
+    const pages = section?.figureCoverage?.pages;
+    if (section && pages && !section.lessonCommit) {
+      const scoped = pages.filter(page => page.page >= section.startPage && page.page <= section.endPage);
+      const read = new Set(scoped.filter(page => page.read).map(page => page.page)).size;
+      this.loadingSourcePrepared = new Set(scoped.filter(page => page.read && page.viewed).map(page => page.page)).size === section.endPage - section.startPage + 1;
+      // Report counts only when genuinely inspecting source; note saves/reviews
+      // should retain their own stage even though they also update the book.
+      if (this.loadingSourceActive) this.loading.update(1, `${read}/${section.endPage - section.startPage + 1} source pages read`);
+    }
+  }
+
+  private loadingSourceActive = false;
+
+  async finishLoading(): Promise<void> {
+    if (!this.loading.active) return;
+    const token = this.loading.token, target = this.loadingTarget;
+    try {
+      const book = target ? await loadBookState(this.activeConfig, target.bookId) : undefined;
+      const same = book && book.instanceId === target?.instanceId;
+      const section = same && target?.sectionId ? findSection(book, target.sectionId) : undefined;
+      const ready = same && !this.loadingFailed && !this.loadingProblem && !this.isPending()
+        && (target?.kind === "book" ? book.outlineStatus === "ready"
+          : target?.kind === "learn" ? section && lessonReady(section, book.source.fingerprint.sha256)
+          : target?.exam ? book.exams.some(exam => exam.id === target.exam!.id && exam.status === target.exam!.expected) : true);
+      this.loading.finish(ready ? "ready" : "paused", ready ? target?.kind === "learn" ? "Lesson ready" : "Finished" : this.isPending() ? "Notes still need syncing" : this.loadingProblem || "Work ended before loading completed", token);
+    } catch {
+      this.loading.finish("stopped", "Could not verify the saved result", token);
+    }
   }
 
   async setStatus(ctx: { ui: { setStatus(key: string, text: string | undefined): void } }): Promise<void> {
@@ -336,6 +443,7 @@ export class ScholarRuntimeCoordinator {
         const found = this.runtimeSession.mode === "learn" ? findQuizAttempt(active, this.runtimeSession.recordId, toolCallId)
           : findTutorQuizAttempt(active, this.runtimeSession.recordId, toolCallId);
         if (!found || found.attempt.outcome !== "pending") throw new Error("This quiz was not approved or has already been answered.");
+        this.loading.finish(this.isPending() ? "paused" : "ready", this.isPending() ? "Question saved · notes still need syncing" : "Question ready · timer stopped before your answer");
         return found.attempt.quiz ? structuredClone(found.attempt.quiz) : undefined;
       });
       this.quizRegistered = true;
@@ -366,6 +474,12 @@ export class ScholarRuntimeCoordinator {
     }
     const releaseInput = this.acquireInputLock(ctx);
     this.setupRun = { bookId: book.id, instanceId: book.instanceId, title: titleFor(book), warned: false, releaseInput };
+    this.loading.start(ctx, `Book setup · ${titleFor(book)}`, ["Opening PDF", "Mapping contents", "Verifying outline", "Saving"], Boolean(this.navigationRun));
+    this.loadingTarget = { bookId: book.id, instanceId: book.instanceId, kind: "book" };
+    this.loadingFailed = false;
+    this.loadingProblem = undefined;
+    this.loadingRound = 0;
+    this.loading.update(isProvisionalOutline(book) ? 2 : 1);
     this.toolController.prepareOutlineValidation(book);
     try {
       ctx.ui.setWorkingMessage(`${isProvisionalOutline(book) ? "Validating" : "Preparing"} book outline… Press Esc to stop`);
@@ -376,6 +490,7 @@ export class ScholarRuntimeCoordinator {
       );
       return true;
     } catch (error) {
+      this.loading.finish("stopped", "Book setup could not start");
       this.setupRun.releaseInput();
       this.setupRun = undefined;
       this.toolController.clearOutlineValidation();
@@ -400,6 +515,17 @@ export class ScholarRuntimeCoordinator {
         warned: false,
         releaseInput: this.acquireInputLock(ctx, title),
       };
+      const section = this.runtimeSession.mode === "learn" ? findSection(book, this.runtimeSession.recordId) : undefined;
+      const newLesson = section && !lessonReady(section, book.source.fingerprint.sha256);
+      this.loading.start(ctx, `${newLesson ? "Learn" : title}${section ? ` · ${section.number} ${section.title}` : ""}`,
+        ["Loading section", "Reading source", newLesson ? "Writing explanation" : "Preparing response", "Reviewing", "Saving"], Boolean(this.navigationRun));
+      this.loadingTarget = { bookId: book.id, instanceId: book.instanceId, kind: newLesson ? "learn" : "response", sectionId: section?.id };
+      const exam = this.runtimeSession.mode === "exam" ? book.exams.find(item => item.id === this.runtimeSession.recordId) : undefined;
+      if (exam?.status === "draft" || exam?.status === "submitted") this.loadingTarget.exam = { id: exam.id, expected: exam.status === "draft" ? "active" : "graded" };
+      this.loadingFailed = false;
+      this.loadingProblem = undefined;
+      this.loadingRound = 0;
+      this.loadingSourcePrepared = false;
     }
     return this.scholarTurnRun;
   }
@@ -425,6 +551,7 @@ export class ScholarRuntimeCoordinator {
         { triggerTurn: true },
       );
     } catch (error) {
+      this.loading.finish("stopped", "The response could not start");
       if (this.scholarTurnRun === run) this.scholarTurnRun = undefined;
       run.releaseInput();
       this.runtimeSession.activate(book.id);
@@ -506,8 +633,12 @@ export class ScholarRuntimeCoordinator {
       if (book.outlineStatus !== "ready") {
         await this.startBookSetup(book, ctx);
       } else {
+        this.loading.finish("ready", "Book opened");
         ctx.ui.notify(`${titleFor(book)} selected.\nStart explicitly with /scholar learn, /scholar exam, or /scholar tutor.`, "info");
       }
+    } catch (error) {
+      this.loading.finish("stopped", "Could not open the book");
+      throw error;
     } finally {
       releaseInput();
     }

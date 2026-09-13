@@ -22,6 +22,7 @@ const loadModule = name => jiti.import(join(dirname(extensionPath), name));
 const storage = await loadModule("storage.ts");
 const lesson = await loadModule("lesson.ts");
 const { createScholarToolController } = await loadModule("tool-controller.ts");
+const { createBookService } = await loadModule("book-service.ts");
 const { ScholarRuntimeSession } = await loadModule("runtime-session.ts");
 const { sectionNotePath } = await loadModule("obsidian-paths.ts");
 const { ModelRegistry } = await import(pathToFileURL(join(piPackageRoot, "dist/core/model-registry.js")));
@@ -81,7 +82,7 @@ const question = () => ({ action: "assess", outcome: "pending", kind: "conceptua
   expectedAnswer: String.raw`The time \(t\) doubles because speed stays fixed.`, criteria: ["State that travel time doubles when the path doubles at fixed speed."] });
 
 let caseId = 0;
-async function harness() {
+async function harness(fresh = false) {
   const directory = join(root, `case-${++caseId}`);
   const config = { schemaVersion: 3, libraryRoot: join(directory, "library"), obsidianRoot: join(directory, "vault"), stateRoot: join(directory, "bootstrap"), updatedAt: now };
   await Promise.all([mkdir(config.libraryRoot, { recursive: true }), mkdir(config.obsidianRoot, { recursive: true })]);
@@ -96,18 +97,14 @@ async function harness() {
     outlineStatus: "ready", chapters: [{ id: "c1", number: "1", order: 1, title: "Motion", startPage: 1, endPage: 2, status: "learning", sections: [section("s1", "1.1", 1), section("legacy", "1.2", 2)] }],
     currentSectionId: "s1", exams: [], tutorSessions: [], noteDirectory: "Review integration fixture", createdAt: now, updatedAt: now };
   saveFixtureLesson(lesson, initial, initial.chapters[0].sections[1], { sourcePages: [2] });
+  if (fresh) active(initial).objectives = [];
   assert.ok(storage.isScholarBook(initial));
   await storage.createBookState(config, initial);
   const h = { config, initial, requests: [], verdicts: {}, onRequest: undefined };
   h.load = () => storage.loadBookState(config, initial.id);
-  const mutateBook = async (id, mutate) => {
-    assert.equal(id, initial.id);
-    const state = await h.load(), revision = state.revision;
-    await h.beforeMutation?.();
-    const result = await mutate(state);
-    await storage.saveBookState(config, state, revision);
-    return { book: await h.load(), result };
-  };
+  const service = createBookService({ getConfig: () => config, load: storage.loadBookState, list: storage.listBookStates,
+    save: storage.saveBookState, project: async () => {}, onSave() {}, librarySetupMessage: 'Fixture library missing' });
+  const mutateBook = (id, mutate) => service.mutateBook(id, async state => { await h.beforeMutation?.(); return mutate(state); });
   h.mutate = mutateBook;
   const registry = new ModelRegistry({ complete: async (selected, context, request) => {
     assert.equal(selected, model);
@@ -137,6 +134,65 @@ async function harness() {
 let checks = 0;
 async function check(name, test) { await test(); checks++; console.log(`[PASS] ${name}`); }
 try {
+  await check("Exact prose patches preserve equation receipts, reject stale/structural edits, and require fresh review", async () => {
+    const h = await harness();
+    success(await h.execute({...notes(), lessonComplete:true}));
+    const before = active(await h.load()).transcript.find(entry=>entry.lesson);
+    success(await h.execute({action:'notes',lesson:{...notes().lesson,id:before.id,expectedContentHash:before.lesson.contentHash}}));
+    assert.equal(active(await h.load()).transcript.filter(entry=>entry.lesson).length,1,'the stored ID returned by status must resolve to the existing lesson');
+    const improved = explanation+' This ratio follows from distance equal to speed times elapsed time.';
+    const patch = {id:'delay',expectedContentHash:before.lesson.contentHash,edits:[{oldText:explanation,newText:improved}]};
+    success(await h.execute({action:'notes',lessonPatch:patch}));
+    const changed = await h.load(), current = active(changed), entry = current.transcript.find(item=>item.lesson);
+    assert.equal(current.transcript.filter(item=>item.lesson).length,1);
+    assert.equal(entry.markdown,before.markdown.replace(explanation,improved));
+    assert.deepEqual(entry.lesson.keyEquationIds,before.lesson.keyEquationIds);
+    assert.equal(lesson.lessonReady(current,changed.source.fingerprint.sha256),false);
+    assert.match(textOf(await h.execute({action:'notes',lessonPatch:patch})),/Stale lessonPatch/);
+    const structural = {...patch,expectedContentHash:entry.lesson.contentHash,edits:[{oldText:String.raw`t = \frac{\ell}{v}`,newText:'t = 1'}]};
+    assert.match(textOf(await h.execute({action:'notes',lessonPatch:structural})),/preserves rendered equation/);
+    const ambiguous = {...patch,expectedContentHash:entry.lesson.contentHash,edits:[{oldText:'speed',newText:'velocity'}]};
+    assert.match(textOf(await h.execute({action:'notes',lessonPatch:ambiguous})),/exactly once/);
+    assert.deepEqual(await h.load(),changed);
+    success(await h.execute({action:'notes',lessonComplete:true}));
+    const reviewed = await h.load();
+    assert(lesson.lessonReady(active(reviewed),reviewed.source.fingerprint.sha256));
+    h.controller.resetTransientState();
+  });
+  await check("Rejected initial notes name the missing field, preserve the vault, and recover without duplicating a lesson", async () => {
+    const h = await harness(true), before = await h.load();
+    const missing = notes(); delete missing.objectives;
+    const failed = await h.execute(missing);
+    assert.match(textOf(failed), /Nothing saved.*top-level objectives/s);
+    assert.deepEqual(await h.load(), before);
+    const malformed = notes(); malformed.sourceCoverage[0].equationId = '';
+    const rejected = await h.execute(malformed);
+    assert.match(textOf(rejected), /Invalid sourceCoverage item\(s\): 1 \(time-concept\)/);
+    assert.deepEqual(await h.load(), before);
+    const valid = notes(); valid.sourceCoverage[0].equationId = 'delay';
+    success(await h.execute(valid));
+    const saved = active(await h.load());
+    assert.deepEqual(saved.objectives, [objective]);
+    assert.equal(saved.transcript.filter(entry => entry.lesson).length, 1);
+    h.controller.resetTransientState();
+  });
+  await check("An execution failure is saved as incomplete and retry reuses unchanged successful reviewers", async () => {
+    const h = await harness();
+    h.onRequest = async ({role}) => { if (role === 'source') throw new Error('Simulated connection failure'); };
+    const result = await h.execute({ ...notes(), lessonComplete: true });
+    assert.match(textOf(result), /review incomplete.*source: provider/s);
+    assert.match(textOf(result), /Do not rewrite/);
+    const first = active(await h.load());
+    assert.equal(first.learnQuality.reviews.find(review=>review.role==='source').failure.code, 'provider');
+    assert.equal(first.lessonCommit, undefined);
+    const start = h.requests.length;
+    h.onRequest = undefined;
+    success(await h.execute({action:'notes',lessonComplete:true}));
+    assert(h.requests.slice(start).every(request=>request.role==='source'));
+    const current = await h.load();
+    assert(lesson.lessonReady(active(current),current.source.fingerprint.sha256));
+    assert.equal(active(current).transcript.filter(entry=>entry.lesson).length, 1);
+  });
   await check("Fresh Learn enables quality gates, serializes coverage and equation boxes, and leaves the legacy lesson intact", async () => {
     const h = await harness(), before = (await h.load()).chapters[0].sections[1];
     success(await h.execute(notes()));

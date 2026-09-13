@@ -2,6 +2,21 @@ import type { AssessmentAttempt, ScholarBook, TranscriptEntry } from "./types.ts
 
 type HistoryRecord = { transcript: TranscriptEntry[]; attempts?: AssessmentAttempt[] };
 
+// A validated lesson edit may change exactly one entry in this in-memory
+// transaction. Receipts are never serialized or reusable against a later load.
+const revisionKey = Symbol.for("pi.scholar.validated-lesson-revisions");
+type RevisionBook = ScholarBook & { [revisionKey]?: Map<TranscriptEntry, { before: string; after: string }> };
+
+export function recordValidatedLessonRevision(book: ScholarBook, entry: TranscriptEntry, before: string): void {
+  const revisions = (book as RevisionBook)[revisionKey] || new Map();
+  const prior = revisions.get(entry);
+  if (prior && prior.after !== before) throw new Error("The lesson changed outside its validated revision.");
+  revisions.set(entry, { before: prior?.before || before, after: JSON.stringify(entry) });
+  // A non-enumerable symbol also survives separately loaded extension modules,
+  // but cannot enter JSON, the vault, or a structuredClone of this transaction.
+  Object.defineProperty(book, revisionKey, { value: revisions, configurable: true });
+}
+
 function records(book: ScholarBook): Map<string, HistoryRecord> {
   return new Map<string, HistoryRecord>([
     ...book.chapters.flatMap((chapter) => chapter.sections.map((section) => [`learn:${section.id}`, section] as const)),
@@ -16,6 +31,8 @@ function records(book: ScholarBook): Map<string, HistoryRecord> {
  * Does not recover deleted books or turn visible notes into state authority.
  */
 export function assertDurableHistoryPreserved(before: ScholarBook, after: ScholarBook): void {
+  const revisions = (after as RevisionBook)[revisionKey];
+  delete (after as RevisionBook)[revisionKey];
   const nextRecords = records(after);
   for (const [key, previous] of records(before)) {
     const next = nextRecords.get(key);
@@ -24,8 +41,11 @@ export function assertDurableHistoryPreserved(before: ScholarBook, after: Schola
     };
     for (const [index, entry] of previous.transcript.entries()) {
       const current = next?.transcript[index];
+      const revision = current && revisions?.get(current);
+      const validated = entry.lesson && revision?.before === JSON.stringify(entry) && revision.after === JSON.stringify(current);
       if (!current || entry.id !== current.id || entry.kind !== current.kind
-        || entry.markdown !== current.markdown || entry.createdAt !== current.createdAt) {
+        || entry.createdAt !== current.createdAt
+        || (!validated && (entry.markdown !== current.markdown || JSON.stringify(entry.lesson) !== JSON.stringify(current.lesson)))) {
         reject(`transcript ${entry.id}`);
       }
     }

@@ -42,6 +42,7 @@ import {
 } from "./types.ts";
 
 export type ScholarRuntimeCoordinator = {
+  inputContext?(ctx: ExtensionCommandContext): ExtensionCommandContext;
   getConfig(): ScholarConfig;
   setConfig(config: ScholarConfig): void;
   loadFreshConfig(): Promise<ScholarConfig>;
@@ -318,6 +319,7 @@ export async function handleScholarCommand(
   ctx: ExtensionCommandContext,
   coordinator: ScholarRuntimeCoordinator,
 ): Promise<void> {
+  ctx = coordinator.inputContext?.(ctx) || ctx;
   try {
     const parsed = parseScholarCommand(args);
     if (parsed.action === "invalid") {

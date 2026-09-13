@@ -12,10 +12,10 @@ import {
 import { assertQuestionGrounding, normalizeQuestionGrounding } from "../question-grounding.ts";
 import { prepareOpenAssessment, prepareOpenQuestionText, type OpenAssessmentEvaluation, type OpenResponseGate } from "../open-assessment.ts";
 import { normalizeObsidianMath } from "../math-formatting.ts";
-import { isSourceCoverageLedger, sourceCoverageIssues, type SourceCoverageItem } from "../learn-quality.ts";
+import { isSourceCoverageItem, isSourceCoverageLedger, sourceCoverageIssues, type SourceCoverageItem } from "../learn-quality.ts";
 import type { ScholarRuntimeSession } from "../runtime-session.ts";
 import type { ToolDetails } from "../tool-contract.ts";
-import { saveLesson, commitLesson, validLessonEntries, isObjectiveChecks, type LessonInput, type ObjectiveCheck } from "../lesson.ts";
+import { saveLesson, patchLesson, commitLesson, validLessonEntries, isObjectiveChecks, type LessonInput, type LessonPatch, type ObjectiveCheck } from "../lesson.ts";
 import type { ScholarConfig } from "../types.ts";
 import {
   findSection,
@@ -55,6 +55,7 @@ export async function handleNotes(
     requiredChecks?: AssessmentKind[];
     misconceptions?: string[];
     lesson?: LessonInput;
+    lessonPatch?: LessonPatch;
     lessonComplete?: boolean;
     objectiveChecks?: ObjectiveCheck[];
     sourceCoverage?: SourceCoverageItem[];
@@ -67,8 +68,9 @@ export async function handleNotes(
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: ToolDetails }> {
   const synthesis = params.synthesis?.trim();
   const keyPoints = compactStrings(params.keyPoints);
-  if (!params.lesson && !params.lessonComplete && !params.sourceCoverage && (!synthesis || synthesis.length < 40 || keyPoints.length === 0)) {
-    throw new Error("Scholar notes require a substantive synthesis and at least one key point.");
+  if (params.lesson && params.lessonPatch) throw new Error("Use either lesson or lessonPatch in one notes call, not both.");
+  if (!params.lesson && !params.lessonPatch && !params.lessonComplete && !params.sourceCoverage && (!synthesis || synthesis.length < 40 || keyPoints.length === 0)) {
+    throw new Error("Nothing saved. A standalone recap needs synthesis (at least 40 characters) and keyPoints. To save the initial Learn plan instead, send top-level objectives with sourceCoverage; to save teaching, send lesson. Retain other intended fields when retrying this rejected call.");
   }
   if (session.mode === "tutor") {
     if (!session.recordId) throw new Error("No Tutor session is active.");
@@ -78,6 +80,7 @@ export async function handleNotes(
       if (synthesis) tutor.synthesis = synthesis;
       tutor.keyPoints = compactStrings([...tutor.keyPoints, ...keyPoints, ...(params.lesson?.keyPoints || [])]);
       if (params.lesson) saveLesson(tutor, state, params.lesson, config);
+      if (params.lessonPatch) patchLesson(tutor, state, params.lessonPatch);
       tutor.updatedAt = new Date().toISOString();
     });
     return toolResult("notes", `Saved source-grounded Tutor notes for ${mutation.book.tutorSessions.find((item) => item.id === session.recordId)?.title}.`, { bookId: book.id });
@@ -87,7 +90,7 @@ export async function handleNotes(
   if (sectionId !== activeSection.id) throw new Error("Scholar Learn notes must target the frozen Learn section.");
   const objectives = params.objectives === undefined ? activeSection.objectives : compactStrings(params.objectives);
   const covered = compactStrings(params.coveredObjectives);
-  if (objectives.length === 0) throw new Error("Scholar Learn notes require at least one source-grounded objective.");
+  if (objectives.length === 0) throw new Error("Nothing saved. Declare the section's source-grounded objectives in the top-level objectives field of action=notes. lesson.objectives and objectiveChecks reference that declaration; they do not create it. After declaration, omit objectives to preserve them. Retry the intended notes fields after fixing this declaration; do not call outline.");
   const unknownCovered = covered.filter((objective) => !objectives.includes(objective));
   if (unknownCovered.length) throw new Error(`Covered objectives must exactly match declared objectives: ${unknownCovered.join("; ")}`);
   const mutation = await mutateBook(book.id, (state) => {
@@ -120,7 +123,12 @@ export async function handleNotes(
     section.objectives = objectives;
     if (params.sourceCoverage !== undefined) {
       if (section.status === "complete" && JSON.stringify(params.sourceCoverage) !== JSON.stringify(section.learnQuality?.coverage)) throw new Error("Practice cannot adopt or replace the completed section's source coverage contract.");
-      if (!isSourceCoverageLedger(params.sourceCoverage)) throw new Error("Provide a valid sourceCoverage checklist.");
+      const rawCoverage: unknown = params.sourceCoverage;
+      if (!isSourceCoverageLedger(rawCoverage)) {
+        const invalid = Array.isArray(rawCoverage) ? rawCoverage.flatMap((item, index) =>
+          isSourceCoverageItem(item) ? [] : [`${index + 1}${typeof item?.id === "string" ? ` (${item.id})` : ""}`]) : [];
+        throw new Error(`Nothing saved. Invalid sourceCoverage ${invalid.length ? `item(s): ${invalid.join(", ")}` : "checklist (expected an array with unique IDs)"}. Each item needs id, kind, description, sourcePages and objective. Optional IDs must be nonempty identifiers; optional evidence must be a nonempty exact passage. Omit unused optional fields. Equation and snapshot references may accompany any item, but must identify content rendered in that lesson at completion. Correct those fields and retry; do not discard the lesson or change its objectives.`);
+      }
       const issues = sourceCoverageIssues(params.sourceCoverage, { ...section, lessons: [] });
       if (issues.length) throw new Error(`Repair the source coverage plan: ${issues.join("; ")}`);
       section.learnQuality ||= { version: 1, coverage: [], reviews: [] };
@@ -144,6 +152,7 @@ export async function handleNotes(
     section.keyPoints = compactStrings([...(editorial && params.keyPoints !== undefined ? [] : section.keyPoints), ...keyPoints, ...(params.lesson?.keyPoints || [])]);
     if (params.misconceptions !== undefined) section.misconceptions = compactStrings(params.misconceptions);
     if (params.lesson) saveLesson(section, state, params.lesson, config);
+    if (params.lessonPatch) patchLesson(section, state, params.lessonPatch);
     const taught = compactStrings(validLessonEntries(section, state.source.fingerprint.sha256).flatMap(entry => entry.lesson!.objectives));
     if (params.coveredObjectives !== undefined && covered.some(objective => !taught.includes(objective)) && section.status !== "complete") {
       throw new Error("Coverage needs an explicitly saved explanation for each objective; a summary or label cannot mark it taught. Save notes.lesson first.");
@@ -153,7 +162,7 @@ export async function handleNotes(
     recomputeProgress(state, section);
   });
   const section = findSection(mutation.book, sectionId)!;
-  return toolResult("notes", `Saved ${params.lesson ? "instructional explanation" : "notes"} for ${sectionLabel(mutation.book, section)}.${params.lessonComplete ? deferCommit ? " Draft saved; independent review pending." : " Full lesson committed." : ""} Status: ${section.status}. ${sectionProgressMessage(section)}`, { bookId: book.id, sectionId });
+  return toolResult("notes", `Saved ${params.lesson || params.lessonPatch ? "instructional explanation" : "notes"} for ${sectionLabel(mutation.book, section)}.${params.lessonComplete ? deferCommit ? " Draft saved; independent review pending." : " Full lesson committed." : ""} Status: ${section.status}. ${sectionProgressMessage(section)}`, { bookId: book.id, sectionId });
 }
 
 export async function handleAssess(

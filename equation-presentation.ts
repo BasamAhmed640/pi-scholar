@@ -40,13 +40,33 @@ function math(value: unknown, label: string, oneLine = false): string {
   return result;
 }
 
+/** Break wide groups only at explicit top-level author spacing. Never split a
+ * fraction, vector product, text group, or an existing aligned environment. */
+function wrapEquationGroup(latex: string): string {
+  if (latex.length < 140 || /\\begin\s*\{/.test(latex)) return latex;
+  const parts: string[] = [];
+  let depth = 0, start = 0;
+  for (let i = 0; i < latex.length; i++) {
+    if (latex[i] === "\\") {
+      if (!depth && /^\\qquad\b/.test(latex.slice(i))) {
+        parts.push(latex.slice(start, i).trim());
+        i += 5; start = i + 1;
+      } else if (/[{}\\]/.test(latex[i + 1] || "")) i++;
+    } else if (latex[i] === "{") depth++;
+    else if (latex[i] === "}") depth--;
+  }
+  parts.push(latex.slice(start).trim());
+  return depth === 0 && parts.length > 1 && parts.every(Boolean)
+    ? `\\begin{gathered}\n${parts.join(" \\\\\n")}\n\\end{gathered}` : latex;
+}
+
 function renderEquation(value: unknown, allowedPages: Set<number>): { id: string; markdown: string } {
   if (!record(value) || Object.keys(value).some(key => !equationKeys.includes(key)) || typeof value.id !== "string" || !idPattern.test(value.id)) {
     throw new Error("Each key equation needs a stable short id and only the declared presentation fields.");
   }
   const id = value.id as string;
   const title = content(value.title, `${id} title`, true).replace(/([\\`*_[\]<>])/g, "\\$1");
-  const latex = math(value.latex, `${id} latex`);
+  const latex = wrapEquationGroup(math(value.latex, `${id} latex`));
   if (!Array.isArray(value.symbols) || !value.symbols.length) throw new Error(`Key equation ${id} needs symbol definitions.`);
   const symbols = new Set<string>();
   const definitions = value.symbols.map((entry: unknown) => {
@@ -95,7 +115,7 @@ export function renderKeyEquations(markdown: string, equations: KeyEquation[], a
       const marker = /^ {0,3}\[\[scholar-equation:([a-zA-Z0-9][a-zA-Z0-9._-]{0,119})\]\][ \t]*$/.exec(line);
       if (!marker) throw new Error("Put each complete [[scholar-equation:ID]] marker on its own line outside callouts and code.");
       const id = marker[1]!;
-      if (!rendered.has(id)) throw new Error(`Key equation ${id} has no matching equation record.`);
+      if (!rendered.has(id)) throw new Error(`Key equation ${id} has no matching equation record. A full lesson revision needs every keyEquations definition used by its markers. For prose-only repairs, read status and use lessonPatch instead of resending the lesson.`);
       if (placed.has(id)) throw new Error(`Key equation ${id} is already placed; reference it in prose instead of duplicating the box.`);
       placed.add(id);
       // Blank lines prevent adjacent callouts and prose from merging.

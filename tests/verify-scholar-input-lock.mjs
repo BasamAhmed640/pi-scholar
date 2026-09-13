@@ -737,6 +737,8 @@ try {
       await fire(examTurn.extension, "agent_settled", { type: "agent_settled" }, examTurn.ctx);
       assert.equal(examTurn.ui.currentFactory, examTurn.ui.priorFactory);
       assert.equal(examTurn.ui.currentEditor.getText(), "hold this Exam follow-up");
+      const result = examTurn.timeline.filter(item => item.type === 'status' && item.key === 'scholar-progress').at(-1)?.text;
+      assert.match(result, /Incomplete/, 'an untouched exam draft must not display Ready merely because its agent settled');
     },
     "a representative non-Learn mode blocked both chat routes, swallowed typing/Enter, and restored on settle",
   );
@@ -761,9 +763,12 @@ try {
       assert.ok(wasHandled(tutorInteractive));
       assert.equal(tutorEditor.getText(), "hold this Tutor follow-up");
       assert.equal(tutorTurn.ui.submits, 0);
+      await fire(tutorTurn.extension, 'agent_end', { messages: [{ role: 'assistant', stopReason: 'length' }] }, tutorTurn.ctx);
       await fire(tutorTurn.extension, "agent_settled", { type: "agent_settled" }, tutorTurn.ctx);
       assert.equal(tutorTurn.ui.currentFactory, tutorTurn.ui.priorFactory);
       assert.equal(tutorTurn.ui.currentEditor.getText(), "hold this Tutor follow-up");
+      const result = tutorTurn.timeline.filter(item => item.type === 'status' && item.key === 'scholar-progress').at(-1)?.text;
+      assert.match(result, /Incomplete.*output limit/, 'a truncated response cannot display Ready');
     },
     "the Tutor kickoff was locked at send time and stayed locked until agent_settled even with no before_agent_start event",
   );

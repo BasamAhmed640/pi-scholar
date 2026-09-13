@@ -48,9 +48,7 @@ export function isSourceCoverageItem(value: unknown): value is SourceCoverageIte
     && id(value.id) && SOURCE_COVERAGE_KINDS.includes(value.kind as SourceCoverageKind)
     && text(value.description) && pages(value.sourcePages) && value.sourcePages.length > 0 && text(value.objective)
     && optional(value, "lessonId", id) && optional(value, "evidence", item => text(item, 24000))
-    && optional(value, "equationId", id) && optional(value, "snapshotId", id)
-    && (!("equationId" in value) || value.kind === "equation")
-    && (!("snapshotId" in value) || value.kind === "figure");
+    && optional(value, "equationId", id) && optional(value, "snapshotId", id);
 }
 
 export function isSourceCoverageLedger(value: unknown): value is SourceCoverageItem[] {
@@ -115,10 +113,10 @@ export function sourceCoverageIssues(value: unknown, context: SourceCoverageCont
     const lesson = matches[0]!;
     if (!comparableMarkdown(lesson.markdown).includes(comparableMarkdown(item.evidence))) issues.push(`${prefix} evidence is not an exact excerpt of its saved lesson.`);
     if (!hasBodyEvidence(item.evidence, item)) issues.push(`${prefix} needs explanatory body evidence, not just a heading, label, or figure embed.`);
-    if (item.kind === "equation" && (!item.equationId || !lesson.keyEquationIds?.includes(item.equationId))) {
+    if ((item.kind === "equation" || item.equationId) && (!item.equationId || !lesson.keyEquationIds?.includes(item.equationId))) {
       issues.push(`${prefix} needs a designated Key equation ID actually rendered in this lesson unit.`);
     }
-    if (item.kind === "figure" && (!item.snapshotId || !lesson.embeddedSnapshotIds?.includes(item.snapshotId))) {
+    if ((item.kind === "figure" || item.snapshotId) && (!item.snapshotId || !lesson.embeddedSnapshotIds?.includes(item.snapshotId))) {
       issues.push(`${prefix} needs a saved snapshot ID actually embedded in this lesson unit.`);
     }
   }
@@ -137,6 +135,8 @@ export type ReviewFinding = {
 };
 export type ReviewResult = { status: "pass" | "changes"; findings: ReviewFinding[] };
 export type ReviewerVerdict = ReviewResult;
+export const REVIEW_FAILURE_CODES = ["cancelled", "timeout", "limit", "provider", "tool", "invalid-output", "configuration", "evidence"] as const;
+export type ReviewFailure = { code: typeof REVIEW_FAILURE_CODES[number]; message: string };
 export type ReviewReceipt = ReviewResult & {
   role: ReviewRole;
   contentHash: string;
@@ -144,6 +144,8 @@ export type ReviewReceipt = ReviewResult & {
   /** Provider/model identity returned by the runner, with no provider restriction. */
   model: string;
   createdAt: string;
+  /** Runner-owned execution failure, never a model-authored content verdict. */
+  failure?: ReviewFailure;
 };
 
 export function isReviewFinding(value: unknown): value is ReviewFinding {
@@ -178,10 +180,13 @@ export function parseReviewerVerdict(raw: string): ReviewerVerdict {
 }
 
 export function isReviewReceipt(value: unknown): value is ReviewReceipt {
-  if (!object(value) || !keys(value, ["role", "contentHash", "sourceHash", "model", "createdAt", "status", "findings"])
+  if (!object(value) || !keys(value, ["role", "contentHash", "sourceHash", "model", "createdAt", "status", "findings", "failure"])
     || !validReviewFields(value) || !REVIEW_ROLES.includes(value.role as ReviewRole)
     || !sha256(value.contentHash) || !sha256(value.sourceHash) || !text(value.model, 300)
     || typeof value.createdAt !== "string") return false;
+  if (value.failure !== undefined && (value.status !== "changes" || !object(value.failure)
+    || !keys(value.failure, ["code", "message"]) || !REVIEW_FAILURE_CODES.includes(value.failure.code as ReviewFailure["code"])
+    || !text(value.failure.message))) return false;
   const time = new Date(value.createdAt);
   return Number.isFinite(time.getTime()) && time.toISOString() === value.createdAt;
 }
@@ -208,6 +213,7 @@ export function reviewGateIssues(value: unknown, context: ReviewGateContext): st
       continue;
     }
     if (latest.contentHash !== context.contentHash || latest.sourceHash !== context.sourceHash) issues.push(`The ${role} review is stale; review the current lesson and source.`);
+    else if (latest.failure) issues.push(`Complete the ${role} review (${latest.failure.code}); the saved draft has not been approved. Resume the review, not a rewrite based on this execution failure alone.`);
     else if (latest.status !== "pass") issues.push(`Repair the blocking ${role} findings and recheck the revised lesson.`);
   }
   return issues;
