@@ -512,14 +512,17 @@ export async function handleScholarCommand(
         });
         book = mutation.book;
         const section = findSection(book, selected.id)!;
-        await coordinator.activateBook(book, ctx, "learn", section.id);
         if (!parsed.continue && !section.attempts.some(attempt => attempt.outcome === "pending")
           && section.transcript.some(entry => entry.lesson && entry.markdown.trim()) && !lessonReady(section, book.source.fingerprint.sha256)) {
+          // Select the book without entering Learn: no Learn instructions or write/review
+          // actions, so ordinary chat cannot quietly resume preparation of this draft.
+          await coordinator.activateBook(book, ctx);
           const chapter = book.chapters.find(item => item.sections.some(candidate => candidate.id === section.id))!;
           const path = await safePathWithinRoot(activeConfig.obsidianRoot, sectionNotePath(activeConfig, book, chapter, section));
-          ctx.ui.notify(`Saved draft available in Obsidian: ${path}\nThis lesson is not yet approved. No generation started. To continue preparation: /scholar learn ${quoted(section.number || section.id)} continue`, "info");
+          ctx.ui.notify(`Saved draft available in Obsidian: ${path}\nThis lesson is not yet approved. No generation started, and chat will not resume it. To continue preparation: /scholar learn ${quoted(section.number || section.id)} continue`, "info");
           return;
         }
+        await coordinator.activateBook(book, ctx, "learn", section.id);
         await coordinator.startScholarModeTurn(book, "learn", section, ctx);
         return;
       }

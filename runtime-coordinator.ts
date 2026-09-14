@@ -63,6 +63,7 @@ import {
 import { MAX_TOOL_PAGES } from "./tool-contract.ts";
 import {
   createScholarToolController,
+  LEARN_WORK_LIMIT_MS,
   type ScholarToolController,
 } from "./tool-controller.ts";
 import {
@@ -546,9 +547,9 @@ export class ScholarRuntimeCoordinator {
         const releaseInput = run.releaseInput;
         const deadline = setInterval(() => {
           if (this.scholarTurnRun !== run || this.loading.token !== token || !this.loading.active) { clearInterval(deadline); return; }
-          if (this.loading.workElapsedMs >= 20 * 60_000) {
+          if (this.loading.workElapsedMs >= LEARN_WORK_LIMIT_MS) {
             clearInterval(deadline);
-            this.toolController.stopDelivery("Learn reached its 20-minute work limit. Saved draft preserved; generation stopped. Reopen the draft to read it, or explicitly continue unfinished preparation.", ctx as ExtensionContext);
+            this.toolController.stopDelivery(`Learn reached its 20-minute work limit. Saved draft preserved; generation stopped. Chat will not resume it. To continue preparation: /scholar learn "${section!.number || section!.id}" continue`, ctx as ExtensionContext);
           }
         }, 1000);
         deadline.unref?.();

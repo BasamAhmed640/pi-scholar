@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { lessonHash, learnReviewHash, lessonCoverageIssues, commitLesson, learnReviewIssues } from "./lesson.ts";
+import { lessonHash, learnReviewHash, lessonCoverageIssues, commitLesson, learnReviewIssues, lessonReady } from "./lesson.ts";
 import { reviewLearnDraft, reviewLearnQuestion } from "./learn-review.ts";
-import type { ReviewerProgress } from "./review-runtime.ts";
+import { DEFAULT_REVIEWER_LIMITS, type ReviewerProgress } from "./review-runtime.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 
@@ -76,6 +76,14 @@ import {
   handleExamPresent,
 } from "./tool-actions/exam.ts";
 
+/** Active-turn preparation budget per explicit Learn activation. Idle time between
+ * turns is excluded; OS suspension inside a turn counts, so it can only stop sooner. */
+export const LEARN_WORK_LIMIT_MS = 20 * 60_000;
+const MAX_REVIEW_ROUNDS = 3;
+const MAX_PREREVIEW_REJECTIONS = 4;
+/** A review round is not started when the remaining budget cannot let it finish. */
+const MIN_REVIEW_WINDOW_MS = 2 * 60_000;
+
 export type MutateBook = <T>(
   bookId: string,
   mutate: (book: ScholarBook) => Promise<T> | T,
@@ -96,6 +104,8 @@ export type ScholarToolControllerPorts = {
   onReviewProgress?(event: ReviewerProgress | undefined, total: number): void;
   onReviewOutcome?(message?: string): void;
   inputContext?(ctx: ExtensionContext): ExtensionContext;
+  /** Injectable wall clock for the preparation budget; tests only. */
+  now?(): number;
 };
 
 export type ScholarToolController = {
@@ -103,6 +113,8 @@ export type ScholarToolController = {
   prepareOutlineValidation(book: ScholarBook): OutlineValidationRun | undefined;
   clearOutlineValidation(): void;
   resetTransientState(): void;
+  /** Stops counting preparation time at the end of an agent turn; never clears a stop. */
+  endAgentTurn(): void;
   stopDelivery(message: string, ctx: ExtensionContext): void;
   captureOpenResponse(text: string, source: string, images?: OpenResponseImage[]): Promise<void>;
   bindOpenResponseTurn(book: ScholarBook, prompt: string, images?: OpenResponseImage[]): void;
@@ -121,8 +133,22 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
   const openResponses = new OpenResponseGate();
   let openInputRevision = 0;
   const reviewStops = new Set<AbortController>();
+  // Round, rejection and time budgets and the stop latch belong to one explicit
+  // Scholar activation. Only resetTransientState (a Scholar command) clears them;
+  // chat, extension-sent input and new agent turns never do.
   const reviewRounds = new Map<string, number>();
+  const prereviewRejections = new Map<string, number>();
   let stoppedDelivery: string | undefined;
+  const clock = () => ports.now?.() ?? Date.now();
+  let preparationSpentMs = 0;
+  let preparationTurnStartedAt: number | undefined;
+  const preparationElapsed = () => preparationSpentMs + (preparationTurnStartedAt === undefined ? 0 : Math.max(0, clock() - preparationTurnStartedAt));
+  const endAgentTurn = (): void => {
+    if (preparationTurnStartedAt === undefined) return;
+    preparationSpentMs += Math.max(0, clock() - preparationTurnStartedAt);
+    preparationTurnStartedAt = undefined;
+  };
+  const continueHint = (section: ScholarSection) => `Chat will not resume it; nothing more runs until the learner explicitly enters /scholar learn "${section.number || section.id}" continue.`;
   const stopDelivery = (message: string, ctx: ExtensionContext): void => {
     if (stoppedDelivery) return;
     stoppedDelivery = message;
@@ -130,12 +156,17 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
     try { ports.onReviewOutcome?.(message); } catch { /* display only */ }
     try { if (ctx.hasUI) ctx.ui.notify(message, "warning"); } catch { /* disconnected UI */ }
     // Stop Pi's loop as well as subsequent writes. A tool error alone lets the
-    // author keep spending tokens on revisions that cannot be reviewed.
-    ctx.abort?.();
+    // author keep spending tokens on revisions that cannot be reviewed. A stale
+    // runner can throw here; the latch above still blocks every further action.
+    try { ctx.abort?.(); } catch { /* latch remains authoritative */ }
   };
-  const reserveReview = (key: string) => {
+  const reserveReview = (key: string, ctx: ExtensionContext) => {
     const rounds = reviewRounds.get(key) || 0;
-    if (rounds >= 3) throw new Error("Scholar stopped after three review rounds for this delivery. Preserve the draft and report the remaining findings to the learner; continue only on their next request.");
+    if (rounds >= MAX_REVIEW_ROUNDS) {
+      const message = "Scholar stopped after three review rounds for this delivery. Preserve the draft and report the remaining findings to the learner. Nothing more runs until they explicitly continue with /scholar learn and continue.";
+      stopDelivery(message, ctx);
+      throw new Error(message);
+    }
     reviewRounds.set(key, rounds + 1);
   };
   const withReview = async <T>(book: ScholarBook, ctx: ExtensionContext, signal: AbortSignal | undefined,
@@ -167,7 +198,9 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
   };
   const reviewQuestion: ScholarToolController["reviewQuestion"] = async (book, section, value, sourcePages, ctx, signal) => {
     if (!section.learnQuality) return () => {};
-    reserveReview(`question:${section.id}:${section.attempts.length}`);
+    // The scholar_quiz prehook reaches this outside execute; a stop blocks its reviewer too.
+    if (stoppedDelivery) throw new Error(stoppedDelivery);
+    reserveReview(`question:${section.id}:${section.attempts.length}`, ctx);
     const activation = session.state, vault = ports.getConfig().obsidianRoot;
     const verify = await withReview(book, ctx, signal, (stop, onProgress) => reviewLearnQuestion({ book, section, config: { ...ports.getConfig() }, ctx, signal: stop, onProgress }, value, sourcePages), 1);
     return current => {
@@ -177,8 +210,8 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
     };
   };
   const captureOpenResponse = async (text: string, source: string, images?: OpenResponseImage[]): Promise<void> => {
-    reviewRounds.clear();
-    stoppedDelivery = undefined;
+    // Learner answers bind here, but no input (interactive, RPC or extension-sent)
+    // clears a delivery stop or resets the round/time budgets.
     const inputRevision = ++openInputRevision;
     const activation = session.state;
     openResponses.clear();
@@ -501,6 +534,17 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
           if (session.mode && book.outlineStatus !== "ready") {
             throw new Error("Scholar modes are locked until this PDF's outline is verified.");
           }
+          if (session.mode === "learn") {
+            const target = session.recordId ? findSection(book, session.recordId) : undefined;
+            if (target && !lessonReady(target, book.source.fingerprint.sha256)) {
+              preparationTurnStartedAt ??= clock();
+              if (params.action !== "status" && preparationElapsed() >= LEARN_WORK_LIMIT_MS) {
+                const message = `Learn reached its 20-minute preparation limit for this activation. Saved draft preserved; generation stopped. ${continueHint(target)}`;
+                stopDelivery(message, ctx);
+                throw new Error(message);
+              }
+            }
+          }
           try { ports.onLoadingActivity?.(params.action, ctx, signal); } catch { /* display only */ }
 
           if (params.action === "read") {
@@ -608,9 +652,24 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
             if (!draft || !ports.isActiveAuthority(draft)) throw new Error("The active Scholar book changed before review.");
             const section = requireLearnSection(draft), hash = learnReviewHash(section), activation = session.state;
             const issues = lessonCoverageIssues(section, draft.source.fingerprint.sha256);
-            if (issues.length) throw new Error(`Draft saved. Repair these delivery gaps before review: ${issues.join("; ")}`);
-            reserveReview(`lesson:${section.id}`);
-            const reviews = await withReview(draft, ctx, signal, (stop, onProgress) => reviewLearnDraft({ book: draft, section, config: { ...ports.getConfig() }, ctx, signal: stop, onProgress }));
+            if (issues.length) {
+              const rejected = (prereviewRejections.get(section.id) || 0) + 1;
+              prereviewRejections.set(section.id, rejected);
+              const gapMessage = `Draft saved. Repair these delivery gaps before review: ${issues.join("; ")}`;
+              if (rejected < MAX_PREREVIEW_REJECTIONS) throw new Error(`${gapMessage} (${rejected}/${MAX_PREREVIEW_REJECTIONS} completion attempts used; fix every named gap before resubmitting.)`);
+              const message = `Draft saved; lessonComplete was rejected ${rejected} times for delivery gaps. Generation stopped. ${continueHint(section)}`;
+              stopDelivery(message, ctx);
+              throw new Error(`${message}\n${gapMessage}`);
+            }
+            const remainingMs = LEARN_WORK_LIMIT_MS - preparationElapsed();
+            if (remainingMs < MIN_REVIEW_WINDOW_MS) {
+              const message = `Draft saved; too little of Learn's 20-minute preparation limit remains to run review. Generation stopped. ${continueHint(section)}`;
+              stopDelivery(message, ctx);
+              throw new Error(message);
+            }
+            reserveReview(`lesson:${section.id}`, ctx);
+            const reviewTimeoutMs = Math.max(1, Math.floor(Math.min(DEFAULT_REVIEWER_LIMITS.timeoutMs, remainingMs)));
+            const reviews = await withReview(draft, ctx, signal, (stop, onProgress) => reviewLearnDraft({ book: draft, section, config: { ...ports.getConfig() }, ctx, signal: stop, onProgress, reviewTimeoutMs }));
             const final = await mutateBook(draft.id, async state => {
               const current = requireLearnSection(state);
               if (activation !== session.state || !ports.isActiveAuthority(state) || learnReviewHash(current) !== hash || state.source.fingerprint.sha256 !== draft.source.fingerprint.sha256) throw new Error("The lesson changed during review. The current note was preserved; review it again before committing.");
@@ -625,7 +684,7 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
             if (final.result.length) {
               const incomplete = reviews.filter(review => review.failure);
               const message = incomplete.length
-                ? `Draft saved; review incomplete (${incomplete.map(review => `${review.role}: ${review.failure!.code}`).join(", ")}). Generation stopped. Continue only on the learner's next request; retry the same draft before any optional edits. No automatic retry or rewrite after an execution failure.`
+                ? `Draft saved; review incomplete (${incomplete.map(review => `${review.role}: ${review.failure!.code}`).join(", ")}). Generation stopped. ${continueHint(section)} After that command, retry the same draft before any optional edits. No automatic retry or rewrite after an execution failure.`
                 : "Draft saved; specialist review found repairs. Revise the named passages in their existing lesson IDs using the current expectedContentHash, update their exact coverage evidence, and submit lessonComplete again. Do not append a duplicate replacement lesson.";
               try { ports.onReviewOutcome?.(incomplete.length ? `Draft saved · review incomplete: ${incomplete.map(review => review.failure!.code).join(", ")}` : "Draft saved · revisions needed"); } catch { /* display only */ }
               const result = toolResult("notes", message, { bookId: book.id, sectionId: section.id, tone: "review" });
@@ -635,7 +694,7 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
                   .map(finding => `${review.role} / ${finding.severity} / ${finding.target} / PDF ${finding.sourcePages.join(", ")}: ${finding.issue}\nRepair: ${finding.repair}`),
               ]).join("\n\n") });
               if (incomplete.length || (reviewRounds.get(`lesson:${section.id}`) || 0) >= 3) {
-                stopDelivery(incomplete.length ? message : "Draft saved; three review rounds found unresolved content. Generation stopped. Resume only when requested.", ctx);
+                stopDelivery(incomplete.length ? message : `Draft saved; three review rounds found unresolved content. Generation stopped. ${continueHint(section)}`, ctx);
               }
               return result;
             }
@@ -770,7 +829,10 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
   const resetTransientState = (): void => {
     for (const stop of reviewStops) stop.abort(new Error("Scholar review cancelled because its active session changed."));
     reviewRounds.clear();
+    prereviewRejections.clear();
     stoppedDelivery = undefined;
+    preparationSpentMs = 0;
+    preparationTurnStartedAt = undefined;
     clearOutlineValidation();
     clearImageSelection();
     sourceFigureViews.clear();
@@ -783,6 +845,7 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
     prepareOutlineValidation,
     clearOutlineValidation,
     resetTransientState,
+    endAgentTurn,
     stopDelivery,
     captureOpenResponse,
     bindOpenResponseTurn,

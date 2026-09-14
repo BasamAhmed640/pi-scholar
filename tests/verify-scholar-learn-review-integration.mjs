@@ -120,7 +120,7 @@ async function harness(fresh = false) {
   const session = new ScholarRuntimeSession(); session.activate(initial.id, "learn", "s1");
   let definition, nextCall = 0;
   h.controller = createScholarToolController({ pi: { registerTool(tool) { definition = tool; } }, session, getConfig: () => config, loadBook: h.load,
-    mutateBook, isActiveAuthority: book => book.instanceId === initial.instanceId, isSetupActive: () => false });
+    mutateBook, isActiveAuthority: book => book.instanceId === initial.instanceId, isSetupActive: () => false, now: () => h.now?.() ?? Date.now() });
   h.controller.ensureRegistered();
   h.session = session;
   h.context = () => ({ hasUI: false, model, modelRegistry: registry, ...(h.contextSignal ? { signal: h.contextSignal } : {}) });
@@ -215,7 +215,14 @@ try {
     h.onRequest = undefined;
     assert.match(textOf(await h.execute({action:'notes',lessonComplete:true})), /Generation stopped/);
     assert.equal(h.requests.length, start, 'a model cannot retry a failed execution in the same turn');
-    await h.controller.captureOpenResponse('Continue this saved draft', 'interactive');
+    assert.match(textOf(result), /\/scholar learn "1\.1" continue/);
+    for (const source of ['interactive', 'extension']) {
+      await h.controller.captureOpenResponse('Continue this saved draft', source);
+      h.controller.endAgentTurn();
+      assert.match(textOf(await h.execute({action:'notes',lessonComplete:true})), /Generation stopped/);
+    }
+    assert.equal(h.requests.length, start, 'chat or extension input cannot clear a stopped delivery');
+    h.controller.resetTransientState(); // what the explicit /scholar learn "1.1" continue activation does
     success(await h.execute({action:'notes',lessonComplete:true}));
     assert(h.requests.slice(start).every(request=>request.role==='source'));
     const current = await h.load();
@@ -464,8 +471,14 @@ try {
       startScholarModeTurn:async()=>{generations++;}};
     await handleScholarCommand('learn "1.1"',ctx,coordinator);
     assert.equal(generations,0);assert.equal(locks,0);assert(notifications.some(message=>message.includes('No generation started')));
+    assert.equal(h.session.mode,undefined,'reopening a draft selects the book without entering Learn');
+    const calls=h.requests.length,before=await h.load();
+    for(const params of [{action:'notes',lessonComplete:true},{action:'read',startPage:1,endPage:1},notes()]) {
+      assert.match(textOf(await h.execute(params)),/no active operation/,'ordinary chat cannot write, read or review the reopened draft');
+    }
+    assert.equal(h.requests.length,calls);assert.deepEqual(await h.load(),before);
     await handleScholarCommand('learn "1.1" continue',ctx,coordinator);
-    assert.equal(generations,1);assert.equal(locks,0);
+    assert.equal(generations,1);assert.equal(locks,0);assert.equal(h.session.mode,'learn');
   });
   await check("The total Learn deadline stops a long writer, excludes learner waiting, and cannot stop a later session", async()=>{
     const h=await harness();const book=await h.load();
@@ -494,6 +507,65 @@ try {
       late.callback();assert.equal(stops,1);assert.equal(timers.size,0);
       coordinator.loading.clear();
     }finally{globalThis.setInterval=originalSet;globalThis.clearInterval=originalClear;}
+  });
+  await check("Chat and extension input cannot reset the review-round cap; only explicit activation grants a new bounded attempt", async()=>{
+    const h=await harness();h.verdicts.source=changes;let aborts=0;const context=h.context;
+    h.context=()=>({...context(),abort(){aborts++;}});
+    for(let round=0;round<3;round++){
+      if(round){await h.controller.captureOpenResponse('Please keep repairing it',round===1?'extension':'interactive');h.controller.endAgentTurn();}
+      assert.equal((await h.execute(round===0?{...notes(),lessonComplete:true}:{action:'notes',lessonComplete:true})).details.tone,'review');
+    }
+    assert.equal(aborts,1);
+    const calls=h.requests.length;
+    await h.controller.captureOpenResponse('Try once more','interactive');h.controller.endAgentTurn();
+    assert.match(textOf(await h.execute({action:'notes',lessonComplete:true})),/Generation stopped/);
+    assert.equal(h.requests.length,calls);
+    success(await h.execute({action:'status'}));
+    const stoppedBook=await h.load();
+    await assert.rejects(h.controller.reviewQuestion(stoppedBook,active(stoppedBook),question(),[1],h.context()),/Generation stopped/);
+    assert.equal(h.requests.length,calls,'the scholar_quiz prehook cannot start a reviewer after a stop');
+    h.controller.resetTransientState();
+    assert.equal((await h.execute({action:'notes',lessonComplete:true})).details.tone,'review');
+    assert.ok(h.requests.length>calls,'the explicit continue activation permits a new bounded round');
+  });
+  await check("Repeated lessonComplete submissions with delivery gaps stop the author before any reviewer runs", async()=>{
+    const h=await harness();let aborts=0;const context=h.context;
+    h.context=()=>({...context(),abort(){aborts++;}});
+    const input=notes();input.sourceCoverage[0].evidence='This passage does not occur in the saved lesson.';
+    for(let attempt=1;attempt<=3;attempt++){
+      const result=await h.execute(attempt===1?{...input,lessonComplete:true}:{action:'notes',lessonComplete:true});
+      assert.match(textOf(result),new RegExp(`delivery gaps.*${attempt}/4`,'s'));
+    }
+    assert.equal(aborts,0);
+    assert.match(textOf(await h.execute({action:'notes',lessonComplete:true})),/rejected 4 times.*Generation stopped/s);
+    assert.equal(aborts,1);
+    assert.match(textOf(await h.execute({action:'read',startPage:1,endPage:1})),/Generation stopped/);
+    assert.equal(h.requests.length,0);
+  });
+  await check("The controller enforces the preparation budget itself, excludes idle turns, and never starts an unfinishable review", async()=>{
+    const h=await harness();let aborts=0;const context=h.context;
+    h.context=()=>({...context(),abort(){aborts++;}});
+    let clock=0;h.now=()=>clock;h.controller.resetTransientState();
+    success(await h.execute(notes()));
+    clock=10*60_000;h.controller.endAgentTurn();
+    clock=5*60*60_000; // hours idle between turns are not preparation work
+    success(await h.execute({action:'status'}));
+    clock+=9*60_000; // 19 minutes of active preparation spent
+    assert.match(textOf(await h.execute({action:'notes',lessonComplete:true})),/too little of Learn's 20-minute preparation limit/);
+    assert.equal(h.requests.length,0);assert.equal(aborts,1);
+    assert.deepEqual(active(await h.load()).learnQuality.reviews,[]);
+    h.controller.resetTransientState();clock=0;
+    success(await h.execute({action:'read',startPage:1,endPage:1}));
+    clock=20*60_000;
+    assert.match(textOf(await h.execute({action:'read',startPage:1,endPage:1})),/20-minute preparation limit/);
+    assert.equal(aborts,2,'the hard limit does not depend on the loading widget timer');
+    h.controller.resetTransientState();clock=0;
+    success(await h.execute({action:'status'}));
+    clock=15*60_000;
+    const timeouts=[];h.onRequest=async({request})=>{timeouts.push(request.timeoutMs);};
+    success(await h.execute({action:'notes',lessonComplete:true}));
+    assert.ok(timeouts.length&&timeouts.every(ms=>ms>0&&ms<=5*60_000),`reviews receive only the remaining preparation time: ${timeouts}`);
+    assert(lesson.lessonReady(active(await h.load())));
   });
   console.log(`Scholar Learn review integration: ${checks} passed.`);
 } finally {

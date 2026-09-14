@@ -41,12 +41,12 @@ selected PDF library contains the source books, not your learning history.
 
 ## Installation
 
-### Recoverable Learn preparation (0.5.2)
+### Recoverable Learn preparation (0.5.3)
 
 Reopening a saved, unfinished lesson displays its Obsidian draft location immediately,
-without starting generation. Use `/scholar learn "9.3" continue` (or explicitly ask
-Scholar to continue) to resume preparation. Existing unanswered questions retain
-their normal resume behavior. A visible draft is not scientific approval or mastery.
+without starting generation or entering Learn, so chat cannot resume it. Use
+`/scholar learn "9.3" continue` to resume preparation. Existing unanswered questions
+retain their normal resume behavior. A visible draft is not scientific approval or mastery.
 
 Lesson reviewers now receive their required PDF text, rendered pages and crops
 up front. Each batch makes one verdict request, with no model turns spent fetching
@@ -60,11 +60,19 @@ avoiding persistent WebSocket connections for these one-shot checks.
 An execution failure saves the completed review results and stops the author loop.
 It cannot trigger automatic retries or optional rewrites. Completed checks can be
 reused only for unchanged evidence. Three completed content-review rounds remain
-the maximum; reaching that limit also stops authoring. In addition to the shared
-12-minute review deadline, new Learn preparation has a **20-minute total work
-limit**, including writing and repairs and excluding learner input time. This is
-a recovery ceiling, not a promised completion time. Provider failures can still
-leave a saved draft awaiting a later retry; they never count as approval.
+the maximum; reaching that limit also stops authoring, as do four `lessonComplete`
+submissions rejected for delivery gaps. In addition to the shared 12-minute review
+deadline, new Learn preparation has a **20-minute total work limit**, including
+writing and repairs and excluding learner input and idle time between turns. A
+review round is not started when too little of that limit remains for it to finish.
+This is a recovery ceiling, not a promised completion time. Provider failures can
+still leave a saved draft awaiting a later retry; they never count as approval.
+
+**A stop is sticky.** Chat messages and input sent by other extensions do not
+clear it or reset the round and time budgets. Reopening an unapproved draft with
+`/scholar learn "9.3"` selects the book but leaves Learn inactive, so chat cannot
+resume preparation. Only `/scholar learn "9.3" continue` starts a fresh, bounded
+preparation attempt.
 
 `lessonPatch.calloutEdits` replaces one equation or source-figure callout through
 the existing renderers, retaining all other prose and callouts. It requires the
@@ -166,7 +174,7 @@ within the visual role, while the three lesson roles run independently.
 
 Reviews have finite context, output, tool and time limits. A failed, cancelled or
 incomplete review cannot approve a lesson. Specific findings return to the author
-for repair, with at most three review rounds per user turn. The Pi status line
+for repair, with at most three review rounds per explicit Learn activation. The Pi status line
 shows review stages and elapsed time. This adds model calls and can take longer
 than one-pass lesson generation; it is intended to improve the result, not speed.
 

@@ -172,6 +172,8 @@ export default function scholarExtension(pi: ExtensionAPI) {
   pi.on("tool_execution_end", () => coordinator.loading.activity());
 
   pi.on("agent_settled", async (_event, ctx: ExtensionContext) => {
+    // Idle time between turns does not spend the preparation budget. This never clears a stop.
+    coordinator.toolController.endAgentTurn();
     if (!coordinator.runtimeSession.active && !coordinator.setupRun && !coordinator.scholarTurnRun) return;
     const releaseInput = coordinator.acquireInputLock(ctx, "syncing");
     try {
