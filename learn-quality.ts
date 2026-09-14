@@ -74,7 +74,7 @@ export function isSourceCoverageLedger(value: unknown): value is SourceCoverageI
   return Array.isArray(value) && value.every(isSourceCoverageItem) && new Set(value.map(item => item.id)).size === value.length;
 }
 
-const matchesLessonId = (saved: string, input: string) => saved === input || saved === `lesson-${input}`
+export const matchesLessonId = (saved: string, input: string) => saved === input || saved === `lesson-${input}`
   || (!saved.startsWith("lesson-") && `lesson-${saved}` === input);
 const normalizedLabel = (value: string) => value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 const comparableMarkdown = (value: string) => value.replace(/\r\n/g, "\n").trim();

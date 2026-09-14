@@ -25,6 +25,7 @@ const { createScholarToolController } = await loadModule("tool-controller.ts");
 const { createBookService } = await loadModule("book-service.ts");
 const { ScholarRuntimeSession } = await loadModule("runtime-session.ts");
 const { sectionNotePath } = await loadModule("obsidian-paths.ts");
+const { REVIEW_CHECKPOINT_MESSAGE } = await loadModule("learn-review.ts");
 const { ModelRegistry } = await import(pathToFileURL(join(piPackageRoot, "dist/core/model-registry.js")));
 
 const temporary = resolve(tmpdir());
@@ -104,7 +105,7 @@ async function harness(fresh = false) {
   h.load = () => storage.loadBookState(config, initial.id);
   const service = createBookService({ getConfig: () => config, load: storage.loadBookState, list: storage.listBookStates,
     save: storage.saveBookState, project: async () => {}, onSave() {}, librarySetupMessage: 'Fixture library missing' });
-  const mutateBook = (id, mutate) => service.mutateBook(id, async state => { await h.beforeMutation?.(); return mutate(state); });
+  const mutateBook = (id, mutate) => service.mutateBook(id, async state => { await h.beforeMutation?.(mutate); return mutate(state); });
   h.mutate = mutateBook;
   const registry = new ModelRegistry({ complete: async (selected, context, request) => {
     assert.equal(selected, model);
@@ -256,7 +257,7 @@ try {
     const saved = await h.load(), section = active(saved);
     assert.ok(lesson.lessonReady(section, saved.source.fingerprint.sha256));
     assert.deepEqual(section.learnQuality.reviews.map(receipt => receipt.role), ["source", "teaching", "visual"]);
-    assert.equal(new Set(h.requests.map(request => request.sessionId)).size, 3);
+    assert.equal(new Set(h.requests.map(request => request.sessionId)).size, 4, "a source window, a topic check, a coherence check and a visual packet are separate conversations");
     assert.deepEqual([...new Set(h.requests.map(request => request.role))].sort(), ["source", "teaching", "visual"]);
     const readEvidence = h.requests.flatMap(request => request.context.messages).filter(message => Array.isArray(message.content));
     assert.ok(readEvidence.some(message => message.content.some(item => item.type === "text" && item.text.includes("[Page 1]") && item.text.includes("constant speed"))));
@@ -329,7 +330,7 @@ try {
     const section = active(await h.load());
     assert.ok(section.transcript[0].markdown.includes(edited));
     assert.equal(section.lessonCommit, undefined);
-    assert.deepEqual(section.learnQuality.reviews, []);
+    assert(section.learnQuality.reviews.every(receipt => receipt.failure?.message === REVIEW_CHECKPOINT_MESSAGE), "only in-progress checkpoints remain; no approval");
   });
 
   await check("The question event prehook cancels from ctx.signal alone without changing committed notes or creating a question", async () => {
@@ -362,11 +363,12 @@ try {
       const before = await h.load(), stop = new AbortController();
       h.contextSignal = stop.signal;
       let mutations = 0, abortedAtWrite = false;
-      h.beforeMutation = () => {
+      h.beforeMutation = mutate => {
         mutations++;
         // Lesson has a draft save then an approval write; the prepared question
         // has only its post-review write. Abort after review has already returned.
-        if (phase === "question" || mutations === 2) {
+        // The approval write is the one that re-checks the lesson; checkpoint writes are not.
+        if (phase === "question" || String(mutate).includes("changed during review")) {
           assert.ok(h.requests.some(request => request.role === (phase === "question" ? "assessment" : "visual")));
           abortedAtWrite = true;
           stop.abort(new Error(`Late ${phase} context cancellation.`));
@@ -381,7 +383,7 @@ try {
       if (phase === "lesson") {
         assert.ok(section.transcript[0].markdown.includes(explanation), "draft remains inspectable");
         assert.equal(section.lessonCommit, undefined);
-        assert.deepEqual(section.learnQuality.reviews, [], "cancelled approval cannot write passing review receipts");
+        assert(section.learnQuality.reviews.every(receipt => receipt.failure?.message === REVIEW_CHECKPOINT_MESSAGE), "cancelled approval cannot write passing review receipts");
       } else assert.deepEqual(after, before, "cancelled question write cannot change prior approval, progress, or the note");
     }
   });
@@ -579,6 +581,30 @@ try {
     success(await h.execute({action:'notes',lessonComplete:true}));
     assert.ok(timeouts.length&&timeouts.every(ms=>ms>0&&ms<=5*60_000),`reviews receive only the remaining preparation time: ${timeouts}`);
     assert(lesson.lessonReady(active(await h.load())));
+  });
+  await check("Finished crew checks are saved during review, so an interruption re-runs only unfinished checks", async()=>{
+    const h=await harness(), stop=new AbortController();
+    h.onRequest=async({context,request})=>{
+      if(!/whole-lesson coherence/.test(context.messages[0].content)) return;
+      await new Promise((_resolve,reject)=>{ if(request.signal.aborted) reject(request.signal.reason); else request.signal.addEventListener('abort',()=>reject(request.signal.reason),{once:true}); });
+    };
+    const pending=h.execute({...notes(),lessonComplete:true},stop.signal);
+    let saved=[];
+    for(let i=0;i<2400&&!['source','teaching','visual'].every(role=>saved.some(receipt=>receipt.role===role&&receipt.batches?.length));i++){
+      await new Promise(resolve=>setTimeout(resolve,25)); saved=active(await h.load()).learnQuality?.reviews||[];
+    }
+    assert(['source','teaching','visual'].every(role=>saved.some(receipt=>receipt.role===role&&receipt.failure?.message===REVIEW_CHECKPOINT_MESSAGE&&receipt.batches.length)),'finished checks are in the vault before the review ends');
+    stop.abort(new Error('Learner pressed Esc.'));
+    assert.ok(['retry','error'].includes((await pending).details.tone));
+    const interrupted=active(await h.load());
+    assert.equal(interrupted.lessonCommit,undefined);assert.equal(lesson.lessonReady(interrupted),false);
+    assert(interrupted.learnQuality.reviews.every(receipt=>receipt.failure?.message===REVIEW_CHECKPOINT_MESSAGE),'an interruption never stores approval');
+    const before=h.requests.length;h.onRequest=undefined;h.controller.resetTransientState();
+    success(await h.execute({action:'notes',lessonComplete:true}));
+    const rerun=h.requests.slice(before);
+    assert.equal(rerun.length,1,'only the unfinished coherence check runs again');
+    assert.match(rerun[0].context.messages[0].content,/whole-lesson coherence/);
+    const current=await h.load();assert(lesson.lessonReady(active(current),current.source.fingerprint.sha256));
   });
   console.log(`Scholar Learn review integration: ${checks} passed.`);
 } finally {

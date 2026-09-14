@@ -41,8 +41,9 @@ builds equation callouts from validated fields and explicit placement markers.
 `review-runtime.ts` bounds their tool loops and uses Pi's active model registry,
 authentication and supported reasoning interface. Source review must actually
 read every scoped page; visual review must see each full page and saved crop.
-Large visual sets are inspected in sequential batches to avoid silently dropping
-images from context. The model still judges semantic fidelity and readability.
+Learn review is planned as a parallel crew of scoped checks (source windows, topics,
+figure packets, one coherence check); finished checks are saved as they complete and
+reused only for identical evidence. The model still judges semantic fidelity and readability.
 
 `tool-controller.ts` alone saves review receipts and commits approved delivery.
 Network review runs outside the book's mutation queue. It then reloads and checks

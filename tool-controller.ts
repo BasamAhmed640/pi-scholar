@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { lessonHash, learnReviewHash, lessonCoverageIssues, commitLesson, learnReviewIssues, lessonReady } from "./lesson.ts";
-import { reviewLearnDraft, reviewLearnQuestion } from "./learn-review.ts";
+import { reviewCheckpoint, reviewLearnDraft, reviewLearnQuestion, REVIEW_CHECKPOINT_MESSAGE, type LessonReviewRole } from "./learn-review.ts";
+import type { ReviewBatchPass } from "./learn-quality.ts";
 import { DEFAULT_REVIEWER_LIMITS, type ReviewerProgress } from "./review-runtime.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -195,6 +196,27 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
       if (timer) clearInterval(timer); reviewStops.delete(stop);
       try { if (!ports.onReviewProgress && ctx.hasUI) ctx.ui.setStatus("scholar-review", undefined); } catch { /* best-effort status cleanup */ }
     }
+  };
+  /** Persist finished crew checks while review continues, so Esc, a timeout or a restart keeps them. */
+  const saveReviewCheckpoints = (draft: ScholarBook, section: ScholarSection, activation: typeof session.state, ctx: ExtensionContext) => {
+    const latest = new Map<LessonReviewRole, ReviewBatchPass[]>();
+    let chain = Promise.resolve(), scheduled = false, closed = false;
+    const write = () => mutateBook(draft.id, state => {
+      if (closed || activation !== session.state || !ports.isActiveAuthority(state) || state.source.fingerprint.sha256 !== draft.source.fingerprint.sha256) return;
+      const current = findSection(state, section.id);
+      if (!current?.learnQuality) return;
+      current.learnQuality.reviews = [...current.learnQuality.reviews.filter(receipt => !(receipt.failure?.message === REVIEW_CHECKPOINT_MESSAGE && latest.has(receipt.role as LessonReviewRole))),
+        ...[...latest].map(([role, batches]) => reviewCheckpoint(section, draft, ctx, role, batches))];
+    }).then(() => undefined, () => undefined); // best-effort: the returned receipts remain authoritative
+    return {
+      save: (role: LessonReviewRole, batches: ReviewBatchPass[]) => {
+        if (closed) return;
+        latest.set(role, batches);
+        if (!scheduled) { scheduled = true; chain = chain.then(() => { scheduled = false; return write(); }); }
+      },
+      /** Drain pending writes before the approval write, so no checkpoint can land after it. */
+      close: async () => { await chain; closed = true; },
+    };
   };
   const reviewQuestion: ScholarToolController["reviewQuestion"] = async (book, section, value, sourcePages, ctx, signal) => {
     if (!section.learnQuality) return () => {};
@@ -669,7 +691,9 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
             }
             reserveReview(`lesson:${section.id}`, ctx);
             const reviewTimeoutMs = Math.max(1, Math.floor(Math.min(DEFAULT_REVIEWER_LIMITS.timeoutMs, remainingMs)));
-            const reviews = await withReview(draft, ctx, signal, (stop, onProgress) => reviewLearnDraft({ book: draft, section, config: { ...ports.getConfig() }, ctx, signal: stop, onProgress, reviewTimeoutMs }));
+            const checkpoints = saveReviewCheckpoints(draft, section, activation, ctx);
+            const reviews = await withReview(draft, ctx, signal, (stop, onProgress) => reviewLearnDraft({ book: draft, section, config: { ...ports.getConfig() }, ctx, signal: stop, onProgress, reviewTimeoutMs, onCheckpoint: checkpoints.save }))
+              .finally(() => checkpoints.close());
             const final = await mutateBook(draft.id, async state => {
               const current = requireLearnSection(state);
               if (activation !== session.state || !ports.isActiveAuthority(state) || learnReviewHash(current) !== hash || state.source.fingerprint.sha256 !== draft.source.fingerprint.sha256) throw new Error("The lesson changed during review. The current note was preserved; review it again before committing.");

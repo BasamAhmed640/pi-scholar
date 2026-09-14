@@ -94,9 +94,12 @@ try {
     const evidence = context.messages[1].content;
     assert.ok(Array.isArray(evidence));
     if (role === "source" || role === "teaching") {
+        // Each crew check receives complete text for exactly its assigned pages.
         const text = evidence.filter(item => item.type === "text").map(item => item.text).join("\n");
-        for (let page = payload.source.startPage; page <= payload.source.endPage; page++) {
-          assert.ok(text.includes(`[Page ${page}]`), "source approval requires actual complete-page evidence"); readPages.add(page);
+        const assigned = /Required read_source pages: ([^\n]+)\./.exec(prompt)[1].split(", ").filter(item => /^\d+$/.test(item)).map(Number);
+        assert.ok(assigned.every(page => page >= payload.source.startPage && page <= payload.source.endPage), "a check only reads pages inside its section");
+        for (const page of assigned) {
+          assert.ok(text.includes(`[Page ${page}]`), "source approval requires actual complete-page evidence"); if (role === "source") readPages.add(page);
         }
     }
     if (role === "visual") {

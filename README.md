@@ -41,7 +41,7 @@ selected PDF library contains the source books, not your learning history.
 
 ## Installation
 
-### Recoverable Learn preparation (0.5.3)
+### Recoverable Learn preparation (0.5.4)
 
 Reopening a saved, unfinished lesson asks whether to continue preparing it now or
 only show its Obsidian draft location. Only viewing starts no generation and leaves
@@ -50,12 +50,15 @@ question; without an interactive UI, reopening only shows the draft. Existing
 unanswered questions retain their normal resume behavior. A visible draft is not
 scientific approval or mastery.
 
-Lesson reviewers now receive their required PDF text, rendered pages and crops
-up front. Each batch makes one verdict request, with no model turns spent fetching
-evidence. Source/visual scopes are enforced; visual packets contain at most six
-images. All required pages and current crops still have to be supplied before
-approval. The selected Pi model and reasoning level are preserved, with at most
-three reviewer requests running concurrently.
+Lesson review runs as a crew of small, isolated checks that Scholar coordinates,
+up to six at a time: a fidelity check per four-page source window, an explanation
+check per lesson topic, a figure/equation check per topic (at most six images, each
+crop with its full page) and one whole-lesson coherence check. Each check receives
+only its own passages and evidence, loaded up front, and makes one verdict request.
+Every page and current crop must still be inspected before approval. Finished checks
+are saved to the note immediately and reused while their exact evidence is unchanged,
+so an interruption or a local edit re-runs only the affected checks. The selected Pi
+model and reasoning level are preserved.
 Isolated reviews request Pi's standard HTTP streaming transport where supported,
 avoiding persistent WebSocket connections for these one-shot checks.
 

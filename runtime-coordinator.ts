@@ -363,7 +363,7 @@ export class ScholarRuntimeCoordinator {
     }
     if (event.stage === "complete") this.loadingReviews.add(event.role);
     const detail = event.stage === "complete" ? `${event.role}: ${event.outcome || "returned"}`
-      : `${event.role}${event.batch ? ` batch ${event.batch}/${event.batches}` : ""} · ${event.reused ? "saved pass reused" : event.toolName || "checking"}`;
+      : `${event.batches ? `${event.batch}/${event.batches} checks done · ` : ""}${event.role} ${event.reused ? "saved pass reused" : event.toolName || "checking"}`;
     this.loading.update(3, `${detail} · ${this.loadingReviews.size}/${total} returned`);
   }
 
