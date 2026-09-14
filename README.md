@@ -43,10 +43,12 @@ selected PDF library contains the source books, not your learning history.
 
 ### Recoverable Learn preparation (0.5.3)
 
-Reopening a saved, unfinished lesson displays its Obsidian draft location immediately,
-without starting generation or entering Learn, so chat cannot resume it. Use
-`/scholar learn "9.3" continue` to resume preparation. Existing unanswered questions
-retain their normal resume behavior. A visible draft is not scientific approval or mastery.
+Reopening a saved, unfinished lesson asks whether to continue preparing it now or
+only show its Obsidian draft location. Only viewing starts no generation and leaves
+Learn inactive, so chat cannot resume it. `/scholar learn "9.3" continue` skips the
+question; without an interactive UI, reopening only shows the draft. Existing
+unanswered questions retain their normal resume behavior. A visible draft is not
+scientific approval or mastery.
 
 Lesson reviewers now receive their required PDF text, rendered pages and crops
 up front. Each batch makes one verdict request, with no model turns spent fetching
@@ -70,9 +72,9 @@ still leave a saved draft awaiting a later retry; they never count as approval.
 
 **A stop is sticky.** Chat messages and input sent by other extensions do not
 clear it or reset the round and time budgets. Reopening an unapproved draft with
-`/scholar learn "9.3"` selects the book but leaves Learn inactive, so chat cannot
-resume preparation. Only `/scholar learn "9.3" continue` starts a fresh, bounded
-preparation attempt.
+`/scholar learn "9.3"` and choosing to only view it leaves Learn inactive, so chat
+cannot resume preparation. Choosing to continue, or `/scholar learn "9.3" continue`,
+starts a fresh, bounded preparation attempt.
 
 `lessonPatch.calloutEdits` replaces one equation or source-figure callout through
 the existing renderers, retaining all other prose and callouts. It requires the

@@ -479,6 +479,19 @@ try {
     assert.equal(h.requests.length,calls);assert.deepEqual(await h.load(),before);
     await handleScholarCommand('learn "1.1" continue',ctx,coordinator);
     assert.equal(generations,1);assert.equal(locks,0);assert.equal(h.session.mode,'learn');
+    for(const [answer,expected] of [['continue',1],['view',0],['cancel',0]]){
+      const prompts=[];let started=0;
+      const uiCtx={hasUI:true,isIdle:()=>true,ui:{notify:message=>notifications.push(message),
+        select:async(title,options)=>{prompts.push({title,options});return answer==='continue'?options[0]:answer==='view'?options[1]:undefined;}}};
+      await handleScholarCommand('learn "1.1"',uiCtx,{...coordinator,startScholarModeTurn:async()=>{started++;}});
+      assert.equal(prompts.length,1,`an interactive reopen asks instead of silently doing nothing (${answer})`);
+      assert.match(prompts[0].title,/1\.1.*not yet approved/);assert.match(prompts[0].options[0],/20 minutes/);
+      assert.equal(started,expected,`reopen answer "${answer}" starts ${expected} turn(s)`);
+      assert.equal(h.session.mode,expected?'learn':undefined);assert.equal(locks,0);
+    }
+    const promptsWithContinue=[];
+    await handleScholarCommand('learn "1.1" continue',{...ctx,hasUI:true,ui:{...ctx.ui,select:async(title)=>{promptsWithContinue.push(title);}}},coordinator);
+    assert.equal(promptsWithContinue.length,0,'explicit continue never asks');assert.equal(generations,2);
   });
   await check("The total Learn deadline stops a long writer, excludes learner waiting, and cannot stop a later session", async()=>{
     const h=await harness();const book=await h.load();

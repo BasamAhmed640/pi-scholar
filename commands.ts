@@ -134,7 +134,7 @@ export function scholarGuide(book?: ScholarBook): string {
     "  Open or switch textbooks from your configured PDF library. Run bare to browse all available books in a selector, or specify a partial title to jump directly.",
     "",
     "• /scholar learn <chapter/section>",
-    '  Guided study with source-grounded explanations and checks. Reopening a saved unfinished lesson shows its draft immediately. Use /scholar learn "1.1" continue to resume preparation explicitly. Pending unanswered questions resume unchanged.',
+    '  Guided study with source-grounded explanations and checks. Reopening a saved unfinished lesson asks whether to continue preparing it or only show its draft. /scholar learn "1.1" continue resumes preparation without asking. Pending unanswered questions resume unchanged.',
     "",
     "• /scholar exam <scope>",
     '  Answer an exam in Obsidian. Specify chapters (e.g. "1-3", "1, 2", or "all"), or reopen an exam by ID. Run bare (/scholar exam) to resume an in-progress exam or begin a new one.',
@@ -512,8 +512,16 @@ export async function handleScholarCommand(
         });
         book = mutation.book;
         const section = findSection(book, selected.id)!;
-        if (!parsed.continue && !section.attempts.some(attempt => attempt.outcome === "pending")
-          && section.transcript.some(entry => entry.lesson && entry.markdown.trim()) && !lessonReady(section, book.source.fingerprint.sha256)) {
+        const unapprovedDraft = !section.attempts.some(attempt => attempt.outcome === "pending")
+          && section.transcript.some(entry => entry.lesson && entry.markdown.trim()) && !lessonReady(section, book.source.fingerprint.sha256);
+        let continuePreparation = parsed.continue === true;
+        if (unapprovedDraft && !continuePreparation && ctx.hasUI && typeof ctx.ui.select === "function") {
+          // Never leave an interactive reopen silently doing nothing: the learner chooses.
+          const resume = "Continue preparing it now (stops after 20 minutes or 3 review rounds)";
+          const view = "Only show the saved draft (no generation)";
+          continuePreparation = await ctx.ui.select(`${sectionLabel(book, section)} has a saved draft that is not yet approved.`, [resume, view]) === resume;
+        }
+        if (unapprovedDraft && !continuePreparation) {
           // Select the book without entering Learn: no Learn instructions or write/review
           // actions, so ordinary chat cannot quietly resume preparation of this draft.
           await coordinator.activateBook(book, ctx);
