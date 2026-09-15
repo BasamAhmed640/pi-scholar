@@ -1,5 +1,5 @@
 import { relative, resolve } from "node:path";
-import { latestAttemptForKind, latestAttemptForObjectiveCheck, sectionCompletionBlockers } from "../domain.ts";
+import { answeredQuickQuestions, latestAttemptForKind, QUICK_QUESTIONS, sectionCompletionBlockers } from "../domain.ts";
 import { transcriptBlock } from "../note-records.ts";
 import { callout } from "./callouts.ts";
 import { chapterNotePath, sectionNotePath, snapshotAssetPath } from "../obsidian-paths.ts";
@@ -183,26 +183,17 @@ export function renderSection(config: ScholarConfig, book: ScholarBook, chapter:
   const notePath = sectionNotePath(config, book, chapter, section);
   const chapterLabel = chapter.number ? `Chapter ${chapter.number}: ${chapter.title}` : chapter.title;
   const covered = new Set(section.coveredObjectives);
-  const passed = passedCheckKinds(section);
   const remaining = section.status === "complete" || section.status === "not-started" ? [] : sectionCompletionBlockers(section);
-  const pendingChecks = section.objectiveChecks?.length
-    ? section.objectiveChecks.reduce((count, { objective, checks }) => count + checks.filter(kind => latestAttemptForObjectiveCheck(section, objective, kind)?.outcome !== "pass").length, 0)
-    : section.requiredChecks.filter(kind => !passed.has(kind)).length;
+  const answered = Math.min(answeredQuickQuestions(section), QUICK_QUESTIONS);
+  const pendingChecks = section.status === "complete" ? 0 : QUICK_QUESTIONS - answered;
+  const checks = section.status === "not-started" ? [] : [`Short questions answered: ${answered} of ${QUICK_QUESTIONS}`];
   const lessonProgress = remaining.includes("complete saved instructional lesson") ? "Lesson in progress" : "Lesson saved";
-  // The objective/check table already identifies missing assessment evidence.
+  // The Learning record already reports short-question progress.
   // Keep any other blockers inspectable without repeating long objectives above the lesson.
-  const otherRemaining = remaining.filter(item => !/^(?:conceptual|application|computation|discrimination) evidence for: /.test(item));
+  const otherRemaining = remaining.filter(item => !/^(?:conceptual|application|computation|discrimination) evidence for: /.test(item) && !/more short questions?$/.test(item));
   const objectives = section.objectives.length ? [
     "| Objective | Teaching coverage |", "| --- | --- |",
     ...section.objectives.map((objective) => `| ${tableText(objective)} | ${covered.has(objective) ? "Taught" : "Not yet taught"} |`),
-  ] : [];
-  const checks = section.objectiveChecks?.length ? [
-    "| Objective | Understanding check | Result |", "| --- | --- | --- |",
-    ...section.objectiveChecks.flatMap(({ objective, checks }) => checks.map(kind =>
-      `| ${tableText(objective)} | ${tableText(titleCase(kind))} | ${latestAttemptForObjectiveCheck(section, objective, kind)?.outcome === "pass" ? "Demonstrated" : "Not yet demonstrated"} |`)),
-  ] : section.requiredChecks.length ? [
-    "| Understanding check | Result |", "| --- | --- |",
-    ...section.requiredChecks.map((kind) => `| ${tableText(titleCase(kind))} | ${passed.has(kind) ? "Demonstrated" : "Not yet demonstrated"} |`),
   ] : [];
   const authored = transcriptBlock(section.transcript || [], section.attempts).trim();
   const lesson = authored ? authored.split("\n") : [];
@@ -210,18 +201,7 @@ export function renderSection(config: ScholarConfig, book: ScholarBook, chapter:
   const keyPoints = uniqueSupplementLines(section.keyPoints, [...lesson, ...summary]);
   const pitfalls = uniqueSupplementLines(section.misconceptions, [...lesson, ...summary, ...keyPoints]);
   const current = book.currentSectionId === section.id;
-  const commitWarnings: string[] = [];
-  if (section.lessonCommit && section.learnQuality?.reviews) {
-    for (const review of section.learnQuality.reviews) {
-      if (review.failure) {
-        commitWarnings.push(`> [!warning] Not independently reviewed: ${review.role} (${review.failure.code})`);
-      }
-      if (review.role === "visual" && review.findings.some(f => f.issue === "Figures were not visually checked (text-only model).")) {
-        commitWarnings.push("> [!warning] Figures were not visually checked (text-only model).");
-      }
-    }
-  }
-  const lessonLines = commitWarnings.length ? [...commitWarnings, "", ...lesson] : lesson;
+  const lessonLines = lesson;
   const content = [
     ...(lessonLines.length ? block("## Lesson", lessonLines) : [section.synthesis?.trim()
       ? "A recap is saved below. The full explanation has not been saved yet."
@@ -245,7 +225,7 @@ export function renderSection(config: ScholarConfig, book: ScholarBook, chapter:
   ]), [
     `*${statusLabel(section.status)}${current ? " · Current section" : ""} · ${pageRange(section.startPage, section.endPage)}*`, "",
     ...(section.status === "complete" ? ["**Section complete.** Reopen for practice anytime; practice does not change your earned completion.", ""]
-      : section.status !== "not-started" ? [`**Progress:** ${lessonProgress}${pendingChecks ? ` · ${pendingChecks} understanding ${pendingChecks === 1 ? "check" : "checks"} remaining` : ""}. Details are in the Learning record below.`, ""] : []),
+      : section.status !== "not-started" ? [`**Progress:** ${lessonProgress}${pendingChecks ? ` · ${pendingChecks} short ${pendingChecks === 1 ? "question" : "questions"} remaining` : ""}. Details are in the Learning record below.`, ""] : []),
     wikiLink(notePath, chapterNotePath(config, book, chapter), chapterLabel), "",
     ...(content.some((line) => line.trim()) ? content : ["This section is ready. Notes will appear as you work through it."]),
   ].join("\n"));

@@ -27,12 +27,19 @@ export const QUESTION_ENGINE_POLICY = `Question engine (general, concept-centere
 9. After an attempt, identify the first decisive error, contrast the learner's model with the correct model, give the concise correct reasoning, extract a transferable lesson, and use a fresh near-transfer retry when repair is needed.
 10. Never infer deep mastery from one familiar item. Important concepts should eventually survive discrimination, independent generation, and changed-context transfer.`;
 
+const SHORT_QUESTION_POLICY = `Short questions (Learn and Tutor are answered in a terminal):
+- One question tests one idea from the saved explanation. One part only.
+- The answer is a choice, a number with units, or one short sentence, answerable in about two minutes. Prefer multiple choice with three or four plausible options and no all/none-of-the-above.
+- Never ask for a derivation, proof, sketch, table or multi-part (a)/(b) answer. Put that material in the lesson as a worked example.
+- Solve the question before asking it. Grade against the expected answer, allowing equivalent forms.
+- After an answer, give the correct reasoning in two or three sentences and move on.`;
+
 const QUESTION_GROUNDING_POLICY = `Question safety gate (fairness without reduced rigor):
 - Before every Learn or Tutor question, declare grounding with: purpose (diagnostic, practice, or mastery), one exact competency, observable requiredEvidence, in-scope PDF sourcePages, and basis entries that map one-based required-evidence indexes through supports.
 - A basis is an exact saved objective, an exact saved key-point, or an explicit prerequisite. Label each prerequisite ordinary or source-declared; source-declared prerequisites must cite one of sourcePages. Never disguise a book-specific fact, later-section fact, unintroduced notation, or answer-bearing insight as ordinary knowledge.
-- Practice and mastery evidence must each link to an explanation actually saved in the current visible note. A synthesis, declared key point, or covered-objective label alone is not evidence of delivery. Diagnostic questions may precede teaching, but need either taught material or a source-declared in-scope basis. If the gate rejects an item, save the missing explanation or correct the receipt and retry at equal rigor.
-- The gate constrains relevance and fairness—not cognitive demand. Continue to require difficult model selection, chained reasoning, computation, misconception discrimination, independent generation, and novel transfer whenever the competency warrants them.
-- Only purpose=mastery can satisfy a Learn completion check, and only for the objectives its required evidence actually tests. Diagnostic and practice attempts guide adaptation but never certify mastery. Do not certify unrelated computational skills from a conceptual recognition item.
+- Practice and mastery evidence must each link to an explanation actually saved in the current visible note. A synthesis, declared key point, or covered-objective label alone is not evidence of delivery. Diagnostic questions may precede teaching, but need either taught material or a source-declared in-scope basis. If the gate rejects an item, save the missing explanation or correct the receipt and retry.
+- The gate checks relevance and fairness only. Keep Learn and Tutor questions short.
+- Learn's short questions use purpose=mastery. Diagnostic questions do not count toward them.
 - Multiple choice must pass scholar_quiz's gate before its picker opens. For an open response, first call scholar action=assess with outcome=pending plus kind, question, grounding, expectedAnswer, and criteria; establish expected reasoning before presenting the exact approved question. Resolve it later with attemptId, outcome, feedback, and evaluation.criteria: for each criterionIndex record met and evidence as an exact short excerpt from the actual learner response. For an attached-photo answer, use its one-based imageIndex and describe the visible evidence instead. Text excerpts and image references are validated transiently, not saved in the note. A legacy pending open question may receive its missing expectedAnswer and criteria using its attemptId with outcome=pending; keep its exact prompt and wait for a fresh response before grading. Closing or stopping pauses a question; cancel it only when the learner explicitly asks to cancel or skip it. Grade against the frozen criteria while allowing valid alternative methods. Wait for an actual response: never create a grade because an explanation was delivered or a question was displayed. Never present an unapproved graded open question.`;
 
 const TEACHING_ENGINE_POLICY = `Teaching engine (guided mastery with fading support):
@@ -40,7 +47,7 @@ const TEACHING_ENGINE_POLICY = `Teaching engine (guided mastery with fading supp
 - Model expert decisions, not only algebraic steps: system boundary, knowns, governing principle, selection cues, assumptions, competing methods, and checks.
 - Use the smallest sufficient path through worked example, completion problem, partial scaffold, independent application, and transfer. Do not force every stage when evidence already supports skipping it.
 - Require connections among words, equations, diagrams, graphs, tables, or data when the source uses them.
-- After an error: summarize the approach neutrally, locate the first decisive error, explain the violated principle, contrast models, repair, and retry with a parallel problem.
+- After an error: name the first decisive mistake and give the correct reasoning briefly. Do not add a retry question unless the learner asks.
 - A section is a complete reading replacement only after every source-grounded objective and essential figure/equation has been covered. Concision may remove repetition, never primary knowledge.`;
 
 const EXPLANATION_POLICY = `Explanation quality (precision with fewer assumed prerequisites):
@@ -50,7 +57,7 @@ const EXPLANATION_POLICY = `Explanation quality (precision with fewer assumed pr
 - Organize connected prose into meaningful topical units. Use a worked example when it clarifies an important decision: explain the choice of model or operation, the intermediate reasoning, the result, and a check or interpretation. Where useful, carry the same source example through related results; label any added, checked calculation as a worked application. Keep scientific names and precise notation once explained; remove repeated summaries and administrative objective announcements.
 - Check interpretive prose independently of formula transcription: which quantities stay fixed, which change, what a sign means, and which limits the assumptions allow. Do not imply that every quantity in a grouped equation shares the same dependence. For example, at a stationary interface the source frequency stays fixed while speed and wavelength can change. Explain a quantity's physical role, not just its technical name; later sections need brief prerequisite reminders, not a retelling of earlier chapters.
 - Use an analogy only when a specific correspondence makes the idea easier to understand. Explain that correspondence and its relevant limits, then return to the actual source model or mathematics. Analogies, examples, tables, and diagrams are choices, not quotas.
-- Before finalizing, perform one focused editorial review against the inspected source and the intended reader: find undefined terms, unexplained symbols, missing reasoning, omitted primary content, misleading analogies, and figures without an interpretation. Repair the specific passages in the saved lesson. Independent Learn reviewers then inspect the saved draft; they do not replace your responsibility as author. If the source is unclear, say what remains uncertain rather than filling a gap with an unsupported claim.`;
+- Before finalizing, perform one focused editorial review against the inspected source and the intended reader: find undefined terms, unexplained symbols, missing reasoning, omitted primary content, misleading analogies, and figures without an interpretation. Repair the specific passages in the saved lesson. If the source is unclear, say what remains uncertain rather than filling a gap with an unsupported claim.`;
 
 const PRESENTATION_POLICY = `Native Obsidian presentation (formatting only):
 - Typeset mathematics with LaTeX: use $...$ for inline notation and paired $$ delimiters on separate lines for central displayed equations, including inside callouts. Never put mathematical equations or symbols in code backticks; code formatting is reserved for actual code. Use vector and unit-vector notation where the source requires it. Lesson units belong under the note's existing Lesson heading: begin their topical headings at ###, without another H1 or a second Lesson heading.
@@ -67,7 +74,6 @@ export function learnInstructions(book: ScholarBook, section: ScholarSection | u
     : `This book has no active Learn section. Build and verify its source outline first.`;
   const lastAssistant = section?.transcript.filter((entry) => entry.kind === "assistant").at(-1)?.markdown;
   const pending = unansweredQuestionMessage(section?.attempts || []);
-  const continueCommand = `/scholar learn "${section ? section.number || section.id : "<section>"}" continue`;
   const resume = lastAssistant ? `Last durable assistant synthesis (resume orientation only): ${lastAssistant.slice(0, 1200)}` : "No prior assistant lesson is stored for this section.";
   return `Scholar Learn mode is active for ${book.metadata.title}. ${location}
 ${section ? `Authoritative progress: ${sectionProgressMessage(section)}` : ""}
@@ -84,7 +90,7 @@ ${EXPLANATION_POLICY}
 
 ${PRESENTATION_POLICY}
 
-${QUESTION_ENGINE_POLICY}
+${SHORT_QUESTION_POLICY}
 
 ${QUESTION_GROUNDING_POLICY}
 
@@ -97,12 +103,10 @@ Learn-mode contract:
 - Learn's main deliverable is a complete, understandable replacement for the selected section before its confirmation questions. Save the lesson in readable topical units; do not interrupt initial delivery with compulsory quizzes or a diagnostic detour. A learner-requested diagnostic remains possible. Reading every page and saving every crop is source preparation, not evidence that the learner received an explanation.
 - Save each actual explanation explicitly with scholar action=notes and lesson={id,title,markdown,objectives,keyPoints,sourcePages}. Use a stable id for identical retries; to revise after review, first read status with lessonId and include its current expectedContentHash; associate only objectives and key points the unit genuinely explains, with the PDF pages supporting them. Terminal prose and notes.synthesis do not replace this operation. Keep synthesis as a concise recap. Omit repeated boilerplate such as "What you established" or objective/check records; Obsidian already presents those records.
 - For a targeted repair, use notes.lessonPatch with the current id/expectedContentHash from status. edits:[{oldText,newText}] changes unique prose. To replace ONE complete equation callout, use calloutEdits:[{oldText,equation:{...all fields of that equation, preserving its existing id}}]. For a replacement crop, use calloutEdits:[{oldText,snapshotId,replacesSnapshotId}], then update figureReviews. oldText is the entire exact saved callout, not a substring. Other callouts remain unchanged. Update changed coverage evidence with coverageUpdates. Do not rewrite the full lesson for local corrections.
-- An execution failure (provider, timeout, evidence or limit) stops this generation. Preserve the current draft and successful reviews; do not automatically retry, revise optional advice, or start another question. A stop is not cleared by chat: Scholar actions other than status stay blocked until the learner runs ${continueCommand}. After that command, inspect status and retry the unchanged draft first when only execution failures remain. Repeated lessonComplete submissions rejected for delivery gaps also stop preparation, so fix every named gap before resubmitting. Separate real blocking content findings from optional advice and stale findings attached to an older content hash. Learn preparation has a 20-minute total work ceiling; it can stop before the maximum three review rounds.
-- Complete the source-grounded explanations of every objective and essential equation/figure, perform the focused editorial review, and save repairs before setting notes.lessonComplete=true. For new Learn deliveries this automatically runs independent source, teaching and math/visual reviews in parallel, using the current Pi model and its supported thinking level. They inspect actual source pages/crops and saved explanations. Read their concrete findings, repair the affected passages with current expectedContentHash, update the checklist's exact evidence and resubmit. At most three review rounds run per explicit Learn activation; after persistent failure, stop and tell the learner what remains unresolved. An interrupted, stale or unavailable review is never approval. Only a successful tool result commits delivery; this does not award mastery. Then begin the planned confirmation questions. An independent assessment reviewer checks each new proposed question before it is saved or shown; resume an existing unanswered question unchanged. If interrupted, continue or revise the units still needed; do not erase already saved explanations or restore deleted content from chat.
-- Plan notes.objectiveChecks before confirmation: associate each exact objective with the check kinds needed to demonstrate it (conceptual, application, computation, or discrimination). Choose from the competency and source demands; do not require all four kinds mechanically or weaken the plan to declare completion. Connect teaching coverage to the saved notes.lesson units, and set lessonComplete only when the entire explanation, recap, and objective check plan are ready.
-- Each planned check can use a source-grounded multiple-choice or open-response question. Set scholar_quiz kind explicitly to conceptual, application, computation, or discrimination; difficulty is a separate rigor label. Choose open response when independent reasoning or derivation is the evidence needed. Completion requires the complete explanation and recap, full objective and figure coverage, and passing mastery evidence for each objective's planned checks. Required-evidence mappings must test the objective they certify.
-- Read the authoritative progress returned by notes, assess, and scholar_quiz. Never announce completion unless it says Section complete. Diagnostic and practice results cannot satisfy missing mastery checks. Once complete, all later questions are practice only and must not reset completion.
-- A miss or 'I don't know' is neutral evidence. Repair only the revealed gap and ask a fresh parallel item.
+- When every objective, essential equation and figure is explained and the recap is saved, set notes.lessonComplete=true. Scholar checks the coverage checklist automatically and saves the lesson immediately; there is no review step. If it names gaps, fix exactly those gaps and resubmit.
+- After the lesson is saved, ask exactly 3 short questions, one at a time, with grounding purpose=mastery. Mix kinds (conceptual, computation, application) as the section allows.
+- After each answer, give brief feedback and move on. Do not add follow-up or retry questions. If the learner skips, cancel the question; a skipped question counts.
+- Read the progress returned by notes, assess and scholar_quiz. Never announce completion unless it says Section complete. Later questions are practice only, when the learner asks.
 - Stop after the current section is established. Do not silently advance multiple sections.`;
 }
 
@@ -147,7 +151,7 @@ ${EXPLANATION_POLICY}
 
 ${PRESENTATION_POLICY}
 
-${QUESTION_ENGINE_POLICY}
+${SHORT_QUESTION_POLICY}
 
 ${QUESTION_GROUNDING_POLICY}
 

@@ -71,13 +71,6 @@ for(const updates of [[{id:'unknown',evidence:explanation}],[{id:delivered[0].id
 }
 assert.deepEqual(check(updatedEvidence),[]);
 
-assert(check(delivered, { objectiveChecks: [{ objective, checks: ["conceptual"] }] }).some(issue => /application or computation/.test(issue)));
-assert(check(delivered, { objectiveChecks: [{ objective, checks: ["discrimination", "conceptual"] }] }).some(issue => /application or computation/.test(issue)));
-assert(check(delivered, { objectiveChecks: undefined }).some(issue => /application or computation/.test(issue)));
-assert.deepEqual(check(delivered, { objectiveChecks: [{ objective, checks: ["computation"] }] }), []);
-assert.deepEqual(check([{ ...delivered[0], kind: "concept" }], { objectiveChecks: [{ objective, checks: ["conceptual"] }] }), []);
-console.log("[PASS] derivation mastery requires applied reasoning without making every objective use all four checks");
-
 const blocking = { severity: "blocking", target: "lesson-boundary / normal field equation", sourcePages: [184],
   issue: "The lower-face normal is not explained.", repair: "Explain the reversed surface normal before subtracting the fields." };
 const advice = { ...blocking, severity: "advice", issue: "The sentence could be clearer.", repair: "Consider a concrete pillbox example." };

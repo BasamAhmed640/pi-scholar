@@ -95,7 +95,7 @@ try {
 
   const compact = structuredClone(saved);
   sectionOf(compact).transcript = [sectionOf(compact).transcript.at(-1)];
-  sectionOf(compact).attempts = [];
+  sectionOf(compact).attempts = sectionOf(compact).attempts.slice(-3);
   compact.tutorSessions[0].transcript = [compact.tutorSessions[0].transcript.at(-1)];
   compact.tutorSessions[0].attempts = [];
   assert.equal(learnInstructions(saved, sectionOf(saved)), learnInstructions(compact, sectionOf(compact)));

@@ -71,12 +71,13 @@ const targetFor = { learn: section, exam, tutor };
 
 const TEACHING_MARKER = "Teaching engine (guided mastery with fading support)";
 const QUESTION_MARKER = "Question engine (general, concept-centered, evidence-first)";
+const SHORT_QUESTION_MARKER = "Short questions (Learn and Tutor are answered in a terminal)";
 for (const mode of SCHOLAR_MODES) {
   const prompt = modeInstructions(mode, book, targetFor[mode]);
   check(`policies match teaches=${MODE_CAPABILITIES[mode].teaches} for ${mode}`,
     prompt.includes(TEACHING_MARKER) === MODE_CAPABILITIES[mode].teaches,
     MODE_CAPABILITIES[mode].teaches ? "teaching engine present" : "teaching engine absent");
-  check(`${mode} always receives the shared question engine`, prompt.includes(QUESTION_MARKER), "present");
+  check(`${mode} always receives its question policy`, prompt.includes(mode === "exam" ? QUESTION_MARKER : SHORT_QUESTION_MARKER), "present");
 }
 
 // citesLearnObjectives is the rule that keeps Tutor evidence from borrowing

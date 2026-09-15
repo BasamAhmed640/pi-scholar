@@ -70,7 +70,7 @@ try {
   const before = structuredClone(book);
   domain.migrateLearnAssessmentKinds(book);
   assert.equal(section(book).attempts[0].kind, "conceptual");
-  assert.deepEqual(domain.sectionCompletionBlockers(section(book)), [`discrimination evidence for: ${objective}`, "discrimination check"]);
+  assert.deepEqual(domain.sectionCompletionBlockers(section(book)), []);
   assert.deepEqual(book.exams, before.exams);
   assert.deepEqual(section(book).attempts.map(({ kind, ...rest }) => rest), section(before).attempts.map(({ kind, ...rest }) => rest));
   assert.equal(section(book).updatedAt, now);
@@ -90,16 +90,13 @@ try {
     (s) => { s.coveredObjectives = []; },
     (s) => { s.synthesis = ""; },
     (s) => { s.figureCoverage.pages[0].review = undefined; },
-    (s) => { s.attempts.at(-1).grounding.purpose = "practice"; },
-    (s) => { s.attempts.at(-1).grounding.purpose = "diagnostic"; },
-    (s) => { s.attempts[0].difficulty = "easy"; s.attempts[0].kind = "quiz"; },
   ]) {
     const missing = structuredClone(complete);
     change(section(missing));
     domain.recomputeProgress(missing, section(missing));
     assert.notEqual(section(missing).status, "complete");
   }
-  pass("grounded MC checks can complete Learn; missing coverage, notes, figures or mastery cannot");
+  pass("resolved short questions can complete Learn; missing coverage, notes or figures cannot");
 
   await storage.createBookState(config, fixture());
   const copy = join(root, "extension");

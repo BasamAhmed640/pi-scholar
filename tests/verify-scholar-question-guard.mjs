@@ -217,11 +217,20 @@ progressSection.figureCoverage = {
   })),
   boundaryChecked: progressSection.endPage,
 };
+progressSection.attempts.push({
+  id: "mastery-002",
+  kind: "conceptual",
+  format: "open",
+  question: "Second short question",
+  grounding: grounding(),
+  outcome: "pass",
+  createdAt: now,
+});
 recomputeProgress(progressBook, progressSection);
 check("mastery can certify completion", progressSection.status === "complete", `status=${progressSection.status}`);
 
 progressSection.attempts.push({
-  id: "mastery-002",
+  id: "mastery-003",
   kind: "conceptual",
   format: "open",
   question: "Fresh mastery retry",
@@ -230,7 +239,7 @@ progressSection.attempts.push({
   createdAt: now,
 });
 recomputeProgress(progressBook, progressSection);
-check("latest mastery evidence controls status", progressSection.status === "review", `status=${progressSection.status}`);
+check("a later missed question does not demote earned completion", progressSection.status === "complete", `status=${progressSection.status}`);
 
 const legacySection = section();
 const legacyBook = book(legacySection, []);

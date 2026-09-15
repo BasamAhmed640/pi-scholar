@@ -54,14 +54,11 @@ domain.appendTranscript(section.transcript,{id:"echo",kind:"assistant",markdown:
 assert.equal(section.transcript.length,2);
 console.log("[PASS] explicit partial saves, commit, visible-note round trip, idempotent retry and echo deduplication");
 
-section.attempts=[pass("Interpret direction","conceptual","a")];
+section.attempts=[pass("Interpret direction","conceptual","a"),pass("Compute components","computation","b")];
 domain.recomputeProgress(book,section);assert.notEqual(section.status,"complete");
-section.attempts.push(pass("Compute components","computation","b"));
-domain.recomputeProgress(book,section);assert.equal(section.status,"complete");
-section.attempts[0].outcome="review";
 section.attempts.push(pass("Compute components","conceptual","c"));
-domain.recomputeProgress(book,section);assert.notEqual(section.status,"complete");
-console.log("[PASS] competency evidence cannot be borrowed from an unrelated objective");
+domain.recomputeProgress(book,section);assert.equal(section.status,"complete");
+console.log("[PASS] three resolved questions complete the section; two do not");
 
 section.transcript[0].markdown += "\n\nA learner's own clarification.";
 assert(!lesson.lessonReady(section));

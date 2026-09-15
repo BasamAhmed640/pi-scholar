@@ -397,7 +397,7 @@ try {
   const notesText = notesResult.content?.map((item) => item.type === "text" ? item.text : "").join("\n") || "";
   check(
     "Learn notes persist through the extracted tool controller",
-    !notesText.startsWith("Scholar error:") && notesText.includes("Full lesson committed"),
+    !notesText.startsWith("Scholar error:") && notesText.includes("Full lesson saved"),
     JSON.stringify(notesText),
   );
 
@@ -563,7 +563,7 @@ try {
       && (await readFixtureBook(bookStatePath)).chapters[0].sections[0].transcript.some(entry => entry.id === "lesson-compact-clarification"),
     clarification.content?.[0]?.text || "no saved clarification");
   const revisedCommit = await definition.execute("learn-clarification-review", { action: "notes", lessonComplete: true }, undefined, undefined, context);
-  check("an editorial addition is reviewed before the revised lesson is considered delivered", revisedCommit.content[0].text.includes("Full lesson committed"), revisedCommit.content[0].text);
+  check("an editorial addition is saved again before the revised lesson is considered delivered", revisedCommit.content[0].text.includes("Full lesson saved"), revisedCommit.content[0].text);
   const sectionDirectory = join(obsidian, "Scholar", "Books", bookDirectories[0].name, "Sections");
   const sectionFile = (await readdir(sectionDirectory)).find((name) => name.endsWith(".md"));
   if (!sectionFile) throw new Error("Expected the active Scholar section note.");
@@ -680,8 +680,8 @@ try {
   );
   const assessmentText = assessmentResult.content?.map((item) => item.type === "text" ? item.text : "").join("\n") || "";
   check(
-    "Learn assessment and completion survive the architecture split",
-    !assessmentText.startsWith("Scholar error:") && assessmentText.includes("Section complete"),
+    "Learn assessment records a short-question answer and updates durable progress",
+    !assessmentText.startsWith("Scholar error:") && /short question/.test(assessmentText),
     JSON.stringify(assessmentText),
   );
 

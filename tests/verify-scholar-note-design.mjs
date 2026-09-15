@@ -88,12 +88,12 @@ check("Learn puts the full visible lesson first, optional source references next
   assert.equal(note.split("How would halving the rise time change").length - 1, 1);
   assert.ok(note.includes("| Choose a model using propagation delay \\| rise time"));
   assert.ok(note.includes("p0007-snapshot-bbbbbbbbbbbbbbbb.png|640]]") && note.includes("PDF viewer page 7"));
-  assert.ok(note.includes("| Taught |") && note.includes("| Not yet taught |") && note.includes("| Not yet demonstrated |"));
+  assert.ok(note.includes("| Taught |") && note.includes("| Not yet taught |") && note.includes("Short questions answered:"));
   const resolved = renderSection(config, book, chapter, { ...section, attempts: [{
     ...section.attempts[1], format: "open", options: undefined, correctAnswer: undefined,
     grounding: { purpose: "mastery", competency: "Choose the model using relevant timescales.", requiredEvidence: ["Compare propagation delay with rise time."], sourcePages: [7], basis: [{ kind: "objective", value: section.objectives[0], supports: [1] }] },
   }] });
-  assert.ok(resolved.includes("| Demonstrated |"));
+  assert.ok(resolved.includes("Short questions answered: 1 of 3"));
   assert.doesNotMatch(note, /What you established|Established|Teaching record|Assessment record|\[!question\]-/);
   assert.doesNotMatch(note.slice(note.indexOf("## Questions")), /^> \[!\w+\][-+]|\*\*Result:\*\*/m, "feedback is open and the outcome is not repeated");
 });

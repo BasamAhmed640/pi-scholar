@@ -212,9 +212,6 @@ try {
     await coverage.assertLearnFigureCoverage(config, reloaded, active(reloaded));
     assert.ok(storage.isScholarBook(reloaded));
     assert.equal(active(reloaded).learnQuality.version, 1, "fresh fixture uses the current quality contract");
-    assert.deepEqual(active(reloaded).learnQuality.reviews.map(review => review.role), ["source", "teaching", "visual"]);
-    assert.ok(reviewedCrops.has(savedSnapshot.sha256), "visual reviewer must inspect the actual immutable crop");
-    assert.ok([1, 2].every(page => readPages.has(page) && reviewedPages.has(page)));
     assert.deepEqual(active(reloaded).transcript[0].lesson.embeddedSnapshotIds, [savedSnapshot.id]);
     assert.equal(active(reloaded).figureCoverage.pages[1].review.figures[0].snapshotId, savedSnapshot.id);
     imagePath = snapshotAssetPath(config, reloaded, savedSnapshot);
@@ -231,7 +228,11 @@ try {
   });
   await check("new completion requires figures while previously completed legacy work stays complete", async () => {
     const book = await load(), section = active(book);
-    section.attempts = [{ id: "passed-mastery", kind: "conceptual", format: "open", question: "Explain the model.", outcome: "pass", grounding: { purpose: "mastery", competency: "Explain the physical model", requiredEvidence: ["Trace the cause through the source model to an observable effect."], sourcePages: [1], basis: [{ kind: "objective", value: "Explain the physical model", supports: [1] }] }, createdAt: now }];
+    section.attempts = [
+      { id: "passed-mastery", kind: "conceptual", format: "open", question: "Explain the model.", outcome: "pass", grounding: { purpose: "mastery", competency: "Explain the physical model", requiredEvidence: ["Trace the cause through the source model to an observable effect."], sourcePages: [1], basis: [{ kind: "objective", value: "Explain the physical model", supports: [1] }] }, createdAt: now },
+      { id: "passed-mastery-2", kind: "conceptual", format: "open", question: "Explain the model again.", outcome: "pass", grounding: { purpose: "mastery", competency: "Explain the physical model", requiredEvidence: ["Trace the cause through the source model to an observable effect."], sourcePages: [1], basis: [{ kind: "objective", value: "Explain the physical model", supports: [1] }] }, createdAt: now },
+      { id: "passed-mastery-3", kind: "conceptual", format: "open", question: "Explain the model once more.", outcome: "pass", grounding: { purpose: "mastery", competency: "Explain the physical model", requiredEvidence: ["Trace the cause through the source model to an observable effect."], sourcePages: [1], basis: [{ kind: "objective", value: "Explain the physical model", supports: [1] }] }, createdAt: now },
+    ];
     recomputeProgress(book, section);
     assert.equal(section.status, "complete", "a fully reviewed section can complete");
     delete section.figureCoverage;
@@ -289,8 +290,6 @@ try {
     successful(await execute(notes([{ page: 3, observation: "This page contains an uncaptained vector diagram connecting two process boxes.", figures: [{ label: "Uncaptioned vector process diagram", snapshotId: snapshot.id }] }])));
     const reloaded = await load();
     await coverage.assertLearnFigureCoverage(config, reloaded, active(reloaded, 2));
-    assert.ok(reviewedPages.has(3) && readPages.has(3), "vector-only page still reaches real source readers");
-    assert.ok(reviewedCrops.has(snapshot.sha256), "a vector-only crop must also reach independent visual review");
   });
   await check("unmapped chapter context remains readable without adding invalid section receipt pages", async () => {
     let contextBook = structuredClone(initial);

@@ -43,6 +43,7 @@ try {
   const quizSource = await readFile(quizPath, "utf8");
   const questionDefinitions = definitions(source, "QUESTION_ENGINE_POLICY");
   const teachingDefinitions = definitions(source, "TEACHING_ENGINE_POLICY");
+  const shortQuestionDefinitions = definitions(source, "SHORT_QUESTION_POLICY");
 
   check(
     "one question-engine definition",
@@ -54,8 +55,13 @@ try {
     teachingDefinitions.length === 1,
     `${teachingDefinitions.length} TEACHING_ENGINE_POLICY template definition(s) in ${policiesPath}`,
   );
+  check(
+    "one short-question definition",
+    shortQuestionDefinitions.length === 1,
+    `${shortQuestionDefinitions.length} SHORT_QUESTION_POLICY template definition(s) in ${policiesPath}`,
+  );
 
-  if (questionDefinitions.length === 1 && teachingDefinitions.length === 1) {
+  if (questionDefinitions.length === 1 && teachingDefinitions.length === 1 && shortQuestionDefinitions.length === 1) {
     const { createJiti } = await import(pathToFileURL(jitiPath).href);
     const jiti = createJiti(import.meta.url, {
       moduleCache: false,
@@ -66,6 +72,7 @@ try {
     const policies = await jiti.import(policiesPath);
     const questionPolicy = questionDefinitions[0];
     const teachingPolicy = teachingDefinitions[0];
+    const shortQuestionPolicy = shortQuestionDefinitions[0];
     const book = {
       metadata: { title: "Engine Contract Fixture" },
       chapters: [{
@@ -104,9 +111,10 @@ try {
       "the exported runtime value is byte-identical to the single source template",
     );
     for (const mode of ["Learn", "Exam", "Tutor"]) {
-      const count = occurrences(rendered[mode], questionPolicy);
+      const expected = mode === "Exam" ? questionPolicy : shortQuestionPolicy;
+      const count = occurrences(rendered[mode], expected);
       check(
-        `${mode} includes the shared question engine identically`,
+        `${mode} includes its shared question policy identically`,
         count === 1,
         `exact shared template occurrences=${count}`,
       );

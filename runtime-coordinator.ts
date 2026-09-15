@@ -63,7 +63,6 @@ import {
 import { MAX_TOOL_PAGES } from "./tool-contract.ts";
 import {
   createScholarToolController,
-  PROGRESS_STALL_MS,
   type ScholarToolController,
 } from "./tool-controller.ts";
 import {
@@ -578,19 +577,6 @@ export class ScholarRuntimeCoordinator {
       this.loadingRound = 0;
       this.loadingRepair = this.loadingNeedsWriting = false;
       this.loadingSourcePrepared = false;
-      if (newLesson) {
-        const run = this.scholarTurnRun, token = this.loading.token;
-        const releaseInput = run.releaseInput;
-        const deadline = setInterval(() => {
-          if (this.scholarTurnRun !== run || this.loading.token !== token || !this.loading.active) { clearInterval(deadline); return; }
-          if (this.loading.stallElapsedMs >= PROGRESS_STALL_MS) {
-            clearInterval(deadline);
-            this.toolController.stopDelivery(`Scholar stopped: active turn had no progress for 15 minutes. Saved draft preserved; generation stopped. Chat will not resume it. To continue preparation: /scholar learn "${section!.number || section!.id}" continue`, ctx as ExtensionContext);
-          }
-        }, 1000);
-        deadline.unref?.();
-        run.releaseInput = () => { clearInterval(deadline); releaseInput(); };
-      }
     }
     return this.scholarTurnRun;
   }

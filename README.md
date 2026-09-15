@@ -41,6 +41,14 @@ selected PDF library contains the source books, not your learning history.
 
 ## Installation
 
+### Simplified study flow (0.7.0)
+
+A Learn lesson saves as soon as its automatic coverage checklist passes; there is no review step and no reviewer model.
+After the lesson, Learn asks exactly three short questions, one at a time. Answered, missed, or skipped questions all count, and the section is then complete.
+Every Learn and Tutor question is single-part and answerable in a terminal: a choice, a number, or one short sentence. Multi-part derivations belong in the lesson as worked examples.
+Reopening a section resumes it directly, with no dropdown; old notes and pending questions still reopen unchanged.
+Count limits remain (8 rejections in a row and 250 actions); the 15-minute stall stop is removed.
+
 ### One-pass review and loop prevention (0.6.0)
 
 A shared review layer runs exactly one scoped review pass per target across Learn, Tutor, and Exam without iterative rewrite loops.

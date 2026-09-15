@@ -575,71 +575,22 @@ try {
     assert.doesNotMatch(renderExam(h.config, h.book, gradedExam), /### Question/);
   });
 
-  await check("exam review findings stay out of paper and renderExam, and appear in renderExamAnswerKey after grading", async () => {
-    const h = await harness("review-findings", { status: "draft" });
+  await check("exam_build freezes the form without calling a reviewer model", async () => {
+    const h = await harness("no-review", { status: "draft" });
     const simModel = { id: "sim-model", provider: "sim", api: "sim", input: ["text"], contextWindow: 32000, maxTokens: 4096 };
-    const issueText = "Question q1 prompt is missing context.";
+    let reviewerCalls = 0;
     h.context.model = simModel;
-    h.context.modelRegistry = {
-      complete: async () => ({
-        role: "assistant", api: simModel.api, provider: simModel.provider, model: simModel.id,
-        content: [{ type: "text", text: JSON.stringify({
-          status: "changes",
-          findings: [{ severity: "blocking", target: "q1", sourcePages: [1], issue: issueText, repair: "Add context to prompt." }],
-        }) }],
-        stopReason: "stop", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, totalTokens: 150 }, timestamp: Date.now(),
-      }),
-    };
+    h.context.modelRegistry = { complete: async () => { reviewerCalls++; throw new Error("reviewer must not run"); } };
     const draftQuestions = fixture(h.config).exams[0].questions;
-    const reviewRes = await h.execute({ action: "exam_build", questions: draftQuestions });
-    assert.equal(reviewRes.details.tone, "review");
-    const combinedContent = reviewRes.content.map((c) => c.text).join("\n");
-    assert.ok(combinedContent.includes(issueText));
-    const keyMatch = combinedContent.match(/\[F-([a-f0-9]+)\]/);
-    assert.ok(keyMatch, "finding key present in reviewer tool result");
-    const findingKey = keyMatch[1];
-
-    const preDraft = (await h.current()).exams[0];
-    assert.equal(preDraft.status, "draft");
-    assert.doesNotMatch(renderExam(h.config, h.book, preDraft), new RegExp(issueText));
-    assert.doesNotMatch(renderExam(h.config, h.book, preDraft), /\[F-/);
-
-    const buildRes = await h.execute({
-      action: "exam_build",
-      questions: draftQuestions,
-      findingResponses: [{ key: findingKey, action: "fixed", note: "Added required context." }],
-    });
+    const buildRes = await h.execute({ action: "exam_build", questions: draftQuestions });
+    assert.equal(reviewerCalls, 0, "exam_build must not call a reviewer model");
     assert.equal(buildRes.details.action, "exam_build");
-    assert.ok(!["review", "error", "retry"].includes(buildRes.details.tone));
-
+    assert.ok(!["review", "error", "retry"].includes(buildRes.details.tone), buildRes.content[0]?.text);
     const activeExam = (await h.current()).exams[0];
     assert.equal(activeExam.status, "active");
-    const paper = await readFile(h.paperPath, "utf8");
-    assert.doesNotMatch(paper, new RegExp(issueText));
-    assert.doesNotMatch(paper, /\[F-/);
-    assert.doesNotMatch(paper, /Added required context/);
-    const activeExamDoc = renderExam(h.config, h.book, activeExam);
-    assert.doesNotMatch(activeExamDoc, new RegExp(issueText));
-    assert.doesNotMatch(activeExamDoc, /\[F-/);
-
-    await h.fill();
-    h.confirm();
-    await h.command("exam submit");
-    await h.execute({ action: "exam_grade", itemResults: [
-      { questionId: "q1", outcome: "correct", earnedPoints: 2, maxPoints: 2, feedback: "Good." },
-      { questionId: "q2", outcome: "correct", earnedPoints: 2, maxPoints: 2, feedback: "Good." },
-      { questionId: "q3", outcome: "correct", earnedPoints: 5, maxPoints: 5, feedback: "Good." },
-    ] });
-
-    const gradedExam = (await h.current()).exams[0];
-    assert.equal(gradedExam.status, "graded");
-
-    const keyDoc = renderExamAnswerKey(h.config, h.book, gradedExam);
-    assert.ok(keyDoc.includes("> [!note]- Question review"));
-    assert.ok(keyDoc.includes(issueText));
-    assert.ok(keyDoc.includes(`[F-${findingKey}]`));
-    assert.ok(keyDoc.includes("Added required context."));
+    assert.equal(activeExam.review, undefined);
   });
+
 } finally {
   assert.equal(dirname(resolve(root)), resolve(tmpdir())); assert.ok(basename(root).startsWith("scholar-obsidian-exam-"));
   await rm(root, { recursive: true, force: true });

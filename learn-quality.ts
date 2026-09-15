@@ -141,7 +141,6 @@ export function sourceCoverageIssues(value: unknown, context: SourceCoverageCont
       issues.push(`${prefix} needs a saved snapshot ID actually embedded in this lesson unit.`);
     }
   }
-  if (delivered) issues.push(...sourceAssessmentIssues(value, context.objectiveChecks));
   return [...new Set(issues)];
 }
 

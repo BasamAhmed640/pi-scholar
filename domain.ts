@@ -116,14 +116,29 @@ export function sectionCompletionBlockers(section: ScholarSection, sourceHash?: 
     ...(!coverageComplete ? ["teaching coverage for every declared objective"] : []),
     ...(!notesComplete ? ["saved synthesis and key points"] : []),
     ...(!figuresComplete ? ["source-page and figure review"] : []),
-    ...(section.legacyLessonCompletion ? [] : [
-      ...(!lessonReady(section, sourceHash) ? ["complete saved instructional lesson"] : []),
-      ...objectiveMasteryBlockers(section),
-    ]),
-    ...(section.legacyCompletion === true ? [] : requiredChecks(section.requiredChecks)
-      .filter((kind) => latestAttemptForKind(section, kind)?.outcome !== "pass")
-      .map((kind) => `${kind} check`)),
+    ...(section.legacyLessonCompletion || lessonReady(section, sourceHash) ? [] : ["complete saved instructional lesson"]),
+    ...(section.legacyCompletion === true ? [] : quickQuestionBlockers(section)),
   ];
+}
+
+/** Learn ends with a few short questions. Answered, missed or skipped all count. */
+export const QUICK_QUESTIONS = 3;
+
+export function answeredQuickQuestions(section: ScholarSection): number {
+  return (section.attempts || []).filter(attempt => attempt.grounding?.purpose !== "diagnostic" && attempt.outcome !== "pending").length;
+}
+
+export function quickQuestionBlockers(section: ScholarSection): string[] {
+  const left = QUICK_QUESTIONS - answeredQuickQuestions(section);
+  return section.status === "complete" || left <= 0 ? [] : [`${left} more short question${left === 1 ? "" : "s"}`];
+}
+
+/** Learn and Tutor questions are answered in a terminal: one part, short answer. */
+export function assertShortQuestion(text: unknown): void {
+  const question = typeof text === "string" ? text : "";
+  const parts = question.match(/(?:^|\s)\((?:[a-h]|i{1,3}|iv|v)\)\s/gi) || [];
+  if (parts.length >= 2) throw new Error("Ask one part at a time. Learn and Tutor questions must be single-part and answerable in a terminal (a choice, a number, or one short sentence). Put multi-part derivations in the lesson as worked examples.");
+  if (question.length > 600) throw new Error("This question is too long for a terminal. Keep it under 600 characters with one short expected answer.");
 }
 
 /** A pass for one objective never replaces a miss or missing evidence for another. */

@@ -1,5 +1,6 @@
 import {
   appendTranscript,
+  assertShortQuestion,
   compactStrings,
   firstIncomplete,
   learnQuestionGrounding,
@@ -214,7 +215,6 @@ export async function handleAssess(
   mutateBook: MutateBook,
   toolResult: ToolResultFn,
   responseGate?: OpenResponseGate,
-  reviewQuestion?: (attempt: AssessmentAttempt, target: ScholarSection | TutorSession) => Promise<(current: ScholarSection | TutorSession) => void>,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: ToolDetails }> {
   const outcome = params.outcome as AssessmentOutcome | undefined;
   const attemptId = params.attemptId?.trim();
@@ -232,6 +232,7 @@ export async function handleAssess(
     }
 
     const question = prepareOpenQuestionText(params.question);
+    assertShortQuestion(question);
     const openAssessment = prepareOpenAssessment(params.expectedAnswer, params.criteria);
     let grounding = normalizeQuestionGrounding(params.grounding) as QuestionGrounding;
     const preparedId = `assessment-${toolCallId}`;
@@ -263,23 +264,17 @@ export async function handleAssess(
       createdAt: now,
     };
 
-    const targetRecord = session.mode === "tutor"
-      ? book.tutorSessions.find((item) => item.id === session.recordId && item.status === "active")
-      : requireLearnSection(book);
-    const verifyReview = targetRecord && reviewQuestion ? await reviewQuestion(attempt, targetRecord) : undefined;
     await mutateBook(book.id, (state) => {
       const target = session.mode === "tutor"
         ? state.tutorSessions.find((item) => item.id === session.recordId && item.status === "active")
         : findSection(state, sectionId);
       if (!target) throw new Error(`The active ${session.mode} record changed while Scholar prepared the question.`);
       if (session.mode === "learn") {
-        verifyReview?.(target as ScholarSection);
         if (sectionId !== session.recordId) throw new Error("The frozen Learn target changed while Scholar prepared the question.");
         grounding = learnQuestionGrounding(target as ScholarSection, grounding);
         attempt.grounding = grounding;
         assertQuestionGrounding(grounding, state, { mode: "learn", section: target as ScholarSection });
       } else {
-        verifyReview?.(target as TutorSession);
         assertQuestionGrounding(grounding, state, { mode: "tutor", tutor: target as TutorSession });
       }
       const pending = unansweredQuestionMessage(target.attempts);

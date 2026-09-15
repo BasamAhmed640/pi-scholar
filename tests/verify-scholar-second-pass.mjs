@@ -151,8 +151,8 @@ check("DEFECT-03 the section is grandfathered to begin with",
 
 grandfathered.attempts.push(grounded("review"));
 recomputeProgress(legacyBook(grandfathered), grandfathered);
-check("DEFECT-03 a failed review demotes a grandfathered section",
-  grandfathered.status !== "complete" && grandfathered.legacyCompletion === undefined,
+check("DEFECT-03 a resolved question retires the waiver without removing completion",
+  grandfathered.status === "complete" && grandfathered.legacyCompletion === undefined,
   `status=${grandfathered.status}; legacyCompletion=${grandfathered.legacyCompletion}`);
 
 const untouched = legacySection();
