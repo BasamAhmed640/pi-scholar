@@ -113,6 +113,12 @@ const SourceCoverageSchema = Type.Object({
   snapshotId: Type.Optional(Type.String({ description: "ID of a snapshot embedded in this lesson. Required for figure items at completion; other kinds may reference a figure too." })),
 });
 
+export const FindingResponseSchema = Type.Object({
+  key: Type.String({ minLength: 1, maxLength: 64 }),
+  action: Type.Union([Type.Literal("fixed"), Type.Literal("declined")]),
+  note: Type.String({ minLength: 1, maxLength: 600 }),
+});
+
 export const ScholarParams = Type.Object({
   action: Type.Union([
     Type.Literal("read"),
@@ -183,6 +189,7 @@ export const ScholarParams = Type.Object({
   keyPoints: Type.Optional(Type.Array(Type.String())),
   misconceptions: Type.Optional(Type.Array(Type.String())),
   figureReviews: Type.Optional(Type.Array(FigurePageReviewSchema, { maxItems: 200 })),
+  findingResponses: Type.Optional(Type.Array(FindingResponseSchema, { description: "Author responses to specialist review findings: address each blocking finding with action fixed or declined and an explanatory note (1-600 chars)." })),
   kind: Type.Optional(CheckKindSchema),
   format: Type.Optional(Type.Union([Type.Literal("open"), Type.Literal("multiple-choice")])),
   question: Type.Optional(Type.String()),

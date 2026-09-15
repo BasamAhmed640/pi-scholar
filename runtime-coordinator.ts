@@ -63,7 +63,7 @@ import {
 import { MAX_TOOL_PAGES } from "./tool-contract.ts";
 import {
   createScholarToolController,
-  LEARN_WORK_LIMIT_MS,
+  PROGRESS_STALL_MS,
   type ScholarToolController,
 } from "./tool-controller.ts";
 import {
@@ -283,19 +283,55 @@ export class ScholarRuntimeCoordinator {
     this.syncActiveTools();
   }
 
-  /** Remove only our tools, preserving changes made by Pi or other extensions. */
+  private savedHostTools?: string[];
+
+  /** Isolate active tools by removing host tools (bash, read, write, edit) during Scholar mode, restoring them on exit. */
   private syncActiveTools(): void {
     if (!this.scholarToolRegistered && !this.quizRegistered) return;
     const current = this.pi.getActiveTools();
-    const next = current.filter((name) =>
-      !(this.scholarToolRegistered && name === "scholar")
-      && !(this.quizRegistered && name === "scholar_quiz"));
-    if (this.runtimeSession.active) {
+    const modeActive = Boolean(this.runtimeSession.active && this.runtimeSession.mode);
+    const HOST_TOOLS = new Set(["bash", "read", "write", "edit"]);
+
+    if (modeActive) {
+      const hostToolsPresent = current.filter((name) => HOST_TOOLS.has(name));
+      if (hostToolsPresent.length > 0) {
+        this.savedHostTools = hostToolsPresent;
+      }
+      const next = current.filter(
+        (name) =>
+          !HOST_TOOLS.has(name)
+          && !(this.scholarToolRegistered && name === "scholar")
+          && !(this.quizRegistered && name === "scholar_quiz"),
+      );
       if (this.scholarToolRegistered) next.push("scholar");
-      if (this.quizRegistered && modeCan(this.runtimeSession.mode, "assesses")) next.push("scholar_quiz");
-    }
-    if (current.length !== next.length || current.some((name) => !next.includes(name))) {
-      this.pi.setActiveTools(next);
+      if (this.quizRegistered && modeCan(this.runtimeSession.mode, "assesses")) {
+        next.push("scholar_quiz");
+      }
+      if (current.length !== next.length || current.some((name) => !next.includes(name))) {
+        this.pi.setActiveTools(next);
+      }
+    } else {
+      const remaining = current.filter(
+        (name) =>
+          !(this.scholarToolRegistered && name === "scholar")
+          && !(this.quizRegistered && name === "scholar_quiz"),
+      );
+      let next: string[];
+      if (this.savedHostTools !== undefined) {
+        next = [...this.savedHostTools];
+        for (const tool of remaining) {
+          if (!next.includes(tool)) next.push(tool);
+        }
+        this.savedHostTools = undefined;
+      } else {
+        next = remaining;
+      }
+      if (this.runtimeSession.active && this.scholarToolRegistered && !next.includes("scholar")) {
+        next.push("scholar");
+      }
+      if (current.length !== next.length || current.some((name) => !next.includes(name))) {
+        this.pi.setActiveTools(next);
+      }
     }
   }
 
@@ -547,9 +583,9 @@ export class ScholarRuntimeCoordinator {
         const releaseInput = run.releaseInput;
         const deadline = setInterval(() => {
           if (this.scholarTurnRun !== run || this.loading.token !== token || !this.loading.active) { clearInterval(deadline); return; }
-          if (this.loading.workElapsedMs >= LEARN_WORK_LIMIT_MS) {
+          if (this.loading.stallElapsedMs >= PROGRESS_STALL_MS) {
             clearInterval(deadline);
-            this.toolController.stopDelivery(`Learn reached its 20-minute work limit. Saved draft preserved; generation stopped. Chat will not resume it. To continue preparation: /scholar learn "${section!.number || section!.id}" continue`, ctx as ExtensionContext);
+            this.toolController.stopDelivery(`Scholar stopped: active turn had no progress for 15 minutes. Saved draft preserved; generation stopped. Chat will not resume it. To continue preparation: /scholar learn "${section!.number || section!.id}" continue`, ctx as ExtensionContext);
           }
         }, 1000);
         deadline.unref?.();

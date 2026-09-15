@@ -47,6 +47,9 @@ export type ReviewerLimits = {
   timeoutMs: number;
 };
 
+export const REVIEW_STALL_MS = 180_000;
+export const REVIEW_BACKSTOP_MS = 45 * 60_000;
+
 export const DEFAULT_REVIEWER_LIMITS: Readonly<ReviewerLimits> = Object.freeze({
   maxTurns: 16,
   maxToolCalls: 48,
@@ -58,7 +61,7 @@ export const DEFAULT_REVIEWER_LIMITS: Readonly<ReviewerLimits> = Object.freeze({
   maxOutputTokens: 12_000,
   maxTotalOutputTokens: 96_000,
   maxResponseChars: 360_000,
-  timeoutMs: 12 * 60_000,
+  timeoutMs: REVIEW_BACKSTOP_MS,
 });
 
 export type ReviewerRunOptions = {
@@ -170,11 +173,15 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
     throw new ReviewerRunError("configuration", "A review requires a role, selected model, active registry, vault scope and prompt.");
   }
   if (options.prompt.length > limits.maxPromptChars) limitError("The review draft exceeds the bounded prompt size; split its review scope.");
-  const modelWindow = options.model.contextWindow;
-  const modelOutput = options.model.maxTokens;
-  if (!Number.isSafeInteger(modelWindow) || modelWindow < 4096 || !Number.isSafeInteger(modelOutput) || modelOutput < 256) {
-    throw new ReviewerRunError("configuration", "The selected model must declare usable context and output limits.");
-  }
+  const modelWindow = (Number.isSafeInteger(options.model.contextWindow) && options.model.contextWindow! >= 4096)
+    ? options.model.contextWindow!
+    : 32_000;
+  const declaredOutput = (Number.isSafeInteger(options.model.maxTokens) && options.model.maxTokens! >= 256)
+    ? options.model.maxTokens!
+    : 16_000;
+  const maxOutputTokens = Math.min(declaredOutput, 128_000);
+  const maxTotalOutputTokens = 2 * maxOutputTokens;
+  const modelOutput = maxOutputTokens;
   if (options.thinkingLevel !== undefined && (!["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(options.thinkingLevel)
       || typeof options.modelRegistry.getProvider !== "function" || typeof options.modelRegistry.getApiKeyAndHeaders !== "function")) {
     throw new ReviewerRunError("configuration", "Preserving review reasoning requires Pi's active provider and registry authentication methods.");
@@ -216,6 +223,7 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
   let lastInputTokens = 0;
   let lastContextChars = 0;
   let lastContextImages = 0;
+  let attemptedJsonRecovery = false;
   const usedCallIds = new Set<string>();
   const context: Context = {
     systemPrompt: `${SYSTEM_PROMPT}\nAssigned role: ${options.role}.`,
@@ -260,7 +268,7 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
         Math.ceil(chars / 2) + images * 8192,
         lastInputTokens + Math.ceil(Math.max(0, chars - lastContextChars) / 2) + Math.max(0, images - lastContextImages) * 8192,
       );
-      const remainingOutput = limits.maxTotalOutputTokens - outputTokens;
+      const remainingOutput = Math.min(limits.maxTotalOutputTokens, maxTotalOutputTokens) - outputTokens;
       const maxTokens = Math.min(limits.maxOutputTokens, modelOutput, remainingOutput);
       // Some providers add their thinking budget to the requested answer cap.
       const reservedOutput = Math.min(modelOutput, maxTokens + (thinkingLevel && thinkingLevel !== "off" ? 16_384 : 0));
@@ -275,7 +283,23 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
         // cache. Use Pi's portable HTTP stream option where the provider supports it.
         const requestOptions = { signal, maxTokens, timeoutMs: limits.timeoutMs, maxRetries: 0, sessionId: requestSessionId, transport: "sse" as const };
         if (thinkingLevel === undefined) {
-          response = await abortable(options.modelRegistry.complete(options.model, context, requestOptions), signal);
+          let stallTimer: NodeJS.Timeout | undefined;
+          const stallPromise = new Promise<never>((_, reject) => {
+            stallTimer = setTimeout(() => {
+              const err = new ReviewerRunError("timeout", "Reviewer stalled: no stream events for 180s");
+              controller.abort(err);
+              reject(err);
+            }, REVIEW_STALL_MS);
+            stallTimer.unref?.();
+          });
+          try {
+            response = await abortable(
+              Promise.race([options.modelRegistry.complete(options.model, context, requestOptions), stallPromise]),
+              signal,
+            );
+          } finally {
+            if (stallTimer) clearTimeout(stallTimer);
+          }
         } else {
           // ModelRegistry.complete uses native raw API options. The supported
           // composed provider's simple interface performs the reasoning mapping;
@@ -290,6 +314,22 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
             ...requestOptions, apiKey: auth.apiKey, headers: auth.headers, env: auth.env,
             reasoning: thinkingLevel === "off" ? undefined : thinkingLevel,
           });
+          let stallTimer: NodeJS.Timeout | undefined;
+          let stallReject: ((reason?: unknown) => void) | undefined;
+          const stallPromise = new Promise<never>((_, reject) => {
+            stallReject = reject;
+          });
+          const resetStallTimer = () => {
+            if (stallTimer) clearTimeout(stallTimer);
+            stallTimer = setTimeout(() => {
+              const err = new ReviewerRunError("timeout", "Reviewer stalled: no stream events for 180s");
+              controller.abort(err);
+              stallReject?.(err);
+            }, REVIEW_STALL_MS);
+            stallTimer.unref?.();
+          };
+          resetStallTimer();
+
           // Observe liveness without retaining or exposing reasoning text. The
           // same stream supplies the final verdict; this creates no extra call.
           const observe = async () => {
@@ -299,14 +339,25 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
             while (!signal.aborted) {
               const next = await abortable(iterator.next(), signal);
               checkActive();
-              if (next.done) return;
+              if (next.done) {
+                if (stallTimer) clearTimeout(stallTimer);
+                return;
+              }
+              resetStallTimer();
               if (Date.now() - last >= 1000 && ["thinking_delta", "text_delta", "toolcall_delta"].includes(next.value.type)) {
                 last = Date.now();
                 progress("stream", next.value.type === "thinking_delta" ? "reasoning" : "writing verdict");
               }
             }
           };
-          [response] = await abortable(Promise.all([stream.result(), observe()]), signal);
+          try {
+            [response] = await abortable(Promise.all([
+              Promise.race([stream.result(), stallPromise]),
+              observe(),
+            ]), signal);
+          } finally {
+            if (stallTimer) clearTimeout(stallTimer);
+          }
         }
       } catch (error) {
         if (signal.aborted) errorFromAbort(signal);
@@ -339,7 +390,15 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
         const text = response.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
         let verdict: ReviewerVerdict;
         try { verdict = parseReviewerVerdict(text); }
-        catch (error) { throw new ReviewerRunError("invalid-output", "The reviewer verdict was malformed; no approval was recorded.", error); }
+        catch (error) {
+          if (!attemptedJsonRecovery && turn < limits.maxTurns) {
+            attemptedJsonRecovery = true;
+            context.messages.push(response);
+            context.messages.push({ role: "user", content: "Return only the JSON verdict object.", timestamp: Date.now() });
+            continue;
+          }
+          throw new ReviewerRunError("invalid-output", "The reviewer verdict was malformed; no approval was recorded.", error);
+        }
         progress("complete");
         checkActive();
         return verdict;

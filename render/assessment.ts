@@ -8,6 +8,7 @@ import {
   tutorNotePath,
 } from "../obsidian-paths.ts";
 import { EXAM_PAPER_COMPLETE, examAnswerRegionLines, examFormFingerprint, examQuestionLines } from "../exam.ts";
+import { computeFindingKey } from "../learn-quality.ts";
 import { callout } from "./callouts.ts";
 export { examQuestionLines } from "../exam.ts";
 import type {
@@ -208,6 +209,25 @@ export function renderExamAnswerKey(config: ScholarConfig, book: ScholarBook, ex
     ...block("## Every question", ordered.flatMap(({ question, index }, position) => [
       ...(position ? [""] : []), ...gradedQuestionLines(question, byId.get(question.id), index, referencedFigureLines(config, book, notePath, question.prompt, exam.snapshots || [])),
     ])),
+    ...(exam.review && (exam.review.receipts.length || exam.review.responses.length) ? [
+      "",
+      "> [!note]- Question review",
+      ...exam.review.receipts.flatMap((receipt) => {
+        const responsesByKey = new Map((exam.review?.responses || []).map((r) => [r.key, r]));
+        const lines: string[] = [];
+        for (const finding of receipt.findings) {
+          const key = computeFindingKey(receipt.role, finding);
+          const response = responsesByKey.get(key);
+          lines.push(`> - **[F-${key}]** (${receipt.role}: ${finding.severity}) ${finding.issue}`);
+          if (finding.repair) lines.push(`>   Repair: ${finding.repair}`);
+          if (response) lines.push(`>   Response (${response.action}): ${response.note}`);
+        }
+        if (receipt.failure) {
+          lines.push(`> - **Review warning** (${receipt.role}): Not independently reviewed (${receipt.failure.code}): ${receipt.failure.message}`);
+        }
+        return lines;
+      }),
+    ] : []),
   ].join("\n"));
 }
 
@@ -260,7 +280,15 @@ export function renderTutorSession(config: ScholarConfig, book: ScholarBook, ses
       : session.scope.chapterIds.length ? session.scope.chapterIds.includes(chapter.id) : true;
     return selected ? section.snapshots || [] : [];
   }));
+  const commitWarnings: string[] = [];
+  for (const review of session.review?.receipts || []) {
+    if (review.failure) {
+      commitWarnings.push(`> [!warning] Not independently reviewed: ${review.role} (${review.failure.code})`);
+    }
+  }
   const content = [
+    ...commitWarnings,
+    ...(commitWarnings.length ? [""] : []),
     ...(lesson.length ? block("## Lesson", lesson) : [session.synthesis?.trim()
       ? "A recap is saved below. The full explanation has not been saved yet."
       : "This session is ready. The lesson and practice will appear as you work.", ""]),

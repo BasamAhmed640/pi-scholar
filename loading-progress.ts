@@ -50,6 +50,11 @@ export class ScholarLoadingProgress {
   get token(): symbol | undefined { return this.run?.token; }
   /** Shared work clock excludes learner input even in headless integrations. */
   get workElapsedMs(): number { return this.elapsed(); }
+  get stallElapsedMs(): number {
+    const run = this.run;
+    if (!run || !this.active || run.pausedAt !== undefined) return 0;
+    return Math.max(0, this.now() - run.lastActivity);
+  }
 
   start(ctx: ProgressContext, title: string, stages: readonly string[], carryElapsed = false): symbol {
     const elapsed = carryElapsed && this.active ? this.elapsed() : 0;

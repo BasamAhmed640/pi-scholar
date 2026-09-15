@@ -22,7 +22,7 @@ const jiti = createJiti(import.meta.url, { moduleCache: false, alias: { ...sdkAl
 const extension = dirname(process.env.PI_SCHOLAR_EXTENSION || packagedExtensionPath);
 const mod = (path) => jiti.import(join(extension, path));
 const { examFormFingerprint, examAnswerProgress, parseExamResponses, validateExamAnswerNote } = await mod("exam.ts");
-const { examAnswerNoteText } = await mod("render/assessment.ts");
+const { examAnswerNoteText, renderExam, renderExamAnswerKey } = await mod("render/assessment.ts");
 const { ensureExamAnswerNote, readExamAnswerNote } = await mod("exam-paper.ts");
 const { examAnswerNotePath, examNotePath, answerKeyNotePath, snapshotAssetPath } = await mod("obsidian-paths.ts");
 const { createScholarToolController } = await mod("tool-controller.ts");
@@ -60,6 +60,24 @@ function answerText(text, values) {
   }
   return text;
 }
+function pdfFixture() {
+  const streams = [
+    "BT /F1 11 Tf 50 750 Td 18 TL (1.1 Models) Tj T* (A model approximates reality within its validity domain.) Tj T* (Transmission line models are required when rise time is comparable to flight time.) Tj ET",
+    "BT /F1 11 Tf 50 750 Td (1.2 Subsequent sections.) Tj ET",
+  ];
+  const objects = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>"];
+  for (let index = 0; index < streams.length; index++) {
+    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents ${4 + index * 2} 0 R >>`);
+    objects.push(`<< /Length ${Buffer.byteLength(streams[index])} >>\nstream\n${streams[index]}\nendstream`);
+  }
+  objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+  let pdf = "%PDF-1.4\n";
+  const offsets = objects.map((object, index) => { const offset = Buffer.byteLength(pdf); pdf += `${index + 1} 0 obj\n${object}\nendobj\n`; return offset; });
+  const xref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map(offset => `${String(offset).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf);
+}
+
 function fixture(config, status = "active") {
   const id = "e".repeat(64);
   const section = { id: "s1", number: "1.1", order: 1, title: "Models", startPage: 1, endPage: 2, status: "not-started",
@@ -97,7 +115,7 @@ async function harness(label, options = {}) {
   let book = fixture(config, options.status);
   options.customize?.(book);
   config.currentBookId = book.id;
-  await writeFile(book.source.absolutePath, "%PDF-fixture");
+  await writeFile(book.source.absolutePath, pdfFixture());
   await storage.createBookState(config, book);
   const notices = [], confirmations = [], sent = [], branch = [], tools = new Map(), locks = new Set();
   let activeTools = [];
@@ -518,6 +536,109 @@ try {
     assert.equal(await readFile(keyPath, "utf8"), foreign);
     assert.ok(h.notices.some(({ message }) => /unrelated note/.test(message)), JSON.stringify(h.notices));
     assert.equal(h.sent.length, 0); assert.deepEqual((await h.current()).exams[1], before);
+  });
+
+  await check("round-trip: paper uses [!question] Question N callouts with answers inside, and submitExam succeeds", async () => {
+    const h = await harness("round-trip-callouts");
+    const exam = h.book.exams[0];
+    const text = examAnswerNoteText(h.config, h.book, exam);
+    for (let i = 0; i < exam.questions.length; i++) {
+      assert.match(text, new RegExp(`^> \\[\\!question\\] Question ${i + 1}\\b`, "m"));
+    }
+    for (const q of exam.questions) {
+      assert.ok(text.includes(`> <!-- scholar:answer:${q.id}:start -->`));
+      assert.ok(text.includes(`> <!-- /scholar:answer:${q.id}:end -->`));
+    }
+    const filled = answerText(text, { q1: "b", q2: "", q3: "Open answer inside question callout" });
+    const parsed = parseExamResponses(exam, filled);
+    assert.equal(parsed.find((r) => r.questionId === "q1")?.response, "b");
+    assert.equal(parsed.find((r) => r.questionId === "q3")?.response, "Open answer inside question callout");
+    await writeFile(h.paperPath, filled);
+    h.confirm();
+    const result = await h.submit();
+    assert.equal(result.submitted, true);
+    assert.equal(result.exam.status, "submitted");
+    assert.equal(result.exam.rawResponses.find((r) => r.questionId === "q1")?.response, "b");
+  });
+
+  await check("legacy notes: renderExam for any exam produces no ### Question headings", async () => {
+    const h = await harness("legacy-notes");
+    const exam = h.book.exams[0];
+    const draftExam = { ...structuredClone(exam), status: "draft", questions: [] };
+    assert.doesNotMatch(renderExam(h.config, h.book, draftExam), /^### Question\b/m);
+    const activeDoc = renderExam(h.config, h.book, exam);
+    assert.doesNotMatch(activeDoc, /^### Question\b/m);
+    assert.doesNotMatch(activeDoc, /### Question/);
+    const submittedExam = { ...structuredClone(exam), status: "submitted", submittedAt: timestamp };
+    assert.doesNotMatch(renderExam(h.config, h.book, submittedExam), /### Question/);
+    const gradedExam = { ...structuredClone(exam), status: "graded", submittedAt: timestamp, gradedAt: timestamp };
+    assert.doesNotMatch(renderExam(h.config, h.book, gradedExam), /### Question/);
+  });
+
+  await check("exam review findings stay out of paper and renderExam, and appear in renderExamAnswerKey after grading", async () => {
+    const h = await harness("review-findings", { status: "draft" });
+    const simModel = { id: "sim-model", provider: "sim", api: "sim", input: ["text"], contextWindow: 32000, maxTokens: 4096 };
+    const issueText = "Question q1 prompt is missing context.";
+    h.context.model = simModel;
+    h.context.modelRegistry = {
+      complete: async () => ({
+        role: "assistant", api: simModel.api, provider: simModel.provider, model: simModel.id,
+        content: [{ type: "text", text: JSON.stringify({
+          status: "changes",
+          findings: [{ severity: "blocking", target: "q1", sourcePages: [1], issue: issueText, repair: "Add context to prompt." }],
+        }) }],
+        stopReason: "stop", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, totalTokens: 150 }, timestamp: Date.now(),
+      }),
+    };
+    const draftQuestions = fixture(h.config).exams[0].questions;
+    const reviewRes = await h.execute({ action: "exam_build", questions: draftQuestions });
+    assert.equal(reviewRes.details.tone, "review");
+    const combinedContent = reviewRes.content.map((c) => c.text).join("\n");
+    assert.ok(combinedContent.includes(issueText));
+    const keyMatch = combinedContent.match(/\[F-([a-f0-9]+)\]/);
+    assert.ok(keyMatch, "finding key present in reviewer tool result");
+    const findingKey = keyMatch[1];
+
+    const preDraft = (await h.current()).exams[0];
+    assert.equal(preDraft.status, "draft");
+    assert.doesNotMatch(renderExam(h.config, h.book, preDraft), new RegExp(issueText));
+    assert.doesNotMatch(renderExam(h.config, h.book, preDraft), /\[F-/);
+
+    const buildRes = await h.execute({
+      action: "exam_build",
+      questions: draftQuestions,
+      findingResponses: [{ key: findingKey, action: "fixed", note: "Added required context." }],
+    });
+    assert.equal(buildRes.details.action, "exam_build");
+    assert.ok(!["review", "error", "retry"].includes(buildRes.details.tone));
+
+    const activeExam = (await h.current()).exams[0];
+    assert.equal(activeExam.status, "active");
+    const paper = await readFile(h.paperPath, "utf8");
+    assert.doesNotMatch(paper, new RegExp(issueText));
+    assert.doesNotMatch(paper, /\[F-/);
+    assert.doesNotMatch(paper, /Added required context/);
+    const activeExamDoc = renderExam(h.config, h.book, activeExam);
+    assert.doesNotMatch(activeExamDoc, new RegExp(issueText));
+    assert.doesNotMatch(activeExamDoc, /\[F-/);
+
+    await h.fill();
+    h.confirm();
+    await h.command("exam submit");
+    await h.execute({ action: "exam_grade", itemResults: [
+      { questionId: "q1", outcome: "correct", earnedPoints: 2, maxPoints: 2, feedback: "Good." },
+      { questionId: "q2", outcome: "correct", earnedPoints: 2, maxPoints: 2, feedback: "Good." },
+      { questionId: "q3", outcome: "correct", earnedPoints: 5, maxPoints: 5, feedback: "Good." },
+    ] });
+
+    const gradedExam = (await h.current()).exams[0];
+    assert.equal(gradedExam.status, "graded");
+
+    const keyDoc = renderExamAnswerKey(h.config, h.book, gradedExam);
+    assert.ok(keyDoc.includes("> [!note]- Question review"));
+    assert.ok(keyDoc.includes(issueText));
+    assert.ok(keyDoc.includes(`[F-${findingKey}]`));
+    assert.ok(keyDoc.includes("Added required context."));
   });
 } finally {
   assert.equal(dirname(resolve(root)), resolve(tmpdir())); assert.ok(basename(root).startsWith("scholar-obsidian-exam-"));

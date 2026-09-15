@@ -26,6 +26,7 @@ const { createBookService } = await loadModule("book-service.ts");
 const { ScholarRuntimeSession } = await loadModule("runtime-session.ts");
 const { sectionNotePath } = await loadModule("obsidian-paths.ts");
 const { REVIEW_CHECKPOINT_MESSAGE } = await loadModule("learn-review.ts");
+const { computeFindingKey } = await loadModule("learn-quality.ts");
 const { ModelRegistry } = await import(pathToFileURL(join(piPackageRoot, "dist/core/model-registry.js")));
 
 const temporary = resolve(tmpdir());
@@ -416,17 +417,30 @@ try {
     assert.match(textOf(await h.execute({action:'read',startPage:1,endPage:1})),/Generation stopped/);
     success(await h.execute({action:'status'}));
   });
-  await check("The third unresolved content review stops the author before any fourth repair", async()=>{
+  await check("One review pass runs per lesson: blocking finding, author responds, commits with zero new reviewer requests", async()=>{
     const h=await harness();h.verdicts.source=changes;let aborts=0;const context=h.context;
     h.context=()=>({...context(),abort(){aborts++;}});
-    for(let round=0;round<3;round++) {
-      const result=await h.execute(round===0?{...notes(),lessonComplete:true}:{action:'notes',lessonComplete:true});
-      assert.equal(result.details.tone,'review');
-    }
-    assert.equal(aborts,1);
-    const before=await h.load(),calls=h.requests.length;
-    assert.match(textOf(await h.execute(notes())),/three review rounds/);
-    assert.equal(h.requests.length,calls);assert.deepEqual(await h.load(),before);
+    const result=await h.execute({...notes(),lessonComplete:true});
+    assert.equal(result.details.tone,'review');
+    const key=computeFindingKey("source", changes.findings[0]);
+    assert.match(textOf(result),new RegExp(`\\[F-${key}\\]`));
+    const calls=h.requests.length;
+    assert.ok(calls > 0);
+    // Submitting again without responses is rejected without reviewer requests
+    const unresolved=await h.execute({action:'notes',lessonComplete:true});
+    assert.equal(unresolved.details.tone,'review');
+    assert.match(textOf(unresolved),/blocking findings require responses/);
+    assert.equal(h.requests.length,calls);
+    // Second submission with findingResponses commits with zero new reviewer requests
+    const committed=await h.execute({
+      action:'notes',
+      lessonComplete:true,
+      findingResponses:[{key, action:'fixed', note:'Clarified the constant speed assumption.'}],
+    });
+    success(committed);
+    assert.equal(h.requests.length,calls,'zero new reviewer requests on commit');
+    const book=await h.load();
+    assert.equal(lesson.lessonReady(active(book)),true);
   });
   await check("Replacing one literal crop updates only that callout and cannot bypass figure validation", async()=>{
     const h=await harness();
@@ -523,12 +537,13 @@ try {
       coordinator.loading.clear();
     }finally{globalThis.setInterval=originalSet;globalThis.clearInterval=originalClear;}
   });
-  await check("Chat and extension input cannot reset the review-round cap; only explicit activation grants a new bounded attempt", async()=>{
+  await check("Chat and extension input cannot reset delivery stops; only explicit activation grants a new bounded attempt", async()=>{
     const h=await harness();h.verdicts.source=changes;let aborts=0;const context=h.context;
     h.context=()=>({...context(),abort(){aborts++;}});
-    for(let round=0;round<3;round++){
-      if(round){await h.controller.captureOpenResponse('Please keep repairing it',round===1?'extension':'interactive');h.controller.endAgentTurn();}
-      assert.equal((await h.execute(round===0?{...notes(),lessonComplete:true}:{action:'notes',lessonComplete:true})).details.tone,'review');
+    const input=notes();input.sourceCoverage[0].evidence='This passage does not occur in the saved lesson.';
+    for(let attempt=1;attempt<=4;attempt++){
+      if(attempt>1){await h.controller.captureOpenResponse('Please keep repairing it',attempt%2===0?'extension':'interactive');h.controller.endAgentTurn();}
+      await h.execute(attempt===1?{...input,lessonComplete:true}:{action:'notes',lessonComplete:true});
     }
     assert.equal(aborts,1);
     const calls=h.requests.length;
@@ -540,8 +555,29 @@ try {
     await assert.rejects(h.controller.reviewQuestion(stoppedBook,active(stoppedBook),question(),[1],h.context()),/Generation stopped/);
     assert.equal(h.requests.length,calls,'the scholar_quiz prehook cannot start a reviewer after a stop');
     h.controller.resetTransientState();
-    assert.equal((await h.execute({action:'notes',lessonComplete:true})).details.tone,'review');
-    assert.ok(h.requests.length>calls,'the explicit continue activation permits a new bounded round');
+    assert.equal((await h.execute({...notes(),lessonComplete:true})).details.tone,'review');
+    assert.ok(h.requests.length>calls,'the explicit continue activation permits a new bounded attempt');
+  });
+  await check("One review pass runs per question: blocking finding, author repairs, question saved with zero second reviewer request", async()=>{
+    const h=await harness();
+    success(await h.execute({...notes(),lessonComplete:true}));
+    const questionChanges = { status: "changes", findings: [{ severity: "blocking", target: "question prompt", sourcePages: [1],
+      issue: "The question lacks units.", repair: "Specify the unit of measurement." }] };
+    h.verdicts.assessment = questionChanges;
+    const initialRequests = h.requests.length;
+    const failed = await h.execute(question());
+    assert.match(textOf(failed), /Repair the proposed question/);
+    assert.ok(h.requests.length > initialRequests);
+    const callsAfterReview = h.requests.length;
+    const repaired = question();
+    repaired.question = String.raw`At fixed \(v\), how many seconds does travel time change if \(\ell\) is doubled?`;
+    const approved = await h.execute(repaired);
+    success(approved);
+    assert.equal(h.requests.length, callsAfterReview, "zero new reviewer requests on second attempt");
+    const book = await h.load();
+    const sec = active(book);
+    assert.equal(sec.attempts.length, 1);
+    assert.equal(sec.attempts[0].outcome, "pending");
   });
   await check("Repeated lessonComplete submissions with delivery gaps stop the author before any reviewer runs", async()=>{
     const h=await harness();let aborts=0;const context=h.context;
@@ -557,29 +593,32 @@ try {
     assert.match(textOf(await h.execute({action:'read',startPage:1,endPage:1})),/Generation stopped/);
     assert.equal(h.requests.length,0);
   });
-  await check("The controller enforces the preparation budget itself, excludes idle turns, and never starts an unfinishable review", async()=>{
+  await check("The controller enforces progress stall and circuit breaker loop guards, excludes idle turns, and grants full review backstop", async()=>{
     const h=await harness();let aborts=0;const context=h.context;
     h.context=()=>({...context(),abort(){aborts++;}});
     let clock=0;h.now=()=>clock;h.controller.resetTransientState();
     success(await h.execute(notes()));
     clock=10*60_000;h.controller.endAgentTurn();
-    clock=5*60*60_000; // hours idle between turns are not preparation work
+    clock=5*60*60_000; // hours idle between turns are not stall time
     success(await h.execute({action:'status'}));
-    clock+=9*60_000; // 19 minutes of active preparation spent
-    assert.match(textOf(await h.execute({action:'notes',lessonComplete:true})),/too little of Learn's 20-minute preparation limit/);
-    assert.equal(h.requests.length,0);assert.equal(aborts,1);
+    clock+=16*60_000; // 16 minutes without progress in active turn
+    assert.match(textOf(await h.execute({action:'read',startPage:1,endPage:1})),/active turn had no progress for 15 minutes/);
+    assert.equal(aborts,1);
     assert.deepEqual(active(await h.load()).learnQuality.reviews,[]);
-    h.controller.resetTransientState();clock=0;
-    success(await h.execute({action:'read',startPage:1,endPage:1}));
-    clock=20*60_000;
-    assert.match(textOf(await h.execute({action:'read',startPage:1,endPage:1})),/20-minute preparation limit/);
-    assert.equal(aborts,2,'the hard limit does not depend on the loading widget timer');
-    h.controller.resetTransientState();clock=0;
-    success(await h.execute({action:'status'}));
-    clock=15*60_000;
+    h.controller.resetTransientState();clock=0;aborts=0;
+    // Circuit breaker: 8 consecutive rejections pause delivery
+    for(let i=1;i<=7;i++){
+      const res=await h.execute({action:'read',startPage:999,endPage:999});
+      assert.equal(res.details.tone,'retry');
+      assert.equal(aborts,0);
+    }
+    const breakerRes=await h.execute({action:'read',startPage:999,endPage:999});
+    assert.match(textOf(breakerRes),/paused delivery after 8 consecutive rejections/);
+    assert.equal(aborts,1);
+    h.controller.resetTransientState();clock=0;aborts=0;
     const timeouts=[];h.onRequest=async({request})=>{timeouts.push(request.timeoutMs);};
     success(await h.execute({action:'notes',lessonComplete:true}));
-    assert.ok(timeouts.length&&timeouts.every(ms=>ms>0&&ms<=5*60_000),`reviews receive only the remaining preparation time: ${timeouts}`);
+    assert.ok(timeouts.length&&timeouts.every(ms=>ms>44*60_000&&ms<=45*60_000),`reviews receive full backstop timeout: ${timeouts}`);
     assert(lesson.lessonReady(active(await h.load())));
   });
   await check("Finished crew checks are saved during review, so an interruption re-runs only unfinished checks", async()=>{

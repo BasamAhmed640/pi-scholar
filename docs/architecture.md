@@ -35,6 +35,10 @@ does not use Learn or Tutor performance to alter the test.
 
 ## Code boundaries
 
+Shared review orchestration lives in `review-layer.ts`, providing a single-pass review pipeline across Learn, Tutor, and Exam targets.
+Targets commit immediately after one review pass by recording finding responses rather than triggering re-review cycles.
+Count-based action budgets, stall detection, and tool isolation prevent runaway execution while ensuring model independence.
+
 `learn-quality.ts` defines coverage and review contracts. `equation-presentation.ts`
 builds equation callouts from validated fields and explicit placement markers.
 `learn-review.ts` binds reviewers to the saved section and its source evidence;

@@ -2,7 +2,7 @@ import { basename, extname, isAbsolute } from "node:path";
 import { isQuestionGrounding } from "./question-grounding.ts";
 import { isFrozenScholarQuiz } from "./quiz-contract.ts";
 import { isLessonReceipt, isLessonCommit, isObjectiveChecks } from "./lesson.ts";
-import { isSourceCoverageLedger, isReviewReceipt } from "./learn-quality.ts";
+import { isSourceCoverageLedger, isReviewReceipt, isFindingResponse } from "./learn-quality.ts";
 import { isOpenAssessmentContract, isOpenAssessmentEvaluation, isOpenAssessmentSubmission } from "./open-assessment.ts";
 import { pageInRanges, scopedPageRanges } from "./page-scope.ts";
 
@@ -332,9 +332,10 @@ function isSection(value: unknown): value is ScholarSection {
     (value.lessonEntryIds === undefined || isStringArray(value.lessonEntryIds, { nonEmpty: true, unique: true })) &&
     (value.legacyLessonCompletion === undefined || value.legacyLessonCompletion === true) &&
     (value.objectiveChecks === undefined || isObjectiveChecks(value.objectiveChecks)) &&
-    (value.learnQuality === undefined || (isRecord(value.learnQuality) && hasOnlyKeys(value.learnQuality, ["version", "coverage", "reviews"], ["earnedDelivery"])
+    (value.learnQuality === undefined || (isRecord(value.learnQuality) && hasOnlyKeys(value.learnQuality, ["version", "coverage", "reviews"], ["earnedDelivery", "responses"])
       && value.learnQuality.version === 1 && isSourceCoverageLedger(value.learnQuality.coverage)
       && Array.isArray(value.learnQuality.reviews) && value.learnQuality.reviews.every(isReviewReceipt)
+      && (value.learnQuality.responses === undefined || (Array.isArray(value.learnQuality.responses) && value.learnQuality.responses.every(isFindingResponse)))
       && (value.learnQuality.earnedDelivery === undefined || (isRecord(value.learnQuality.earnedDelivery)
         && hasOnlyKeys(value.learnQuality.earnedDelivery, ["sourceHash", "objectiveHash"], [])
         && typeof value.learnQuality.earnedDelivery.sourceHash === "string" && /^[a-f\d]{64}$/.test(value.learnQuality.earnedDelivery.sourceHash)
@@ -513,7 +514,7 @@ function isScholarExam(value: unknown): value is ScholarExam {
       "id", "title", "scope", "status", "questions", "rawResponses", "itemResults", "breakdown",
       "earnedPoints", "maxPoints", "percent", "transcript", "createdAt", "updatedAt",
     ],
-    ["startedAt", "submittedAt", "gradedAt", "images", "snapshots"],
+    ["startedAt", "submittedAt", "gradedAt", "images", "snapshots", "review"],
   )) return false;
   if (!isStableId(value.id) || !isNonEmptyString(value.title) || !isScope(value.scope) ||
     (value.status !== "draft" && value.status !== "active" && value.status !== "submitted" && value.status !== "graded") ||
@@ -530,6 +531,9 @@ function isScholarExam(value: unknown): value is ScholarExam {
     !isTranscript(value.transcript) ||
     (value.images !== undefined && !isReferenceImageArray(value.images)) ||
     (value.snapshots !== undefined && !isSnapshotArray(value.snapshots)) ||
+    (value.review !== undefined && (!isRecord(value.review) || !hasOnlyKeys(value.review, ["version", "receipts", "responses"], [])
+      || value.review.version !== 1 || !Array.isArray(value.review.receipts) || !value.review.receipts.every(isReviewReceipt)
+      || !Array.isArray(value.review.responses) || !value.review.responses.every(isFindingResponse))) ||
     !isTimestamp(value.createdAt) || !isTimestamp(value.updatedAt) ||
     Date.parse(value.createdAt) > Date.parse(value.updatedAt) ||
     (value.startedAt !== undefined && !isTimestamp(value.startedAt)) ||
@@ -587,7 +591,7 @@ function isTutorSession(value: unknown): value is TutorSession {
   if (!isRecord(value) || !hasOnlyKeys(
     value,
     ["id", "title", "scope", "status", "keyPoints", "attempts", "transcript", "createdAt", "updatedAt"],
-    ["synthesis", "closedAt", "images", "snapshots", "lessonEntryIds"],
+    ["synthesis", "closedAt", "images", "snapshots", "lessonEntryIds", "review"],
   )) return false;
   const valid = isStableId(value.id) &&
     isNonEmptyString(value.title) &&
@@ -600,6 +604,9 @@ function isTutorSession(value: unknown): value is TutorSession {
     isTranscript(value.transcript) &&
     (value.images === undefined || isReferenceImageArray(value.images)) &&
     (value.snapshots === undefined || isSnapshotArray(value.snapshots)) &&
+    (value.review === undefined || (isRecord(value.review) && hasOnlyKeys(value.review, ["version", "receipts", "responses"], [])
+      && value.review.version === 1 && Array.isArray(value.review.receipts) && value.review.receipts.every(isReviewReceipt)
+      && Array.isArray(value.review.responses) && value.review.responses.every(isFindingResponse))) &&
     isTimestamp(value.createdAt) && isTimestamp(value.updatedAt) &&
     Date.parse(value.createdAt) <= Date.parse(value.updatedAt) &&
     (value.closedAt === undefined || isTimestamp(value.closedAt));

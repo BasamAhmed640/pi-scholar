@@ -186,6 +186,7 @@ export type ScholarSection = {
   objectiveChecks?: import("./lesson.ts").ObjectiveCheck[];
   /** New Learn deliveries only; lives in this section's visible vault note. */
   learnQuality?: { version: 1; coverage: import("./learn-quality.ts").SourceCoverageItem[]; reviews: import("./learn-quality.ts").ReviewReceipt[];
+    responses?: import("./learn-quality.ts").FindingResponse[];
     /** Earned delivery survives later practice edits; mastery answers are still checked. */
     earnedDelivery?: { sourceHash: string; objectiveHash: string } };
   /**
@@ -298,6 +299,7 @@ export type ScholarExam = {
   startedAt?: string;
   submittedAt?: string;
   gradedAt?: string;
+  review?: { version: 1; receipts: import("./learn-quality.ts").ReviewReceipt[]; responses: import("./learn-quality.ts").FindingResponse[] };
 };
 
 export type TutorSession = {
@@ -313,6 +315,7 @@ export type TutorSession = {
   images?: ScholarReferenceImage[];
   /** Exact PDF crops owned by this Tutor session, independent of Learn. */
   snapshots?: ScholarSnapshot[];
+  review?: { version: 1; receipts: import("./learn-quality.ts").ReviewReceipt[]; responses: import("./learn-quality.ts").FindingResponse[] };
   createdAt: string;
   updatedAt: string;
   closedAt?: string;

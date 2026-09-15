@@ -210,8 +210,20 @@ export function renderSection(config: ScholarConfig, book: ScholarBook, chapter:
   const keyPoints = uniqueSupplementLines(section.keyPoints, [...lesson, ...summary]);
   const pitfalls = uniqueSupplementLines(section.misconceptions, [...lesson, ...summary, ...keyPoints]);
   const current = book.currentSectionId === section.id;
+  const commitWarnings: string[] = [];
+  if (section.lessonCommit && section.learnQuality?.reviews) {
+    for (const review of section.learnQuality.reviews) {
+      if (review.failure) {
+        commitWarnings.push(`> [!warning] Not independently reviewed: ${review.role} (${review.failure.code})`);
+      }
+      if (review.role === "visual" && review.findings.some(f => f.issue === "Figures were not visually checked (text-only model).")) {
+        commitWarnings.push("> [!warning] Figures were not visually checked (text-only model).");
+      }
+    }
+  }
+  const lessonLines = commitWarnings.length ? [...commitWarnings, "", ...lesson] : lesson;
   const content = [
-    ...(lesson.length ? block("## Lesson", lesson) : [section.synthesis?.trim()
+    ...(lessonLines.length ? block("## Lesson", lessonLines) : [section.synthesis?.trim()
       ? "A recap is saved below. The full explanation has not been saved yet."
       : "This section is ready. The lesson will appear as you work through it.", ""]),
     ...supplementalSourceFigureLines(config, book, notePath, section.snapshots || [], authored),

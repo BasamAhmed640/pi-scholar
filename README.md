@@ -41,6 +41,12 @@ selected PDF library contains the source books, not your learning history.
 
 ## Installation
 
+### One-pass review and loop prevention (0.6.0)
+
+A shared review layer runs exactly one scoped review pass per target across Learn, Tutor, and Exam without iterative rewrite loops.
+Runaway execution is strictly bounded by count and progress limits (8 rejections, 250 actions, and a 180s stall watchdog) while Pi tools are isolated during active study.
+Robust output handling defaults to resilient JSON parsing, follow-up prompt fallbacks, and text fallbacks for non-vision models.
+
 ### Recoverable Learn preparation (0.5.4)
 
 Reopening a saved, unfinished lesson asks whether to continue preparing it now or

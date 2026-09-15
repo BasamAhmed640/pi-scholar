@@ -12,7 +12,7 @@ import {
 import { assertQuestionGrounding, normalizeQuestionGrounding } from "../question-grounding.ts";
 import { prepareOpenAssessment, prepareOpenQuestionText, type OpenAssessmentEvaluation, type OpenResponseGate } from "../open-assessment.ts";
 import { normalizeObsidianMath } from "../math-formatting.ts";
-import { isSourceCoverageItem, isSourceCoverageLedger, sourceCoverageIssues, updateCoverageEvidence, type CoverageUpdate, type SourceCoverageItem } from "../learn-quality.ts";
+import { isSourceCoverageItem, isSourceCoverageLedger, isFindingResponse, sourceCoverageIssues, updateCoverageEvidence, type CoverageUpdate, type FindingResponse, type SourceCoverageItem } from "../learn-quality.ts";
 import type { ScholarRuntimeSession } from "../runtime-session.ts";
 import type { ToolDetails } from "../tool-contract.ts";
 import { saveLesson, patchLesson, commitLesson, lessonReady, validLessonEntries, isObjectiveChecks, type LessonInput, type LessonPatch, type ObjectiveCheck } from "../lesson.ts";
@@ -61,6 +61,7 @@ export async function handleNotes(
     sourceCoverage?: SourceCoverageItem[];
     coverageUpdates?: CoverageUpdate[];
     figureReviews?: unknown[];
+    findingResponses?: FindingResponse[];
   },
   requireLearnSection: (book: ScholarBook) => ScholarSection,
   mutateBook: MutateBook,
@@ -72,9 +73,14 @@ export async function handleNotes(
   const keyPoints = compactStrings(params.keyPoints);
   if (params.lesson && params.lessonPatch) throw new Error("Use either lesson or lessonPatch in one notes call, not both.");
   if (params.sourceCoverage && params.coverageUpdates) throw new Error("Use sourceCoverage or coverageUpdates in one notes call, not both.");
+  if (params.findingResponses !== undefined) {
+    if (!Array.isArray(params.findingResponses) || !params.findingResponses.length || !params.findingResponses.every(isFindingResponse)) {
+      throw new Error("findingResponses must be an array of valid responses with key, action ('fixed' | 'declined'), and note (1-600 chars).");
+    }
+  }
   if (![params.lesson, params.lessonPatch, params.lessonComplete, params.sourceCoverage, params.coverageUpdates, params.figureReviews,
-    params.synthesis, params.keyPoints, params.objectives, params.coveredObjectives, params.objectiveChecks, params.requiredChecks, params.misconceptions].some(value => value !== undefined)) {
-    throw new Error("Nothing saved. Supply a lesson, recap, source plan, figureReviews, objectiveChecks or coverageUpdates. These fields may be saved independently.");
+    params.synthesis, params.keyPoints, params.objectives, params.coveredObjectives, params.objectiveChecks, params.requiredChecks, params.misconceptions, params.findingResponses].some(value => value !== undefined)) {
+    throw new Error("Nothing saved. Supply a lesson, recap, source plan, figureReviews, objectiveChecks, coverageUpdates or findingResponses. These fields may be saved independently.");
   }
   if (session.mode === "tutor") {
     if (!session.recordId) throw new Error("No Tutor session is active.");
@@ -85,6 +91,12 @@ export async function handleNotes(
       tutor.keyPoints = compactStrings([...tutor.keyPoints, ...keyPoints, ...(params.lesson?.keyPoints || [])]);
       if (params.lesson) saveLesson(tutor, state, params.lesson, config);
       if (params.lessonPatch) patchLesson(tutor, state, params.lessonPatch, config);
+      if (params.findingResponses?.length) {
+        if (!tutor.review) tutor.review = { version: 1, receipts: [], responses: [] };
+        const existing = new Map((tutor.review.responses || []).map(r => [r.key, r]));
+        for (const resp of params.findingResponses) existing.set(resp.key, resp);
+        tutor.review.responses = [...existing.values()];
+      }
       tutor.updatedAt = new Date().toISOString();
     });
     return toolResult("notes", `Saved source-grounded Tutor notes for ${mutation.book.tutorSessions.find((item) => item.id === session.recordId)?.title}.`, { bookId: book.id });
@@ -165,6 +177,11 @@ export async function handleNotes(
       throw new Error("Coverage needs an explicitly saved explanation for each objective; a summary or label cannot mark it taught. Save notes.lesson first.");
     }
     if (section.status !== "complete") section.coveredObjectives = taught;
+    if (params.findingResponses?.length && section.learnQuality) {
+      const existing = new Map((section.learnQuality.responses || []).map(r => [r.key, r]));
+      for (const resp of params.findingResponses) existing.set(resp.key, resp);
+      section.learnQuality.responses = [...existing.values()];
+    }
     if (params.lessonComplete && !deferCommit) commitLesson(section, state);
     recomputeProgress(state, section);
   });
@@ -197,7 +214,7 @@ export async function handleAssess(
   mutateBook: MutateBook,
   toolResult: ToolResultFn,
   responseGate?: OpenResponseGate,
-  reviewQuestion?: (attempt: AssessmentAttempt, section: ScholarSection) => Promise<(current: ScholarSection) => void>,
+  reviewQuestion?: (attempt: AssessmentAttempt, target: ScholarSection | TutorSession) => Promise<(current: ScholarSection | TutorSession) => void>,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: ToolDetails }> {
   const outcome = params.outcome as AssessmentOutcome | undefined;
   const attemptId = params.attemptId?.trim();
@@ -246,7 +263,10 @@ export async function handleAssess(
       createdAt: now,
     };
 
-    const verifyReview = sectionId && reviewQuestion ? await reviewQuestion(attempt, requireLearnSection(book)) : undefined;
+    const targetRecord = session.mode === "tutor"
+      ? book.tutorSessions.find((item) => item.id === session.recordId && item.status === "active")
+      : requireLearnSection(book);
+    const verifyReview = targetRecord && reviewQuestion ? await reviewQuestion(attempt, targetRecord) : undefined;
     await mutateBook(book.id, (state) => {
       const target = session.mode === "tutor"
         ? state.tutorSessions.find((item) => item.id === session.recordId && item.status === "active")
@@ -259,6 +279,7 @@ export async function handleAssess(
         attempt.grounding = grounding;
         assertQuestionGrounding(grounding, state, { mode: "learn", section: target as ScholarSection });
       } else {
+        verifyReview?.(target as TutorSession);
         assertQuestionGrounding(grounding, state, { mode: "tutor", tutor: target as TutorSession });
       }
       const pending = unansweredQuestionMessage(target.attempts);

@@ -161,10 +161,10 @@ await check("Visual approval requires every full page and every actual saved cro
   let called = 0;
   const options = fixture(async () => { called++; return message(); });
   options.ctx.model = { ...model, input: ["text"] };
-  const blocked = await reviewOne(options, "visual");
-  assert.equal(blocked.status, "changes");
-  assert.match(blocked.findings[0].issue, /cannot inspect images/);
-  assert.equal(called, 0);
+  const textOnlyResult = await reviewOne(options, "visual");
+  assert.equal(textOnlyResult.status, "pass");
+  assert.ok(textOnlyResult.findings.some(f => f.severity === "advice" && f.issue.includes("text-only model")));
+  assert.equal(called, 1);
 });
 
 await check("Truncated or missing source pages never count as reviewed evidence", async () => {
@@ -405,5 +405,35 @@ await check("Prepared evidence errors never reach the model or produce approval"
   options.evidence.read = async () => "[Page 1] only one of two required pages";
   const result = await reviewOne(options, "source");
   assert.equal(result.failure.code, "evidence"); assert.equal(requests, 0); assert(isReviewReceipt(result));
+});
+
+await check("Any-model compatibility handles prose wrapping, follow-up recovery turn, small windows, and undeclared limits", async () => {
+  // 1. Model that wraps the JSON in prose
+  const wrapped = "Here is my evaluation:\n```json\n" + JSON.stringify(pass) + "\n```\nAll clear!";
+  const wrappedRes = await reviewOne(fixture(async () => message(wrapped)), "teaching");
+  assert.equal(wrappedRes.status, "pass");
+
+  // 2. Model that returns prose first, then JSON on the follow-up recovery turn
+  let turnCount = 0;
+  const followUpRes = await reviewOne(fixture(async () => {
+    turnCount++;
+    return turnCount === 1 ? message("I think this looks good.") : message(pass);
+  }), "teaching");
+  assert.equal(followUpRes.status, "pass");
+  assert.equal(turnCount, 2);
+
+  // 3. Small context window derives 2-page source windows and 2-image visual packets
+  const opts = fixture();
+  const plan32k = planReviewAssignments(opts.section, opts.book.source.fingerprint.sha256, 32_000);
+  const source32k = plan32k.filter(p => p.role === "source");
+  assert.ok(source32k.every(p => p.reads.length <= 2));
+
+  // 4. Model with no maxTokens uses fallback and completes
+  const noMaxTokensModel = { ...model };
+  delete noMaxTokensModel.maxTokens;
+  const noMaxOpts = fixture(async () => message());
+  noMaxOpts.ctx.model = noMaxTokensModel;
+  const noMaxRes = await reviewOne(noMaxOpts, "teaching");
+  assert.equal(noMaxRes.status, "pass");
 });
 console.log(`Scholar Learn review service: ${checks} checks passed with mock completions and injected evidence; no network or study-vault access.`);

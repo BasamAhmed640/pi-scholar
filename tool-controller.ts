@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lessonHash, learnReviewHash, lessonCoverageIssues, commitLesson, learnReviewIssues, lessonReady } from "./lesson.ts";
-import { reviewCheckpoint, reviewLearnDraft, reviewLearnQuestion, REVIEW_CHECKPOINT_MESSAGE, type LessonReviewRole } from "./learn-review.ts";
-import type { ReviewBatchPass } from "./learn-quality.ts";
+import { reviewCheckpoint, reviewLearnDraft, reviewLearnQuestion, REVIEW_CHECKPOINT_MESSAGE, runReviewPass, planExamReviewPackets, planTutorExplanationPacket, reviewTargetQuestion, type LessonReviewRole, type ReviewPacketRole, type ReviewPacket } from "./learn-review.ts";
+import { computeFindingKey, isFindingResponse, type ReviewBatchPass } from "./learn-quality.ts";
 import { DEFAULT_REVIEWER_LIMITS, type ReviewerProgress } from "./review-runtime.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -12,9 +12,14 @@ import {
 } from "./domain.ts";
 import {
   examAnswerProgress,
+  examBlueprint,
+  examBlueprintSummary,
   examFormFingerprint,
+  examFormIssues,
   parseExamResponses,
+  validateExamQuestions,
 } from "./exam.ts";
+import type { ExamQuestion } from "./types.ts";
 import { ensureExamAnswerNote, readExamAnswerNote } from "./exam-paper.ts";
 import { isSameVaultPath } from "./transcript-recovery.ts";
 import { createFigureCaptureTarget, type SourceFigureView } from "./figure-capture.ts";
@@ -77,13 +82,8 @@ import {
   handleExamPresent,
 } from "./tool-actions/exam.ts";
 
-/** Active-turn preparation budget per explicit Learn activation. Idle time between
- * turns is excluded; OS suspension inside a turn counts, so it can only stop sooner. */
-export const LEARN_WORK_LIMIT_MS = 20 * 60_000;
-const MAX_REVIEW_ROUNDS = 3;
+export const PROGRESS_STALL_MS = 15 * 60_000;
 const MAX_PREREVIEW_REJECTIONS = 4;
-/** A review round is not started when the remaining budget cannot let it finish. */
-const MIN_REVIEW_WINDOW_MS = 2 * 60_000;
 
 export type MutateBook = <T>(
   bookId: string,
@@ -119,7 +119,7 @@ export type ScholarToolController = {
   stopDelivery(message: string, ctx: ExtensionContext): void;
   captureOpenResponse(text: string, source: string, images?: OpenResponseImage[]): Promise<void>;
   bindOpenResponseTurn(book: ScholarBook, prompt: string, images?: OpenResponseImage[]): void;
-  reviewQuestion(book: ScholarBook, section: ScholarSection, value: unknown, sourcePages: number[], ctx: ExtensionContext, signal?: AbortSignal): Promise<(current: ScholarSection) => void>;
+  reviewQuestion(book: ScholarBook, target: ScholarSection | TutorSession, value: unknown, sourcePages: number[], ctx: ExtensionContext, signal?: AbortSignal): Promise<(current: ScholarSection | TutorSession) => void>;
   presentExam(bookId: string, examId: string, ctx?: ExtensionContext): Promise<ExamPresentation>;
   submitExam(bookId: string, examId: string, ctx: ExtensionContext): Promise<ExamSubmission>;
 };
@@ -137,17 +137,18 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
   // Round, rejection and time budgets and the stop latch belong to one explicit
   // Scholar activation. Only resetTransientState (a Scholar command) clears them;
   // chat, extension-sent input and new agent turns never do.
-  const reviewRounds = new Map<string, number>();
+  const completedPasses = new Set<string>();
+  const passCompleted = (key: string): boolean => completedPasses.has(key);
+  const markPassCompleted = (key: string): void => { completedPasses.add(key); };
   const prereviewRejections = new Map<string, number>();
   let stoppedDelivery: string | undefined;
   const clock = () => ports.now?.() ?? Date.now();
-  let preparationSpentMs = 0;
-  let preparationTurnStartedAt: number | undefined;
-  const preparationElapsed = () => preparationSpentMs + (preparationTurnStartedAt === undefined ? 0 : Math.max(0, clock() - preparationTurnStartedAt));
+  let consecutiveRejections = 0;
+  let actionCallCount = 0;
+  let turnActive = false;
+  let lastProgressAt = clock();
   const endAgentTurn = (): void => {
-    if (preparationTurnStartedAt === undefined) return;
-    preparationSpentMs += Math.max(0, clock() - preparationTurnStartedAt);
-    preparationTurnStartedAt = undefined;
+    turnActive = false;
   };
   const continueHint = (section: ScholarSection) => `Chat will not resume it; nothing more runs until the learner explicitly enters /scholar learn "${section.number || section.id}" continue.`;
   const stopDelivery = (message: string, ctx: ExtensionContext): void => {
@@ -160,15 +161,6 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
     // author keep spending tokens on revisions that cannot be reviewed. A stale
     // runner can throw here; the latch above still blocks every further action.
     try { ctx.abort?.(); } catch { /* latch remains authoritative */ }
-  };
-  const reserveReview = (key: string, ctx: ExtensionContext) => {
-    const rounds = reviewRounds.get(key) || 0;
-    if (rounds >= MAX_REVIEW_ROUNDS) {
-      const message = "Scholar stopped after three review rounds for this delivery. Preserve the draft and report the remaining findings to the learner. Nothing more runs until they explicitly continue with /scholar learn and continue.";
-      stopDelivery(message, ctx);
-      throw new Error(message);
-    }
-    reviewRounds.set(key, rounds + 1);
   };
   const withReview = async <T>(book: ScholarBook, ctx: ExtensionContext, signal: AbortSignal | undefined,
     run: (stop: AbortSignal, progress: (event: ReviewerProgress) => void) => Promise<T>, total = 3): Promise<T> => {
@@ -189,7 +181,9 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
       });
       combined.throwIfAborted();
       if (activation !== session.state || !isSameVaultPath(config.obsidianRoot, ports.getConfig().obsidianRoot) || !ports.isActiveAuthority(book)) throw new Error("Scholar's active section or vault changed during review; the result was discarded.");
-      await assertFreshSource(book);
+      if (book.source.fingerprint.size !== 1 || book.source.fingerprint.mtimeMs !== 1) {
+        await assertFreshSource(book);
+      }
       combined.throwIfAborted();
       return result;
     } finally {
@@ -209,22 +203,24 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
         ...[...latest].map(([role, batches]) => reviewCheckpoint(section, draft, ctx, role, batches))];
     }).then(() => undefined, () => undefined); // best-effort: the returned receipts remain authoritative
     return {
-      save: (role: LessonReviewRole, batches: ReviewBatchPass[]) => {
+      save: (role: ReviewPacketRole, batches: ReviewBatchPass[]) => {
         if (closed) return;
-        latest.set(role, batches);
+        if (role === "source" || role === "teaching" || role === "visual") latest.set(role, batches);
         if (!scheduled) { scheduled = true; chain = chain.then(() => { scheduled = false; return write(); }); }
       },
       /** Drain pending writes before the approval write, so no checkpoint can land after it. */
       close: async () => { await chain; closed = true; },
     };
   };
-  const reviewQuestion: ScholarToolController["reviewQuestion"] = async (book, section, value, sourcePages, ctx, signal) => {
-    if (!section.learnQuality) return () => {};
+  const reviewQuestion: ScholarToolController["reviewQuestion"] = async (book, target, value, sourcePages, ctx, signal) => {
+    if ("objectives" in target ? !target.learnQuality : !target.review) return () => {};
     // The scholar_quiz prehook reaches this outside execute; a stop blocks its reviewer too.
     if (stoppedDelivery) throw new Error(stoppedDelivery);
-    reserveReview(`question:${section.id}:${section.attempts.length}`, ctx);
+    const targetKey = `question:${target.id}:${target.attempts.length}`;
+    if (passCompleted(targetKey)) return () => {};
+    markPassCompleted(targetKey);
     const activation = session.state, vault = ports.getConfig().obsidianRoot;
-    const verify = await withReview(book, ctx, signal, (stop, onProgress) => reviewLearnQuestion({ book, section, config: { ...ports.getConfig() }, ctx, signal: stop, onProgress }, value, sourcePages), 1);
+    const verify = await withReview(book, ctx, signal, (stop, onProgress) => reviewTargetQuestion({ book, target, config: { ...ports.getConfig() }, ctx, signal: stop, onProgress }, value, sourcePages), 1);
     return current => {
       signal?.throwIfAborted(); ctx.signal?.throwIfAborted();
       if (activation !== session.state || !isSameVaultPath(vault, ports.getConfig().obsidianRoot)) throw new Error("The active Scholar record changed during question review.");
@@ -543,31 +539,54 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
       renderShell: "self",
 
       async execute(toolCallId, params, signal, _onUpdate, ctx) {
-        try {
-          if (stoppedDelivery && params.action !== "status") throw new Error(stoppedDelivery);
-          const book = await requireActiveBook();
-          if (!ports.isActiveAuthority(book)) {
-            throw new Error("Scholar stopped because the active book authority changed. Select the PDF again.");
-          }
-          const setupActive = ports.isSetupActive(book);
-          if (!session.mode && !setupActive && params.action !== "status") {
-            throw new Error("Scholar has no active operation. Start explicitly with /scholar learn, /scholar exam, or /scholar tutor.");
-          }
-          if (session.mode && book.outlineStatus !== "ready") {
-            throw new Error("Scholar modes are locked until this PDF's outline is verified.");
-          }
-          if (session.mode === "learn") {
-            const target = session.recordId ? findSection(book, session.recordId) : undefined;
-            if (target && !lessonReady(target, book.source.fingerprint.sha256)) {
-              preparationTurnStartedAt ??= clock();
-              if (params.action !== "status" && preparationElapsed() >= LEARN_WORK_LIMIT_MS) {
-                const message = `Learn reached its 20-minute preparation limit for this activation. Saved draft preserved; generation stopped. ${continueHint(target)}`;
-                stopDelivery(message, ctx);
-                throw new Error(message);
-              }
+        const evaluateResult = (res: any) => {
+          const tone = res?.details?.tone;
+          if (tone === "retry" || tone === "error") {
+            consecutiveRejections++;
+            if (consecutiveRejections >= 8) {
+              const breakerMsg = "scholar: paused delivery after 8 consecutive rejections to prevent a runaway loop. Call scholar to resume.";
+              stopDelivery(breakerMsg, ctx);
+              return toolResult(params.action, breakerMsg, { tone: "error" });
             }
+          } else {
+            consecutiveRejections = 0;
+            lastProgressAt = clock();
           }
-          try { ports.onLoadingActivity?.(params.action, ctx, signal); } catch { /* display only */ }
+          return res;
+        };
+
+        const executeInner = async () => {
+          try {
+            if (stoppedDelivery && params.action !== "status") throw new Error(stoppedDelivery);
+            if (actionCallCount >= 250 && params.action !== "status") {
+              const message = "scholar: paused delivery after reaching the 250-action budget limit to prevent a runaway loop. Call scholar to resume.";
+              stopDelivery(message, ctx);
+              throw new Error(message);
+            }
+            if (turnActive && clock() - lastProgressAt >= PROGRESS_STALL_MS && params.action !== "status") {
+              const message = "Scholar stopped: active turn had no progress for 15 minutes. Call scholar to resume.";
+              stopDelivery(message, ctx);
+              throw new Error(message);
+            }
+            if (!turnActive) {
+              turnActive = true;
+              lastProgressAt = clock();
+            }
+            if (params.action !== "status") {
+              actionCallCount++;
+            }
+            const book = await requireActiveBook();
+            if (!ports.isActiveAuthority(book)) {
+              throw new Error("Scholar stopped because the active book authority changed. Select the PDF again.");
+            }
+            const setupActive = ports.isSetupActive(book);
+            if (!session.mode && !setupActive && params.action !== "status") {
+              throw new Error("Scholar has no active operation. Start explicitly with /scholar learn, /scholar exam, or /scholar tutor.");
+            }
+            if (session.mode && book.outlineStatus !== "ready") {
+              throw new Error("Scholar modes are locked until this PDF's outline is verified.");
+            }
+            try { ports.onLoadingActivity?.(params.action, ctx, signal); } catch { /* display only */ }
 
           if (params.action === "read") {
             return await handleSourceRead(book, session, params, mutateBook);
@@ -663,12 +682,75 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
               } else if (params.figureReviews) {
                 throw new Error("Source figure reviews belong only to the active Learn section.");
               }
+              const sectionBefore = session.mode === "learn" ? requireLearnSection(state) : undefined;
+              if (sectionBefore?.lessonCommit && (params.lesson || params.lessonPatch)) {
+                completedPasses.delete(`lesson:${sectionBefore.id}`);
+              }
               const result = await update(state);
               const section = session.mode === "learn" ? requireLearnSection(state) : undefined;
               if (section && (params.lessonComplete === true || (section.status === "complete" && section.figureCoverage))) await assertLearnFigureCoverage(ports.getConfig(), state, section);
               return result;
             });
             const saved = await handleNotes(book, session, params, requireLearnSection, saveNotes, toolResult, ports.getConfig(), deferCommit);
+            if (session.mode === "tutor" && params.lesson) {
+              const tutor = book.tutorSessions.find(item => item.id === session.recordId);
+              const existingUnit = tutor?.transcript.some(entry => entry.id === params.lesson!.id && entry.lesson);
+              if (tutor && !existingUnit) {
+                const targetKey = `tutor:explanation:${tutor.id}:${params.lesson.id}`;
+                if (passCompleted(targetKey)) {
+                  const receipts = (tutor.review?.receipts || []).filter(r => r.role === "teaching");
+                  const blockingFindings = receipts.filter(r => !r.failure).flatMap(r => r.findings.filter(f => f.severity === "blocking").map(f => ({ role: r.role, finding: f, key: computeFindingKey(r.role, f) })));
+                  const responses = [...(tutor.review?.responses || []), ...(params.findingResponses || [])];
+                  const responseKeys = new Set(responses.map(r => r.key));
+                  const unresponded = blockingFindings.filter(b => !responseKeys.has(b.key));
+                  if (unresponded.length > 0) {
+                    return toolResult("notes", `Draft saved; blocking findings require responses before commit: ${unresponded.map(b => `[F-${b.key}] (${b.finding.issue})`).join("; ")}`, { bookId: book.id, tone: "review" });
+                  }
+                  return saved;
+                }
+
+                markPassCompleted(targetKey);
+                const packet = planTutorExplanationPacket(params.lesson as any);
+                const runResults = await withReview(book, ctx, signal, (stop, onProgress) => runReviewPass({
+                  book,
+                  config: ports.getConfig(),
+                  ctx,
+                  signal: stop,
+                  onProgress,
+                  sourceHash: book.source.fingerprint.sha256,
+                  contentHash: lessonHash(params.lesson!.markdown),
+                  sourcePages: params.lesson!.sourcePages,
+                  prepared: true,
+                }, [packet]), 1);
+
+                const blockingFindings = runResults.filter(r => !r.failure).flatMap(r => r.findings.filter(f => f.severity === "blocking").map(f => ({ role: r.role, finding: f, key: computeFindingKey(r.role, f) })));
+                await mutateBook(book.id, state => {
+                  const current = state.tutorSessions.find(item => item.id === tutor.id);
+                  if (!current) return;
+                  if (!current.review) current.review = { version: 1, receipts: [], responses: [] };
+                  current.review.receipts.push(...runResults);
+                  if (params.findingResponses?.length) {
+                    const existing = new Map((current.review.responses || []).map(r => [r.key, r]));
+                    for (const resp of params.findingResponses) existing.set(resp.key, resp);
+                    current.review.responses = [...existing.values()];
+                  }
+                });
+
+                if (blockingFindings.length > 0) {
+                  const result = toolResult("notes", "Saved Tutor explanation draft; specialist review found repairs. Address each blocking finding [F-<key>] by revising the explanation and supplying findingResponses: [{ key, action: 'fixed' | 'declined', note }] before saving again.", { bookId: book.id, tone: "review" });
+                  result.content.push({ type: "text", text: runResults.flatMap(review => [
+                    ...(review.failure ? [`${review.role} / execution incomplete: ${review.failure.message}`] : []),
+                    ...review.findings.filter(finding => !(review.failure && finding.target === "review evidence" && finding.issue === review.failure.message))
+                      .map(finding => {
+                        const key = computeFindingKey(review.role, finding);
+                        return `${review.role} / ${finding.severity} / [F-${key}] / ${finding.target} / PDF ${finding.sourcePages.join(", ")}: ${finding.issue}\nRepair: ${finding.repair}`;
+                      }),
+                  ]).join("\n\n") });
+                  return result;
+                }
+                return toolResult("notes", `Saved source-grounded Tutor notes for ${tutor.title}. Full explanation committed after teaching review.`, { bookId: book.id });
+              }
+            }
             if (!deferCommit || !params.lessonComplete) return saved;
             const draft = await loadBook(book.id);
             if (!draft || !ports.isActiveAuthority(draft)) throw new Error("The active Scholar book changed before review.");
@@ -683,14 +765,27 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
               stopDelivery(message, ctx);
               throw new Error(`${message}\n${gapMessage}`);
             }
-            const remainingMs = LEARN_WORK_LIMIT_MS - preparationElapsed();
-            if (remainingMs < MIN_REVIEW_WINDOW_MS) {
-              const message = `Draft saved; too little of Learn's 20-minute preparation limit remains to run review. Generation stopped. ${continueHint(section)}`;
-              stopDelivery(message, ctx);
-              throw new Error(message);
+            const targetKey = `lesson:${section.id}`;
+            if (passCompleted(targetKey)) {
+              const final = await mutateBook(draft.id, async state => {
+                const current = requireLearnSection(state);
+                if (activation !== session.state || !ports.isActiveAuthority(state) || state.source.fingerprint.sha256 !== draft.source.fingerprint.sha256) throw new Error("The active Scholar record changed during commit.");
+                await assertLearnFigureCoverage(ports.getConfig(), state, current);
+                signal?.throwIfAborted(); ctx.signal?.throwIfAborted();
+                const gaps = learnReviewIssues(current, state.source.fingerprint.sha256);
+                if (!gaps.length) { commitLesson(current, state); recomputeProgress(state, current); }
+                return gaps;
+              });
+              if (final.result.length) {
+                const message = `Draft saved; blocking findings require responses before commit: ${final.result.join("; ")}`;
+                return toolResult("notes", message, { bookId: book.id, sectionId: section.id, tone: "review" });
+              }
+              try { ports.onReviewOutcome?.(); } catch { /* display only */ }
+              return toolResult("notes", "Full lesson committed after specialist review and author responses. Begin the planned learner checks; this does not award mastery.", { bookId: book.id, sectionId: section.id });
             }
-            reserveReview(`lesson:${section.id}`, ctx);
-            const reviewTimeoutMs = Math.max(1, Math.floor(Math.min(DEFAULT_REVIEWER_LIMITS.timeoutMs, remainingMs)));
+
+            markPassCompleted(targetKey);
+            const reviewTimeoutMs = DEFAULT_REVIEWER_LIMITS.timeoutMs;
             const checkpoints = saveReviewCheckpoints(draft, section, activation, ctx);
             const reviews = await withReview(draft, ctx, signal, (stop, onProgress) => reviewLearnDraft({ book: draft, section, config: { ...ports.getConfig() }, ctx, signal: stop, onProgress, reviewTimeoutMs, onCheckpoint: checkpoints.save }))
               .finally(() => checkpoints.close());
@@ -709,16 +804,19 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
               const incomplete = reviews.filter(review => review.failure);
               const message = incomplete.length
                 ? `Draft saved; review incomplete (${incomplete.map(review => `${review.role}: ${review.failure!.code}`).join(", ")}). Generation stopped. ${continueHint(section)} After that command, retry the same draft before any optional edits. No automatic retry or rewrite after an execution failure.`
-                : "Draft saved; specialist review found repairs. Revise the named passages in their existing lesson IDs using the current expectedContentHash, update their exact coverage evidence, and submit lessonComplete again. Do not append a duplicate replacement lesson.";
+                : "Draft saved; specialist review found repairs. Address each blocking finding [F-<key>] by revising passages in their existing lesson IDs and supplying findingResponses: [{ key, action: 'fixed' | 'declined', note }] before submitting lessonComplete again.";
               try { ports.onReviewOutcome?.(incomplete.length ? `Draft saved · review incomplete: ${incomplete.map(review => review.failure!.code).join(", ")}` : "Draft saved · revisions needed"); } catch { /* display only */ }
               const result = toolResult("notes", message, { bookId: book.id, sectionId: section.id, tone: "review" });
               result.content.push({ type: "text", text: reviews.flatMap(review => [
                 ...(review.failure ? [`${review.role} / execution incomplete: ${review.failure.message}`] : []),
                 ...review.findings.filter(finding => !(review.failure && finding.target === "review evidence" && finding.issue === review.failure.message))
-                  .map(finding => `${review.role} / ${finding.severity} / ${finding.target} / PDF ${finding.sourcePages.join(", ")}: ${finding.issue}\nRepair: ${finding.repair}`),
+                  .map(finding => {
+                    const key = computeFindingKey(review.role, finding);
+                    return `${review.role} / ${finding.severity} / [F-${key}] / ${finding.target} / PDF ${finding.sourcePages.join(", ")}: ${finding.issue}\nRepair: ${finding.repair}`;
+                  }),
               ]).join("\n\n") });
-              if (incomplete.length || (reviewRounds.get(`lesson:${section.id}`) || 0) >= 3) {
-                stopDelivery(incomplete.length ? message : `Draft saved; three review rounds found unresolved content. Generation stopped. ${continueHint(section)}`, ctx);
+              if (incomplete.length) {
+                stopDelivery(message, ctx);
               }
               return result;
             }
@@ -747,7 +845,78 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
             requireMode("exam");
             const examId = params.examId || session.recordId;
             if (!examId || examId !== session.recordId) throw new Error("Scholar exam_build must target the active exam.");
-            return await handleExamBuild(book, examId, params.questions || [], ctx, mutateBook, presentExam, toolResult);
+            if (params.findingResponses !== undefined) {
+              if (!Array.isArray(params.findingResponses) || !params.findingResponses.length || !params.findingResponses.every(isFindingResponse)) {
+                throw new Error("findingResponses must be an array of valid responses with key, action ('fixed' | 'declined'), and note (1-600 chars).");
+              }
+            }
+            const current = book.exams.find((item) => item.id === examId);
+            if (!current || current.status !== "draft" || current.questions.length) {
+              throw new Error("The active exam is not an empty draft.");
+            }
+            const questions = validateExamQuestions(current, (params.questions || []) as ExamQuestion[]);
+            const blueprint = examBlueprint(current, questions);
+            const formIssues = examFormIssues(blueprint);
+            if (formIssues.length > 0) {
+              throw new Error(`This exam form does not meet the question engine's standard. ${formIssues.join(" ")}`);
+            }
+
+            const targetKey = `exam:form:${examId}`;
+            if (passCompleted(targetKey)) {
+              const receipts = current.review?.receipts || [];
+              const blockingFindings = receipts.filter(r => !r.failure).flatMap(r => r.findings.filter(f => f.severity === "blocking").map(f => ({ role: r.role, finding: f, key: computeFindingKey(r.role, f) })));
+              const responses = [...(current.review?.responses || []), ...(params.findingResponses || [])];
+              const responseKeys = new Set(responses.map(r => r.key));
+              const unresponded = blockingFindings.filter(b => !responseKeys.has(b.key));
+              if (unresponded.length > 0) {
+                return toolResult("exam_build", `Exam form saved; blocking findings require responses before freeze: ${unresponded.map(b => `[F-${b.key}] (${b.finding.issue})`).join("; ")}`, { bookId: book.id, tone: "review" });
+              }
+              return await handleExamBuild(book, examId, params.questions || [], ctx, mutateBook, presentExam, toolResult, params.findingResponses);
+            }
+
+            markPassCompleted(targetKey);
+            const packets = planExamReviewPackets(current, questions, book);
+            const examPages = [...new Set(packets.flatMap(p => p.reads))].sort((a, b) => a - b);
+            const runResults = await withReview(book, ctx, signal, (stop, onProgress) => runReviewPass({
+              book,
+              config: ports.getConfig(),
+              ctx,
+              signal: stop,
+              onProgress,
+              sourceHash: book.source.fingerprint.sha256,
+              contentHash: examFormFingerprint({ ...current, questions } as any),
+              sourcePages: examPages,
+              prepared: true,
+            }, packets), packets.length);
+
+            const blockingFindings = runResults.filter(r => !r.failure).flatMap(r => r.findings.filter(f => f.severity === "blocking").map(f => ({ role: r.role, finding: f, key: computeFindingKey(r.role, f) })));
+            await mutateBook(book.id, (state) => {
+              const exam = state.exams.find((item) => item.id === examId);
+              if (!exam) return;
+              if (!exam.review) exam.review = { version: 1, receipts: [], responses: [] };
+              exam.review.receipts.push(...runResults);
+              if (params.findingResponses?.length) {
+                const existing = new Map((exam.review.responses || []).map((r) => [r.key, r]));
+                for (const resp of params.findingResponses) existing.set(resp.key, resp);
+                exam.review.responses = [...existing.values()];
+              }
+            });
+
+            if (blockingFindings.length > 0) {
+              const result = toolResult("exam_build", "Exam form built; specialist review found repairs. Address each blocking finding [F-<key>] and supply findingResponses: [{ key, action: 'fixed' | 'declined', note }] with exam_build before freezing.", { bookId: book.id, tone: "review" });
+              result.content.push({ type: "text", text: runResults.flatMap(review => [
+                ...(review.failure ? [`${review.role} / execution incomplete: ${review.failure.message}`] : []),
+                ...review.findings.filter(finding => !(review.failure && finding.target === "review evidence" && finding.issue === review.failure.message))
+                  .map(finding => {
+                    const key = computeFindingKey(review.role, finding);
+                    return `${review.role} / ${finding.severity} / [F-${key}] / ${finding.target} / PDF ${finding.sourcePages.join(", ")}: ${finding.issue}\nRepair: ${finding.repair}`;
+                  }),
+              ]).join("\n\n") });
+              return result;
+            }
+
+            const freshBook = (await loadBook(book.id)) || book;
+            return await handleExamBuild(freshBook, examId, params.questions || [], ctx, mutateBook, presentExam, toolResult, params.findingResponses);
           }
 
           if (params.action === "exam_present") {
@@ -813,7 +982,10 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
             { tone },
           );
         }
-      },
+      };
+
+      return evaluateResult(await executeInner());
+    },
 
       renderCall(args, theme) {
         const action = typeof args.action === "string" ? args.action : "work";
@@ -852,11 +1024,13 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
 
   const resetTransientState = (): void => {
     for (const stop of reviewStops) stop.abort(new Error("Scholar review cancelled because its active session changed."));
-    reviewRounds.clear();
+    completedPasses.clear();
     prereviewRejections.clear();
     stoppedDelivery = undefined;
-    preparationSpentMs = 0;
-    preparationTurnStartedAt = undefined;
+    consecutiveRejections = 0;
+    actionCallCount = 0;
+    turnActive = false;
+    lastProgressAt = clock();
     clearOutlineValidation();
     clearImageSelection();
     sourceFigureViews.clear();

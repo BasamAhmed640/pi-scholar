@@ -8,6 +8,7 @@ import {
   validateExamQuestions,
 } from "../exam.ts";
 import type { ToolDetails } from "../tool-contract.ts";
+import type { FindingResponse } from "../learn-quality.ts";
 import type {
   ExamBreakdown,
   ExamItemResult,
@@ -41,6 +42,7 @@ export async function handleExamBuild(
   mutateBook: MutateBook,
   presentExam: PresentExamFn,
   toolResult: ToolResultFn,
+  findingResponses?: FindingResponse[],
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: ToolDetails }> {
   const current = book.exams.find((item) => item.id === examId);
   if (!current || current.status !== "draft" || current.questions.length) {
@@ -64,6 +66,12 @@ export async function handleExamBuild(
     exam.status = "active";
     exam.startedAt = new Date().toISOString();
     exam.updatedAt = exam.startedAt;
+    if (findingResponses?.length) {
+      if (!exam.review) exam.review = { version: 1, receipts: [], responses: [] };
+      const existing = new Map((exam.review.responses || []).map((r) => [r.key, r]));
+      for (const resp of findingResponses) existing.set(resp.key, resp);
+      exam.review.responses = [...existing.values()];
+    }
   });
   const presented = await presentExam(book.id, examId, ctx);
   return toolResult(

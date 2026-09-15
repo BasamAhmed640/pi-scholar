@@ -94,7 +94,8 @@ for (const malformed of [
 ]) assert(!quality.isReviewResult(malformed), JSON.stringify(malformed).slice(0, 200));
 assert.deepEqual(quality.parseReviewerVerdict(JSON.stringify(pass)), pass);
 assert.deepEqual(quality.parseReviewerVerdict(`\n\`\`\`json\n${JSON.stringify(pass)}\n\`\`\`\n`), pass);
-for (const raw of ["", "Looks good!", '{"status":"pass","findings":[', `${JSON.stringify(pass)} extra`,
+assert.deepEqual(quality.parseReviewerVerdict(`${JSON.stringify(pass)} extra`), pass);
+for (const raw of ["", "Looks good!", '{"status":"pass","findings":[',
   JSON.stringify({ status: "pass", findings: [blocking] }), JSON.stringify({ ...pass, contentHash: "a".repeat(64) })]) {
   assert.throws(() => quality.parseReviewerVerdict(raw));
 }

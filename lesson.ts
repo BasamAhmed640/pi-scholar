@@ -4,7 +4,7 @@ import { pageInRanges, scopedPageRanges } from "./page-scope.ts";
 import { resolveLessonFigures } from "./lesson-figures.ts";
 import { normalizeObsidianMath } from "./math-formatting.ts";
 import { renderKeyEquations, type KeyEquation } from "./equation-presentation.ts";
-import { sourceCoverageIssues, reviewGateIssues } from "./learn-quality.ts";
+import { sourceCoverageIssues, reviewGateIssues, computeFindingKey, type ReviewFinding, type ReviewRole, type ReviewReceipt } from "./learn-quality.ts";
 import { recordValidatedLessonRevision } from "./history.ts";
 import type { AssessmentKind, ScholarBook, ScholarConfig, ScholarSection, TranscriptEntry, TutorSession } from "./types.ts";
 
@@ -264,7 +264,70 @@ export function learnDeliveryIssues(section: ScholarSection, sourceHash?: string
 }
 
 export function learnReviewIssues(section: ScholarSection, sourceHash: string): string[] {
-  return section.learnQuality ? reviewGateIssues(section.learnQuality.reviews, { contentHash: learnReviewHash(section), sourceHash }) : [];
+  if (!section.learnQuality) return [];
+  const contentHash = learnReviewHash(section);
+  const roles: readonly ReviewRole[] = ["source", "teaching", "visual"];
+  const receipts = section.learnQuality.reviews;
+
+  // 1. Check if legacy gate passes (matching current contentHash and sourceHash, all pass)
+  if (!reviewGateIssues(receipts, { contentHash, sourceHash, roles }).length) return [];
+
+  // 2. One-pass gate:
+  // Each required role must have at least one receipt matching sourceHash
+  const issues: string[] = [];
+  const latestByRole = new Map<ReviewRole, ReviewReceipt>();
+  for (const role of roles) {
+    const roleReceipts = receipts.filter(r => r.role === role && r.sourceHash === sourceHash)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const latest = roleReceipts[0];
+    if (!latest) {
+      issues.push(`Complete the ${role} review.`);
+      continue;
+    }
+    const tied = roleReceipts.filter(r => r.createdAt === latest.createdAt);
+    if (tied.some(r => JSON.stringify(r) !== JSON.stringify(latest))) {
+      issues.push(`The ${role} review has conflicting receipts; run a fresh review.`);
+      continue;
+    }
+    latestByRole.set(role, latest);
+  }
+  if (issues.length) return issues;
+
+  // Check for blocking findings across latest receipts
+  const responses = section.learnQuality.responses || [];
+  const responseKeys = new Set(responses.map(r => r.key));
+  const blockingFindings: Array<{ role: ReviewRole; finding: ReviewFinding; key: string }> = [];
+
+  for (const [role, latest] of latestByRole) {
+    for (const finding of latest.findings) {
+      if (finding.severity === "blocking") {
+        const key = computeFindingKey(role, finding);
+        blockingFindings.push({ role, finding, key });
+      }
+    }
+  }
+
+  if (blockingFindings.length > 0) {
+    const unresponded = blockingFindings.filter(b => !responseKeys.has(b.key));
+    if (unresponded.length > 0) {
+      return unresponded.map(b => `Respond to blocking finding [F-${b.key}] (${b.role}: ${b.finding.issue}).`);
+    }
+    // All blocking findings have responses -> one-pass approval!
+    return [];
+  }
+
+  // If there were no blocking findings, check if any failed (commit with warning allowed)
+  if ([...latestByRole.values()].some(r => r.failure)) {
+    return [];
+  }
+
+  // If no blocking findings and no failure, stale content without responses is stale
+  for (const [role, latest] of latestByRole) {
+    if (latest.contentHash !== contentHash) {
+      issues.push(`The ${role} review is stale; review the current lesson and source.`);
+    }
+  }
+  return issues;
 }
 
 export function lessonObjectiveHash(section: ScholarSection): string {

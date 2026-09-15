@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /**
  * Pure Learn delivery contracts. These checks establish traceable evidence and
  * current review receipts; they cannot themselves certify scientific accuracy.
@@ -178,6 +180,23 @@ export function isReviewFinding(value: unknown): value is ReviewFinding {
     && text(value.issue) && text(value.repair);
 }
 
+export type FindingResponse = {
+  key: string;
+  action: "fixed" | "declined";
+  note: string;
+};
+
+export function computeFindingKey(role: string, finding: Pick<ReviewFinding, "target" | "issue">): string {
+  return createHash("sha256").update(`${role}\u0000${finding.target}\u0000${finding.issue}`).digest("hex").slice(0, 12);
+}
+
+export function isFindingResponse(value: unknown): value is FindingResponse {
+  return object(value) && keys(value, ["key", "action", "note"])
+    && typeof value.key === "string" && value.key.length >= 1 && value.key.length <= 64
+    && (value.action === "fixed" || value.action === "declined")
+    && typeof value.note === "string" && value.note.trim().length >= 1 && value.note.length <= 600;
+}
+
 function validReviewFields(value: Record<string, unknown>): boolean {
   if ((value.status !== "pass" && value.status !== "changes") || !Array.isArray(value.findings)
     || value.findings.length > 40 || !value.findings.every(isReviewFinding)) return false;
@@ -189,17 +208,80 @@ export function isReviewResult(value: unknown): value is ReviewResult {
   return object(value) && keys(value, ["status", "findings"]) && validReviewFields(value);
 }
 
+function extractStatusJsonCandidates(text: string): string[] {
+  const candidates: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (char === "\\") {
+      escape = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (!inString) {
+      if (char === "{") {
+        if (depth === 0) start = i;
+        depth++;
+      } else if (char === "}") {
+        if (depth > 0) {
+          depth--;
+          if (depth === 0 && start !== -1) {
+            const candidate = text.slice(start, i + 1);
+            if (candidate.includes('"status"')) {
+              candidates.push(candidate);
+            }
+            start = -1;
+          }
+        }
+      }
+    }
+  }
+  return candidates;
+}
+
 /** A malformed or contradictory answer is a failed review, never an implicit pass. */
 export function parseReviewerVerdict(raw: string): ReviewerVerdict {
   if (typeof raw !== "string" || raw.length > 360000) throw new Error("Reviewer output is missing or too large.");
-  let json = raw.trim();
-  const fenced = /^```(?:json)?\s*\r?\n([\s\S]*?)\r?\n```$/i.exec(json);
-  if (fenced) json = fenced[1]!.trim();
-  let value: unknown;
-  try { value = JSON.parse(json); }
-  catch { throw new Error("Reviewer output must be one complete JSON verdict."); }
-  if (!isReviewResult(value)) throw new Error("Reviewer verdict has invalid fields or a status that contradicts its findings.");
-  return value;
+  const trimmed = raw.trim();
+  let candidate = trimmed;
+  const fenced = /^```(?:json)?\s*\r?\n([\s\S]*?)\r?\n```$/i.exec(trimmed);
+  if (fenced) candidate = fenced[1]!.trim();
+
+  let directParsed: unknown = undefined;
+  try {
+    directParsed = JSON.parse(candidate);
+    if (isReviewResult(directParsed)) return directParsed;
+  } catch {
+    // strict direct parse failed, attempt balanced {...} extraction below
+  }
+
+  const candidates = extractStatusJsonCandidates(raw);
+  let parsedCandidate: unknown = directParsed;
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    try {
+      const parsed = JSON.parse(candidates[i]!);
+      parsedCandidate = parsed;
+      if (isReviewResult(parsed)) return parsed;
+    } catch {
+      // not valid JSON
+    }
+  }
+
+  if (parsedCandidate !== undefined) {
+    throw new Error("Reviewer verdict has invalid fields or a status that contradicts its findings.");
+  }
+  throw new Error("Reviewer output must be one complete JSON verdict.");
 }
 
 export function isReviewReceipt(value: unknown): value is ReviewReceipt {
