@@ -1,0 +1,96 @@
+# AGENTS.md — pi-scholar
+
+One Pi extension. `index.ts` is the entry point (`package.json` → `pi.extensions`).
+Learn, Exam, and Tutor are **independent entry points for the same selected PDF book**;
+none requires another to be completed first.
+
+## Verify before claiming done
+
+```bash
+npm ci --ignore-scripts     # uses the committed npm-shrinkwrap.json
+npm test                    # 55 verifiers; currently all pass
+npm run test:list           # list checks without loading Pi
+npm run test:preflight      # confirm Pi SDK + test deps import
+npm run pack:check          # preview the npm archive file list
+```
+
+`npm test` is the only evidence that counts. It generates synthetic PDFs and
+disposable vaults, so it needs no real book or vault — but it does need
+**Poppler on PATH**: `pdfinfo`, `pdftotext`, `pdftoppm`. A run reporting
+"blocked" prerequisites is not a pass.
+
+There is **no `tsconfig.json` and no typecheck step.** The language server
+(`tsc --lsp`) still reports type errors per file. If you add a config, do not
+enable `strict` wholesale — this codebase has never been type-checked and it
+will bury real defects in noise.
+
+## Invariants — do not break these
+
+- **`tool-controller.ts` alone saves review receipts and commits approved
+  delivery.** Nothing else writes approval. Keep it the single writer.
+- **Approval is hash-bound.** The hash covers lesson, coverage, recap,
+  assessment plan, and figure metadata. Any content change invalidates approval
+  — that is intended, not a bug to route around.
+- **Review is single-pass.** Targets commit after one pass by recording finding
+  responses. Do **not** introduce re-review cycles or review-of-review.
+- **Modes are isolated.** They share the PDF and its validated outline, never
+  each other's learner history. A Tutor answer must not move Learn progress;
+  Exam generation must not read Learn or Tutor performance.
+- **Reviewers are scoped and read-only.** They cannot reach another mode's
+  history, write notes, change progress, run shell commands, or grade. They are
+  fresh in-memory conversations, not extension-loaded Pi sessions.
+- **Review must actually look.** Source review reads every scoped page; visual
+  review sees each full page and the saved crop. Never accept a summary of
+  evidence in place of the evidence.
+- **No fixed model or provider.** Do not hardcode a vendor anywhere in review
+  or authoring paths.
+- **Stable entry IDs prevent duplicate retries.** IDs of deleted entries stay in
+  the note's details purely to reject stale retries; they must contain no lesson
+  text. An intentional revision reads `status` with `lessonId` first, then
+  supplies the current `expectedContentHash` — never overwrite a user edit.
+
+## Layout
+
+| Area | Files |
+|---|---|
+| Entry / commands | `index.ts`, `commands.ts`, `command-syntax.ts`, `modes.ts` |
+| Learn | `lesson.ts`, `lesson-figures.ts`, `learn-quality.ts` |
+| Exam | `exam.ts`, `exam-paper.ts`, `quiz.ts`, `quiz-contract.ts` |
+| Review | `review-layer.ts`, `learn-review.ts`, `review-runtime.ts` |
+| Contract / state | `tool-controller.ts`, `tool-contract.ts`, `state-schema.ts`, `runtime-coordinator.ts` |
+| Obsidian | `obsidian.ts`, `obsidian-paths.ts`, `note-records.ts`, `note-storage.ts` |
+| Source PDFs | `ingest.ts`, `page-scope.ts`, `figure-capture.ts`, `figure-coverage.ts` |
+| Rendering | `render/`, `scholar.css`, `equation-presentation.ts` |
+| Tool actions | `tool-actions/` |
+
+Architecture narrative: `docs/architecture.md`. Note hierarchy: `docs/hierarchy.mmd`.
+
+## Environment
+
+- Poppler (`pdfinfo`, `pdftotext`, `pdftoppm`) must be on `PATH`. Windows may
+  also fall back to Calibre's bundled copies.
+- Interactive hosts must implement `getEditorComponent` / `setEditorComponent`.
+  Scholar **refuses to start a protected operation** if it cannot install its
+  chat lock rather than continuing unlocked. Only `hasUI: false` bypasses it.
+- For unusual installs, point at the SDK with `PI_SCHOLAR_PI_PACKAGE`, and pick
+  a specific extension with `PI_SCHOLAR_EXTENSION`.
+- **Keep the global TypeScript on 5.x.** The language server is
+  `typescript-language-server`, which drives TypeScript's JS `lib/tsserver.js`.
+  TypeScript 7 dropped that file, and the server then fails at initialize with
+  **no output on stdout or stderr and exit code 1** — a silent failure, not a
+  visible error. Verify with
+  `typescript-language-server --version` (expect a 6.x server driving a 5.x
+  TypeScript).
+
+## Privacy rules
+
+The PDF stays in its configured library and is **never copied into Obsidian**.
+Book text is read in bounded page ranges on demand — not pre-indexed into a
+vector database. Model conversations and credentials are never written into
+notes; reviewer findings live in the section note's collapsible details.
+
+## Before any public release
+
+`package.json` is `private` + `UNLICENSED`. The quiz adaptation's upstream
+permission is unresolved and a license for Scholar's original work is unchosen.
+Both must be settled and the notices/metadata updated first.
