@@ -41,13 +41,20 @@ selected PDF library contains the source books, not your learning history.
 
 ## Installation
 
+### Independent review restored (0.7.1)
+
+Learn deliveries, Tutor explanations and questions, and the Exam form are inspected by an independent crew before they commit, using the current Pi model and its supported thinking level.
+Findings come back as `[F-<key>]` requests that the author answers with `findingResponses`; each revision is reviewed once and finished checks are checkpointed and reused.
+There is no wall-clock stop on preparation. The count limits are unchanged (8 rejections, 250 actions, 4 delivery-gap attempts), and the only clock is the bounded reviewer run itself.
+
 ### Simplified study flow (0.7.0)
 
-A Learn lesson saves as soon as its automatic coverage checklist passes; there is no review step and no reviewer model.
+A Learn lesson saves as soon as its automatic coverage checklist passes; there is no independent review and no reviewer model.
 After the lesson, Learn asks exactly three short questions, one at a time. Answered, missed, or skipped questions all count, and the section is then complete.
 Every Learn and Tutor question is single-part and answerable in a terminal: a choice, a number, or one short sentence. Multi-part derivations belong in the lesson as worked examples.
 Reopening a section resumes it directly, with no dropdown; old notes and pending questions still reopen unchanged.
 Count limits remain (8 rejections in a row and 250 actions); the 15-minute stall stop is removed.
+Independent review was removed here and restored in 0.7.1.
 
 ### One-pass review and loop prevention (0.6.0)
 

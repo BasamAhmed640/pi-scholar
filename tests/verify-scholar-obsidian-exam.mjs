@@ -4,6 +4,7 @@ import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiP
 // preserve the frozen submission and reconstruct its saved grading report.
 // Every write and cleanup is confined to this verifier's fresh temporary root.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile, rename } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -79,7 +80,8 @@ function pdfFixture() {
 }
 
 function fixture(config, status = "active") {
-  const id = "e".repeat(64);
+  const bytes = pdfFixture();
+  const id = createHash("sha256").update(bytes).digest("hex");
   const section = { id: "s1", number: "1.1", order: 1, title: "Models", startPage: 1, endPage: 2, status: "not-started",
     objectives: [], coveredObjectives: [], requiredChecks: ["conceptual"], keyPoints: [], misconceptions: [], attempts: [], transcript: [],
     snapshots: [{ id: "snapshot-bbbbbbbbbbbbbbbb", page: 1, crop: { x: 0, y: 0, width: 600, height: 300, canvasWidth: 1000, canvasHeight: 1400 },
@@ -103,7 +105,7 @@ function fixture(config, status = "active") {
     ...(status === "draft" ? {} : { startedAt: timestamp }) };
   return { schemaVersion: 3, revision: 0, id, instanceId: "obsidian-exam-fixture", source: {
     absolutePath: join(config.libraryRoot, "fixture.pdf"), relativePath: "fixture.pdf", fileName: "fixture.pdf", format: "pdf",
-    fingerprint: { sha256: id, size: 1, mtimeMs: 1 } }, metadata: { title: "Obsidian exam fixture", authors: [], pageCount: 2 },
+    fingerprint: { sha256: id, size: bytes.length, mtimeMs: 0 } }, metadata: { title: "Obsidian exam fixture", authors: [], pageCount: 2 },
     outlineStatus: "ready", noteDirectory: "Obsidian exam fixture", chapters: [{ id: "c1", number: "1", order: 1, title: "Models", startPage: 1, endPage: 2,
       status: "not-started", sections: [section] }], exams: [exam], currentExamId: exam.id, tutorSessions: [], createdAt: timestamp, updatedAt: timestamp };
 }
@@ -116,6 +118,7 @@ async function harness(label, options = {}) {
   options.customize?.(book);
   config.currentBookId = book.id;
   await writeFile(book.source.absolutePath, pdfFixture());
+  book.source.fingerprint.mtimeMs = (await stat(book.source.absolutePath)).mtimeMs;
   await storage.createBookState(config, book);
   const notices = [], confirmations = [], sent = [], branch = [], tools = new Map(), locks = new Set();
   let activeTools = [];
@@ -575,20 +578,60 @@ try {
     assert.doesNotMatch(renderExam(h.config, h.book, gradedExam), /### Question/);
   });
 
-  await check("exam_build freezes the form without calling a reviewer model", async () => {
-    const h = await harness("no-review", { status: "draft" });
+  await check("exam_build reviews the frozen form before it activates", async () => {
+    const h = await harness("form-review", { status: "draft" });
     const simModel = { id: "sim-model", provider: "sim", api: "sim", input: ["text"], contextWindow: 32000, maxTokens: 4096 };
     let reviewerCalls = 0;
     h.context.model = simModel;
-    h.context.modelRegistry = { complete: async () => { reviewerCalls++; throw new Error("reviewer must not run"); } };
+    h.context.modelRegistry = { complete: async () => { reviewerCalls++; return {
+      role: "assistant", api: simModel.api, provider: simModel.provider, model: simModel.id,
+      content: [{ type: "text", text: JSON.stringify({ status: "pass", findings: [] }) }],
+      stopReason: "stop", usage: { input: 200, output: 40, cacheRead: 0, cacheWrite: 0, totalTokens: 240 }, timestamp: Date.now(),
+    }; } };
     const draftQuestions = fixture(h.config).exams[0].questions;
     const buildRes = await h.execute({ action: "exam_build", questions: draftQuestions });
-    assert.equal(reviewerCalls, 0, "exam_build must not call a reviewer model");
     assert.equal(buildRes.details.action, "exam_build");
     assert.ok(!["review", "error", "retry"].includes(buildRes.details.tone), buildRes.content[0]?.text);
+    assert.ok(reviewerCalls >= draftQuestions.length, `the assessment reviewer must check every question (${reviewerCalls} requests, ${draftQuestions.length} questions)`);
     const activeExam = (await h.current()).exams[0];
     assert.equal(activeExam.status, "active");
-    assert.equal(activeExam.review, undefined);
+    assert.ok(activeExam.review?.receipts.length, "the frozen form keeps its review receipts");
+    assert.ok(activeExam.review.receipts.every(receipt => receipt.status === "pass"));
+    const frozenFingerprint = examFormFingerprint({ ...activeExam, questions: draftQuestions });
+    assert.ok(activeExam.review.receipts.every(receipt => receipt.contentHash === frozenFingerprint), "receipts are bound to the submitted form");
+  });
+
+  await check("exam_build holds a draft open until the author answers blocking findings", async () => {
+    const h = await harness("form-findings", { status: "draft" });
+    const simModel = { id: "sim-model", provider: "sim", api: "sim", input: ["text"], contextWindow: 32000, maxTokens: 4096 };
+    let reviewerCalls = 0;
+    const issue = "Question q1 does not state its validity domain.";
+    h.context.model = simModel;
+    h.context.modelRegistry = { complete: async () => { reviewerCalls++; return {
+      role: "assistant", api: simModel.api, provider: simModel.provider, model: simModel.id,
+      content: [{ type: "text", text: JSON.stringify({ status: "changes", findings: [{ severity: "blocking", target: "q1", sourcePages: [1], issue, repair: "State the validity domain in the prompt." }] }) }],
+      stopReason: "stop", usage: { input: 200, output: 40, cacheRead: 0, cacheWrite: 0, totalTokens: 240 }, timestamp: Date.now(),
+    }; } };
+    const draftQuestions = fixture(h.config).exams[0].questions;
+    const first = await h.execute({ action: "exam_build", questions: draftQuestions });
+    assert.equal(first.details.tone, "review");
+    const detail = first.content.map(item => item.text).join("\n");
+    assert.ok(detail.includes(issue), detail);
+    const keys = [...new Set([...detail.matchAll(/\[F-([0-9a-f]{12})\]/g)].map(match => match[1]))];
+    assert.ok(keys.length > 0, `a concrete finding request is present: ${detail}`);
+    const held = (await h.current()).exams[0];
+    assert.equal(held.status, "draft", "blocking findings keep the exam editable");
+    assert.equal(held.questions.length, 0, "the form is not frozen while findings are open");
+    const callsAfterReview = reviewerCalls;
+
+    const second = await h.execute({ action: "exam_build", questions: draftQuestions,
+      findingResponses: keys.map(key => ({ key, action: "fixed", note: "Stated the validity domain in every prompt." })) });
+    assert.ok(!["review", "error", "retry"].includes(second.details.tone), second.content[0]?.text);
+    assert.equal(reviewerCalls, callsAfterReview, "an answered resubmission checks responses instead of re-running the crew");
+    const frozen = (await h.current()).exams[0];
+    assert.equal(frozen.status, "active");
+    assert.equal(frozen.questions.length, draftQuestions.length);
+    assert.ok(keys.every(key => (frozen.review?.responses || []).some(response => response.key === key && response.action === "fixed")), "every answered finding is stored with the form");
   });
 
 } finally {

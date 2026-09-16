@@ -1,5 +1,8 @@
 import { sdkAliases } from "./sdk.mjs";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { extensionPath, piPackageRoot, jitiPath, resolvePiDependency } from "./sdk.mjs";
@@ -28,6 +31,23 @@ const seed = () => ({ id: "book", instanceId: "instance", outlineStatus: "ready"
 const session = new ScholarRuntimeSession(); session.activate("book", "tutor", "t1");
 let book = seed();
 const target = () => book.tutorSessions[0];
+
+// Independent reviewers read the real source page through Poppler.
+function pdfFixture() {
+  const streams = ["BT /F1 11 Tf 60 750 Td 18 TL (1.1 Travel time) Tj T* (At a fixed speed, doubling the distance doubles the travel time.) Tj ET",
+    "BT /F1 11 Tf 60 750 Td (1.2 Worked example.) Tj ET", "BT /F1 11 Tf 60 750 Td (1.3 Practice.) Tj ET"];
+  const objects = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R] /Count 3 >>"];
+  for (let index = 0; index < streams.length; index++) {
+    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 9 0 R >> >> /Contents ${4 + index * 2} 0 R >>`);
+    objects.push(`<< /Length ${Buffer.byteLength(streams[index])} >>\nstream\n${streams[index]}\nendstream`);
+  }
+  objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+  let pdf = "%PDF-1.4\n";
+  const offsets = objects.map((object, index) => { const offset = Buffer.byteLength(pdf); pdf += `${index + 1} 0 obj\n${object}\nendobj\n`; return offset; });
+  const xref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map(offset => `${String(offset).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf);
+}
 const mutate = async (id, operation) => {
   assert.equal(id, book.id);
   const copy = structuredClone(book); const result = await operation(copy); book = copy; return { book, result };
@@ -145,6 +165,69 @@ await assert.rejects(evaluate(), /no learner response/);
 gate.capture(book, session, "", "interactive", photos); gate.clear();
 gate.beginTurn(book, session, "", photos);
 await assert.rejects(evaluate(), /no learner response/);
+
+// Preparing an open question runs exactly one assessment review; a changes verdict
+// refuses the question before the learner sees it. A saved Tutor explanation is
+// reviewed once first, which is the production order that creates the session's
+// review record.
+{
+  const folder = await mkdtemp(join(tmpdir(), "scholar-open-assessment-"));
+  try {
+    const bytes = pdfFixture();
+    const sourcePath = join(folder, "source.pdf");
+    await writeFile(sourcePath, bytes);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    book = { ...seed(), id: sha256, source: { absolutePath: sourcePath, relativePath: "source.pdf", fileName: "source.pdf", format: "pdf",
+      fingerprint: { sha256, size: bytes.length, mtimeMs: (await stat(sourcePath)).mtimeMs } } };
+    gate.clear();
+    let definition;
+    const requests = [];
+    const model = { id: "assessment-review", provider: "fixture", api: "fixture", input: ["text"], contextWindow: 32_000, maxTokens: 4000 };
+    const modelRegistry = { complete: async (_selected, reviewContext) => {
+      const answered = reviewContext.messages.some(message => message.role === "toolResult");
+      const role = /Assigned role: (\w+)\./.exec(reviewContext.systemPrompt)?.[1] || "unknown";
+      requests.push(role === "assessment" && !answered ? "assessment-review" : role);
+      const reply = (content, stopReason = "stop") => ({ role: "assistant", api: model.api, provider: model.provider, model: model.id, stopReason, timestamp: Date.now(), content,
+        usage: { input: 120, output: 30, cacheRead: 0, cacheWrite: 0, totalTokens: 150, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
+      if (role === "assessment" && !answered) {
+        return reply([{ type: "toolCall", name: "read_source", arguments: { startPage: 1, endPage: 1 }, id: `read-${requests.length}` }], "toolUse");
+      }
+      const verdict = requests.filter(item => item === "assessment-review").length >= 2
+        ? { status: "changes", findings: [{ severity: "blocking", target: "question wording", sourcePages: [1], issue: "The prompt hides that the speed stays fixed.", repair: "State that the speed stays fixed." }] }
+        : { status: "pass", findings: [] };
+      return reply([{ type: "text", text: JSON.stringify(verdict) }]);
+    } };
+    const controller = createScholarToolController({ pi: { registerTool: (tool) => { definition = tool; } }, session,
+      getConfig: () => ({ libraryRoot: folder, obsidianRoot: folder, stateRoot: folder }),
+      loadBook: async () => book, mutateBook: mutate, isActiveAuthority: () => true, isSetupActive: () => false });
+    controller.ensureRegistered();
+    const context = { hasUI: false, model, modelRegistry };
+    const execute = (id, params) => definition.execute(id, params, undefined, undefined, context);
+    const explain = await execute("tutor-explanation", { action: "notes", lesson: { id: "tutor-unit", title: "Travel time at fixed speed", objectives: [], sourcePages: [1],
+      markdown: "### Travel time at fixed speed\n\nA model connects an input to an observable result, so the explanation states the relation before giving a number.",
+      keyPoints: ["Delay grows with path length at fixed speed."] } });
+    assert.ok(!["review", "error", "retry"].includes(explain.details.tone), explain.content[0].text);
+    assert.equal(requests.filter(item => item === "teaching").length, 1, "a saved explanation is reviewed once");
+    assert.ok(target().review?.receipts?.some(receipt => receipt.role === "teaching"), "the explanation keeps its teaching receipt");
+    const prepareQuestion = (id, prompt) => execute(id, { action: "assess", outcome: "pending", kind: "conceptual", question: prompt,
+      expectedAnswer: contract.expectedAnswer, criteria: contract.criteria, grounding });
+
+    const approved = await prepareQuestion("question-approved", question);
+    assert.ok(!["review", "error", "retry"].includes(approved.details.tone), approved.content[0].text);
+    assert.equal(requests.filter(item => item === "assessment-review").length, 1, "preparing a question runs exactly one assessment review");
+    assert.equal(target().attempts.length, 1);
+    assert.equal(target().attempts[0].outcome, "pending");
+
+    const refused = await prepareQuestion("question-refused", "How does the delay change when the path length doubles?");
+    assert.ok(["review", "error", "retry"].includes(refused.details.tone), refused.content[0].text);
+    assert.match(refused.content[0].text, /Repair the proposed question/);
+    assert.equal(requests.filter(item => item === "assessment-review").length, 2, "each question is reviewed once");
+    assert.equal(target().attempts.length, 1, "a refused question is never shown to the learner");
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+}
+console.log("[PASS] a saved Tutor explanation is reviewed once, preparing a question runs exactly one assessment review, and a changes verdict refuses it");
 
 const validQuiz = { question, options: [{ label: "Doubles", value: "double" },
   { label: "Stays fixed", value: "fixed", misconception: "Confuses constant speed with constant time" },

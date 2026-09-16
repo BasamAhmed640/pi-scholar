@@ -96,7 +96,7 @@ async function harness(mode = "exam") {
   });
   controller.ensureRegistered();
   h.reset = () => controller.resetTransientState();
-  h.execute = (params) => tool.execute(`mode-figure-${++calls}`, params, undefined, undefined, { hasUI: false });
+  h.execute = (params, context = { hasUI: false }) => tool.execute(`mode-figure-${++calls}`, params, undefined, undefined, context);
   h.view = async (page = 2) => { const result = await h.execute({ action: "view", page }); success(result); return result.details; };
   h.crop = (view, extra = {}) => h.execute({ action: "snapshot", page: view.page, x: 120, y: 650, width: 800, height: 240, canvasWidth: view.width, canvasHeight: view.height, caption: "Physical causes connect through the source diagram.", ...extra });
   h.record = (book) => mode === "exam" ? book.exams[0] : book.tutorSessions[0];
@@ -111,6 +111,41 @@ async function check(name, test) {
 }
 
 try {
+  await check("tutor explanations are reviewed before delivery and answered findings do not re-run the crew", async () => {
+    const h = await harness("tutor");
+    const model = { id: "tutor-review", provider: "fixture", api: "fixture", input: ["text"], contextWindow: 32_000, maxTokens: 4000 };
+    const issue = "The explanation jumps from the diagram to the result.";
+    let teachingReviews = 0;
+    const context = { hasUI: false, model, modelRegistry: { complete: async (_selected, reviewContext) => {
+      if ((/Assigned role: (\w+)\./.exec(reviewContext.systemPrompt)?.[1] || "") === "teaching") teachingReviews++;
+      const verdict = teachingReviews <= 1
+        ? { status: "changes", findings: [{ severity: "blocking", target: "explanation/cause", sourcePages: [2], issue, repair: "Name the intermediate step." }] }
+        : { status: "pass", findings: [] };
+      return { role: "assistant", api: model.api, provider: model.provider, model: model.id, stopReason: "stop", timestamp: Date.now(),
+        content: [{ type: "text", text: JSON.stringify(verdict) }],
+        usage: { input: 120, output: 30, cacheRead: 0, cacheWrite: 0, totalTokens: 150, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+    } } };
+    const lesson = { id: "tutor-unit", title: "Source causes", objectives: [], keyPoints: ["Changes propagate through each step."], sourcePages: [2],
+      markdown: "### Source causes\n\nA change at the input reaches the observed result through each intermediate step of the source diagram." };
+
+    const first = await h.execute({ action: "notes", lesson }, context);
+    assert.equal(teachingReviews, 1, "the saved explanation is reviewed once by the teaching role");
+    assert.equal(first.details.tone, "review");
+    const findingsText = first.content.map(item => item.text).join("\n");
+    assert.ok(findingsText.includes(issue), findingsText);
+    const keys = [...new Set([...findingsText.matchAll(/\[F-([0-9a-f]{12})\]/g)].map(match => match[1]))];
+    assert.equal(keys.length, 1, `the blocking finding is named with its repair key: ${keys.join(", ")}`);
+    const reviewed = h.record(await h.load());
+    assert.equal(reviewed.review.receipts.filter(receipt => receipt.role === "teaching").length, 1, "the teaching receipt is stored on the Tutor session");
+
+    const second = await h.execute({ action: "notes", lesson,
+      findingResponses: keys.map(key => ({ key, action: "fixed", note: "Named the intermediate step in the explanation." })) }, context);
+    assert.ok(!["error", "retry", "review"].includes(second.details.tone), second.content[0].text);
+    assert.equal(teachingReviews, 1, "an answered resubmission never re-runs the crew");
+    const answered = h.record(await h.load());
+    assert.ok(keys.every(key => (answered.review.responses || []).some(response => response.key === key)), "the author response is stored on the Tutor session");
+  });
+
   for (const mode of ["exam", "tutor"]) {
     await check(`${mode} saves a real crop without prior Learn; metadata and assets survive reload`, async () => {
       const h = await harness(mode), view = await h.view();

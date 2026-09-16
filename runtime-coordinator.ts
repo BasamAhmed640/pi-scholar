@@ -22,7 +22,7 @@ import {
 import { inspectBook, scanLibrary } from "./ingest.ts";
 import { ScholarLoadingProgress } from "./loading-progress.ts";
 import { lessonReady } from "./lesson.ts";
-import type { ReviewerProgress } from "./review-runtime.ts";
+import { DEFAULT_REVIEWER_LIMITS, type ReviewerProgress } from "./review-runtime.ts";
 import {
   createScholarInputLockController,
   type InputLockContext,
@@ -393,7 +393,7 @@ export class ScholarRuntimeCoordinator {
       this.loadingReviews.clear();
       this.loadingNeedsWriting = false;
       this.loadingRound++;
-      this.loading.update(3, total === 3 ? `Lesson review · round ${this.loadingRound} · 12m shared deadline` : "Checking the next question");
+      this.loading.update(3, total === 3 ? `Lesson review · round ${this.loadingRound} · ${Math.round(DEFAULT_REVIEWER_LIMITS.timeoutMs / 60_000)}m shared deadline` : "Checking the next question");
       return;
     }
     if (event.stage === "complete") this.loadingReviews.add(event.role);

@@ -346,7 +346,7 @@ export function lessonCoverageIssues(section: ScholarSection, sourceHash?: strin
 }
 
 export function commitLesson(section: ScholarSection, book: ScholarBook): void {
-  const issues = lessonCoverageIssues(section, book.source.fingerprint.sha256);
+  const issues = [...lessonCoverageIssues(section, book.source.fingerprint.sha256), ...learnReviewIssues(section, book.source.fingerprint.sha256)];
   if (issues.length) throw new Error(`The lesson is not ready: ${issues.join("; ")}. Save explanations in parts, then set lessonComplete=true.`);
   const entries = validLessonEntries(section, book.source.fingerprint.sha256);
   section.lessonCommit = { entryIds: entries.map(entry => entry.id), contentHash: commitHash(section, entries), sourceHash: book.source.fingerprint.sha256 };
@@ -359,6 +359,7 @@ export function lessonReady(section: ScholarSection, sourceHash?: string): boole
   if (!isLessonCommit(commit) || (sourceHash && commit.sourceHash !== sourceHash)) return false;
   const entries = validLessonEntries(section, commit.sourceHash).filter(entry => commit.entryIds.includes(entry.id));
   return entries.length === commit.entryIds.length && lessonCoverageIssues(section, commit.sourceHash).length === 0
+    && learnReviewIssues(section, commit.sourceHash).length === 0
     && commit.contentHash === commitHash(section, entries);
 }
 
