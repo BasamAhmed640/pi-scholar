@@ -361,7 +361,7 @@ export async function reviewOne(
       },
       limits: {
         timeoutMs: Math.min(DEFAULT_REVIEWER_LIMITS.timeoutMs, remainingMs),
-        maxOutputTokens: Math.max(1_024, Math.min(4_000, model.maxTokens || Math.floor((model.contextWindow || 32_000) / 8))),
+        maxOutputTokens: Math.max(1_024, Math.min(DEFAULT_REVIEWER_LIMITS.maxOutputTokens, model.maxTokens || Math.floor((model.contextWindow || 32_000) / 8))),
         maxImages: Math.max(4, Math.min(8, requiredViews.length + crops.length)),
         maxToolCalls: Math.max(8, Math.min(16, allPages.length + crops.length + 4)),
         maxTurns: options.prepared ? 2 : 16,

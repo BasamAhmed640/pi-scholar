@@ -9,7 +9,7 @@ const jiti = createJiti(import.meta.url, {
   moduleCache: false,
   alias: sdkAliases,
 });
-const { runReviewer, ReviewerRunError, DEFAULT_REVIEWER_LIMITS } = await jiti.import(join(dirname(extensionPath), "review-runtime.ts"));
+const { runReviewer, ReviewerRunError, DEFAULT_REVIEWER_LIMITS, REVIEWER_REASONING_HEADROOM } = await jiti.import(join(dirname(extensionPath), "review-runtime.ts"));
 const { Type } = await import(pathToFileURL(resolvePiDependency("typebox")).href);
 // Use the actual SDK facade: its complete() delegates to the active runtime.
 // The injected runtime below avoids any account/model request or auth file.
@@ -49,7 +49,7 @@ await check("Actual SDK registry receives the selected custom model and isolated
     assert.equal(selected, model);
     captures.push(structuredClone(context));
     requestSignal = request.signal;
-    assert.equal(request.maxTokens, 4_000);
+    assert.equal(request.maxTokens, 8_000);
     assert.equal(request.maxRetries, 0);
     assert.equal(request.transport, "sse");
     assert.equal(request.signal.aborted, false);
@@ -110,6 +110,10 @@ await check("Selected reasoning uses the active custom provider with registry au
     assert.deepEqual(await runReviewer(options(undefined, { model: reasoningModel, modelRegistry: registry, thinkingLevel: "high" })), pass);
     assert.equal(requests.length, 1);
     assert.equal(requests[0].request.reasoning, "high");
+    // A reasoning reviewer must not spend its whole cap thinking: the verdict size measured on
+    // real sections is ~3.5k output tokens, so the request carries the verdict budget plus an
+    // explicit reasoning allowance (regression: 4k total truncated verdicts into "limit").
+    assert.equal(requests[0].request.maxTokens, DEFAULT_REVIEWER_LIMITS.maxOutputTokens + REVIEWER_REASONING_HEADROOM);
     assert.equal(requests[0].request.transport, "sse");
     assert.equal(requests[0].selected.provider, model.provider);
     assert.equal(requests[0].selected.api, model.api);
@@ -164,6 +168,21 @@ await check("Reasoning is clamped by Pi and cancellation cannot start a late aut
   assert.equal(streams, 0, "Late registry auth must never start a cancelled review's request");
 });
 
+await check("A verdict truncated by the output cap is retried once with the model's full allowance", async () => {
+  const caps = [];
+  const truncating = (output) => message(JSON.stringify(pass).slice(0, 40), "length", { usage: { ...usage, output } });
+  const complete = async (_selected, _context, request) => {
+    caps.push(request.maxTokens);
+    return caps.length === 1 ? truncating(4_000) : message();
+  };
+  assert.deepEqual(await runReviewer(options(complete)), pass);
+  assert.equal(caps.length, 2, "a truncated verdict is re-issued once");
+  assert.ok(caps[1] > caps[0], `the retry widens the output cap (${caps[0]} -> ${caps[1]})`);
+  // With no allowance left, the same truncation fails closed instead of looping or approving.
+  const exhausted = async () => { caps.length = 0; await rejectCode(runReviewer(options(async () => truncating(8_000), { limits: { maxTotalOutputTokens: 8_000 } })), "limit"); };
+  await exhausted();
+});
+
 await check("Malformed and incomplete model verdicts fail closed", async () => {
   for (const raw of ["Looks good", '{"status":"pass"', '{"status":"pass","findings":[],"extra":true}', '{"status":"changes","findings":[]}']) {
     await rejectCode(runReviewer(options(async () => message(raw))), "invalid-output");
@@ -193,7 +212,7 @@ await check("Unavailable tools, invalid arguments, and failed readers cannot app
   assert.deepEqual(
     { turns: DEFAULT_REVIEWER_LIMITS.maxTurns, tools: DEFAULT_REVIEWER_LIMITS.maxToolCalls, images: DEFAULT_REVIEWER_LIMITS.maxImages,
       output: DEFAULT_REVIEWER_LIMITS.maxOutputTokens, total: DEFAULT_REVIEWER_LIMITS.maxTotalOutputTokens, text: DEFAULT_REVIEWER_LIMITS.maxToolTextChars },
-    { turns: 2, tools: 8, images: 8, output: 4_000, total: 8_000, text: 40_000 },
+    { turns: 2, tools: 8, images: 8, output: 8_000, total: 16_000, text: 40_000 },
     "the default reviewer budget is one bounded prepared request");
 });
 

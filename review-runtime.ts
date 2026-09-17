@@ -49,6 +49,8 @@ export type ReviewerLimits = {
 
 export const REVIEW_STALL_MS = 180_000;
 export const REVIEW_BACKSTOP_MS = 45 * 60_000;
+/** Output allowance added on top of the verdict budget while a reviewer reasons at any level. */
+export const REVIEWER_REASONING_HEADROOM = 4_096;
 
 export const DEFAULT_REVIEWER_LIMITS: Readonly<ReviewerLimits> = Object.freeze({
   // Every production pass now prepares its evidence, so the default is a single
@@ -60,8 +62,12 @@ export const DEFAULT_REVIEWER_LIMITS: Readonly<ReviewerLimits> = Object.freeze({
   maxImages: 8,
   maxImageBytes: 8 * 1024 * 1024,
   maxTotalImageBytes: 64 * 1024 * 1024,
-  maxOutputTokens: 4_000,
-  maxTotalOutputTokens: 8_000,
+  // A completed verdict runs to ~3.5k tokens on real sections, and a provider that bills
+  // its reasoning against the same cap needs room for both. Capping at 4k truncated the
+  // verdict mid-JSON and failed the audit as "limit"; 8k (plus REVIEWER_REASONING_HEADROOM
+  // when a thinking level is active) fits the measured worst case with a bounded ceiling.
+  maxOutputTokens: 8_000,
+  maxTotalOutputTokens: 16_000,
   maxResponseChars: 360_000,
   timeoutMs: REVIEW_BACKSTOP_MS,
 });
@@ -226,6 +232,9 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
   let lastContextChars = 0;
   let lastContextImages = 0;
   let attemptedJsonRecovery = false;
+  // One bounded retry when a provider truncates the verdict: give the same turn the model's
+  // whole remaining output allowance before declaring the audit incomplete.
+  let escalatedOutput = false;
   const usedCallIds = new Set<string>();
   const context: Context = {
     systemPrompt: `${SYSTEM_PROMPT}\nAssigned role: ${options.role}.`,
@@ -271,7 +280,12 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
         lastInputTokens + Math.ceil(Math.max(0, chars - lastContextChars) / 2) + Math.max(0, images - lastContextImages) * 8192,
       );
       const remainingOutput = Math.min(limits.maxTotalOutputTokens, maxTotalOutputTokens) - outputTokens;
-      const maxTokens = Math.min(limits.maxOutputTokens, modelOutput, remainingOutput);
+      // Providers differ: some bill a reasoning effort inside the requested output cap, others
+      // add it on top of the answer. Reserve the allowance here so a thinking reviewer cannot
+      // spend the whole verdict budget thinking and return a truncated verdict.
+      const reasoningHeadroom = thinkingLevel && thinkingLevel !== "off" ? REVIEWER_REASONING_HEADROOM : 0;
+      const outputCeiling = escalatedOutput ? modelOutput : limits.maxOutputTokens + reasoningHeadroom;
+      const maxTokens = Math.min(outputCeiling, modelOutput, remainingOutput);
       // Some providers add their thinking budget to the requested answer cap.
       const reservedOutput = Math.min(modelOutput, maxTokens + (thinkingLevel && thinkingLevel !== "off" ? 16_384 : 0));
       if (maxTokens < 256 || estimatedInput + reservedOutput > Math.floor(modelWindow * 0.9)) {
@@ -380,6 +394,14 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
       lastContextChars = chars;
       lastContextImages = images;
       if (response.stopReason !== "stop" && response.stopReason !== "toolUse") {
+        if (response.stopReason === "length" && !escalatedOutput && turn < limits.maxTurns
+          && Math.min(modelOutput, Math.min(limits.maxTotalOutputTokens, maxTotalOutputTokens) - outputTokens) > maxTokens) {
+          // The verdict was cut off mid-JSON. Retry the same turn once with the model's whole
+          // remaining allowance so a merely-too-tight cap cannot block the learner's delivery.
+          escalatedOutput = true;
+          progress("starting");
+          continue;
+        }
         throw new ReviewerRunError(response.stopReason === "length" ? "limit" : "provider", response.stopReason === "length"
           ? "The reviewer reached the response output limit; its partial verdict cannot approve a lesson."
           : `The reviewer did not finish cleanly: ${providerFailure(response.errorMessage)}; partial output cannot approve a lesson.`);
