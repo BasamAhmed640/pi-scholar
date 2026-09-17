@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { lessonHash, learnReviewHash, lessonCoverageIssues, commitLesson, learnReviewIssues, lessonReady } from "./lesson.ts";
-import { reviewCheckpoint, reviewLearnDraft, reviewLearnQuestion, REVIEW_CHECKPOINT_MESSAGE, runReviewPass, planExamReviewPackets, planTutorExplanationPacket, reviewTargetQuestion, type LessonReviewRole, type ReviewPacketRole, type ReviewPacket } from "./learn-review.ts";
-import { computeFindingKey, isFindingResponse, type ReviewBatchPass } from "./learn-quality.ts";
+import { reviewCheckpoint, reviewLearnDraft, reviewLearnQuestion, type LessonReviewRole } from "./learn-review.ts";
+import { reviewerModelName, runReviewPass, planExamReviewPackets, planTutorExplanationPacket, reviewTargetQuestion, type ReviewPacket, type ReviewPacketRole } from "./review-layer.ts";
+import { computeFindingKey, isFindingResponse, pruneReviewReceipts, reviewPassIssues, type ReviewBatchPass } from "./learn-quality.ts";
 import { DEFAULT_REVIEWER_LIMITS, type ReviewerProgress } from "./review-runtime.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -199,8 +200,9 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
       if (closed || activation !== session.state || !ports.isActiveAuthority(state) || state.source.fingerprint.sha256 !== draft.source.fingerprint.sha256) return;
       const current = findSection(state, section.id);
       if (!current?.learnQuality) return;
-      current.learnQuality.reviews = [...current.learnQuality.reviews.filter(receipt => !(receipt.failure?.message === REVIEW_CHECKPOINT_MESSAGE && latest.has(receipt.role as LessonReviewRole))),
-        ...[...latest].map(([role, batches]) => reviewCheckpoint(section, draft, ctx, role, batches))];
+      const checkpoints = [...latest].map(([role, batches]) => reviewCheckpoint(section, draft, ctx, role, batches));
+      current.learnQuality.reviews = pruneReviewReceipts([...current.learnQuality.reviews, ...checkpoints],
+        { sourceHash: draft.source.fingerprint.sha256, model: reviewerModelName(ctx) });
     }).then(() => undefined, () => undefined); // best-effort: the returned receipts remain authoritative
     return {
       save: (role: ReviewPacketRole, batches: ReviewBatchPass[]) => {
@@ -233,7 +235,7 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
     const inputRevision = ++openInputRevision;
     const activation = session.state;
     openResponses.clear();
-    if (!session.active || !session.bookId || !modeCan(session.mode, "assesses")) return;
+    if (!session.active || !session.bookId || !modeCan(session.mode, "interactiveQuestions")) return;
     const book = await loadBook(session.bookId);
     if (inputRevision === openInputRevision && activation === session.state && book && ports.isActiveAuthority(book)) {
       openResponses.capture(book, session, text, source, images);
@@ -692,15 +694,14 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
               const existingUnit = tutor?.transcript.some(entry => entry.id === params.lesson!.id && entry.lesson);
               if (tutor && !existingUnit) {
                 const targetKey = `tutor:explanation:${tutor.id}:${params.lesson.id}`;
+                const receipts = tutor.review?.receipts || [];
+                const responses = [...(tutor.review?.responses || []), ...(params.findingResponses || [])];
+                // The one gate every mode uses: a fresh pass approves, otherwise this source's
+                // newest teaching check stands and its blocking findings must be answered. An
+                // explanation edited after approval is stale and gets exactly one new pass.
+                const gaps = reviewPassIssues(receipts, { contentHash: lessonHash(params.lesson.markdown), sourceHash: book.source.fingerprint.sha256, roles: ["teaching"], responses });
                 if (passCompleted(targetKey)) {
-                  const receipts = (tutor.review?.receipts || []).filter(r => r.role === "teaching");
-                  const blockingFindings = receipts.filter(r => !r.failure).flatMap(r => r.findings.filter(f => f.severity === "blocking").map(f => ({ role: r.role, finding: f, key: computeFindingKey(r.role, f) })));
-                  const responses = [...(tutor.review?.responses || []), ...(params.findingResponses || [])];
-                  const responseKeys = new Set(responses.map(r => r.key));
-                  const unresponded = blockingFindings.filter(b => !responseKeys.has(b.key));
-                  if (unresponded.length > 0) {
-                    return toolResult("notes", `Draft saved; blocking findings require responses before commit: ${unresponded.map(b => `[F-${b.key}] (${b.finding.issue})`).join("; ")}`, { bookId: book.id, tone: "review" });
-                  }
+                  if (gaps.length) return toolResult("notes", `Draft saved; blocking findings require responses before commit: ${gaps.join("; ")}`, { bookId: book.id, tone: "review" });
                   return saved;
                 }
 
@@ -723,7 +724,8 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
                   const current = state.tutorSessions.find(item => item.id === tutor.id);
                   if (!current) return;
                   if (!current.review) current.review = { version: 1, receipts: [], responses: [] };
-                  current.review.receipts.push(...runResults);
+                  current.review.receipts = pruneReviewReceipts([...current.review.receipts, ...runResults],
+                    { sourceHash: book.source.fingerprint.sha256, model: reviewerModelName(ctx) });
                   if (params.findingResponses?.length) {
                     const existing = new Map((current.review.responses || []).map(r => [r.key, r]));
                     for (const resp of params.findingResponses) existing.set(resp.key, resp);
@@ -790,7 +792,8 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
               await assertLearnFigureCoverage(ports.getConfig(), state, current);
               signal?.throwIfAborted(); ctx.signal?.throwIfAborted();
               if (activation !== session.state || !ports.isActiveAuthority(state)) throw new Error("Scholar changed while verifying reviewed figure assets; approval was discarded.");
-              current.learnQuality!.reviews = reviews;
+              current.learnQuality!.reviews = pruneReviewReceipts([...current.learnQuality!.reviews, ...reviews],
+                { sourceHash: state.source.fingerprint.sha256, model: reviewerModelName(ctx) });
               const gaps = learnReviewIssues(current, state.source.fingerprint.sha256);
               if (!gaps.length) { commitLesson(current, state); recomputeProgress(state, current); }
               return gaps;
@@ -857,15 +860,14 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
             }
 
             const targetKey = `exam:form:${examId}`;
+            const formHash = examFormFingerprint({ ...current, questions });
+            const examReceipts = current.review?.receipts || [];
+            const examResponses = [...(current.review?.responses || []), ...(params.findingResponses || [])];
+            // Same one-pass gate as Learn and Tutor, bound to this frozen form's fingerprint and
+            // the current source: a re-frozen form is stale and gets exactly one new pass.
+            const examGaps = reviewPassIssues(examReceipts, { contentHash: formHash, sourceHash: book.source.fingerprint.sha256, roles: ["assessment", "teaching"], responses: examResponses });
             if (passCompleted(targetKey)) {
-              const receipts = current.review?.receipts || [];
-              const blockingFindings = receipts.filter(r => !r.failure).flatMap(r => r.findings.filter(f => f.severity === "blocking").map(f => ({ role: r.role, finding: f, key: computeFindingKey(r.role, f) })));
-              const responses = [...(current.review?.responses || []), ...(params.findingResponses || [])];
-              const responseKeys = new Set(responses.map(r => r.key));
-              const unresponded = blockingFindings.filter(b => !responseKeys.has(b.key));
-              if (unresponded.length > 0) {
-                return toolResult("exam_build", `Exam form saved; blocking findings require responses before freeze: ${unresponded.map(b => `[F-${b.key}] (${b.finding.issue})`).join("; ")}`, { bookId: book.id, tone: "review" });
-              }
+              if (examGaps.length) return toolResult("exam_build", `Exam form saved; blocking findings require responses before freeze: ${examGaps.join("; ")}`, { bookId: book.id, tone: "review" });
               return await handleExamBuild(book, examId, params.questions || [], ctx, mutateBook, presentExam, toolResult, params.findingResponses);
             }
 
@@ -879,7 +881,7 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
               signal: stop,
               onProgress,
               sourceHash: book.source.fingerprint.sha256,
-              contentHash: examFormFingerprint({ ...current, questions } as any),
+              contentHash: examFormFingerprint({ ...current, questions }),
               sourcePages: examPages,
               prepared: true,
             }, packets), packets.length);
@@ -889,7 +891,8 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
               const exam = state.exams.find((item) => item.id === examId);
               if (!exam) return;
               if (!exam.review) exam.review = { version: 1, receipts: [], responses: [] };
-              exam.review.receipts.push(...runResults);
+              exam.review.receipts = pruneReviewReceipts([...exam.review.receipts, ...runResults],
+                { sourceHash: book.source.fingerprint.sha256, model: reviewerModelName(ctx) });
               if (params.findingResponses?.length) {
                 const existing = new Map((exam.review.responses || []).map((r) => [r.key, r]));
                 for (const resp of params.findingResponses) existing.set(resp.key, resp);

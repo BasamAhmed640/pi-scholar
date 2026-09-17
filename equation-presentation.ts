@@ -75,7 +75,7 @@ function renderEquation(value: unknown, allowedPages: Set<number>): { id: string
     if (symbols.has(symbol)) throw new Error(`Key equation ${id} defines the same symbol more than once.`);
     symbols.add(symbol);
     const definition = normalizeObsidianMath(content(entry.definition, `${id} definition`, true));
-    return `$${symbol}$ → ${definition}`;
+    return [`$${symbol}$`, definition];
   });
   const assumptions = normalizeObsidianMath(content(value.assumptions, `${id} assumptions`));
   const meaning = normalizeObsidianMath(content(value.meaning, `${id} physical meaning`));
@@ -84,10 +84,12 @@ function renderEquation(value: unknown, allowedPages: Set<number>): { id: string
     || new Set(value.sourcePages).size !== value.sourcePages.length) {
     throw new Error(`Key equation ${id} sourcePages must be unique pages in this lesson's source scope.`);
   }
-  const body = ["$$", latex, "$$", "", `**Symbols:** ${definitions.join("; ")}`,
+  // A definition list reads as a symbol table; one flowing paragraph does not.
+  const body = ["$$", latex, "$$", "", "**Symbols**", "",
+    ...definitions.map(([symbol, definition]) => `- ${symbol} — ${definition}`),
     "", `**Assumptions:** ${assumptions}`, "", `**Meaning:** ${meaning}`, "",
     `*Source: PDF ${value.sourcePages.length === 1 ? "page" : "pages"} ${value.sourcePages.join(", ")}.*`].join("\n");
-  return { id, markdown: callout("note", `Key equation · ${title}`, body).trimEnd() };
+  return { id, markdown: callout("scholar-equation", `Key equation · ${title}`, body).trimEnd() };
 }
 
 /** Expand exactly one explicit placement per central equation, never guess from ordinary display math. */

@@ -39,9 +39,18 @@ will bury real defects in noise.
 - **Reviewers are scoped and read-only.** They cannot reach another mode's
   history, write notes, change progress, run shell commands, or grade. They are
   fresh in-memory conversations, not extension-loaded Pi sessions.
+- **Engines are universal.** Teach, question, presentation, and review are
+  defined once (`policies.ts`, `review-layer.ts`, `render/`, `quiz-contract.ts`)
+  and every mode uses all four; a mode may add only its own surface rules.
+- **Review is deliberately shallow and cheap.** Reviewers run at a fixed low
+  reasoning level in one prepared request per packet (`REVIEWER_THINKING_LEVEL`,
+  `DEFAULT_REVIEWER_LIMITS`), and the visual role judges saved crops and the
+  figure inventory, never full page renders. Do not restore session-level
+  thinking, full-page images, or long tool loops to "improve" review quality:
+  that depth was traded away on purpose for latency and token cost.
 - **Review must actually look.** Source review reads every scoped page; visual
-  review sees each full page and the saved crop. Never accept a summary of
-  evidence in place of the evidence.
+  review inspects every current saved crop against its figure observation.
+  Never accept a summary of evidence in place of the evidence.
 - **No fixed model or provider.** Do not hardcode a vendor anywhere in review
   or authoring paths.
 - **Stable entry IDs prevent duplicate retries.** IDs of deleted entries stay in
@@ -54,13 +63,13 @@ will bury real defects in noise.
 | Area | Files |
 |---|---|
 | Entry / commands | `index.ts`, `commands.ts`, `command-syntax.ts`, `modes.ts` |
-| Learn | `lesson.ts`, `lesson-figures.ts`, `learn-quality.ts` |
-| Exam | `exam.ts`, `exam-paper.ts`, `quiz.ts`, `quiz-contract.ts` |
-| Review | `review-layer.ts`, `learn-review.ts`, `review-runtime.ts` |
+| Teach | `policies.ts` (engine contracts), `lesson.ts`, `lesson-figures.ts` |
+| Question | `quiz.ts`, `quiz-contract.ts`, `exam.ts`, `exam-paper.ts` |
+| Presentation | `render/`, `scholar.css`, `equation-presentation.ts` |
+| Review | `review-layer.ts`, `review-runtime.ts`, `learn-review.ts`, `learn-quality.ts` |
 | Contract / state | `tool-controller.ts`, `tool-contract.ts`, `state-schema.ts`, `runtime-coordinator.ts` |
 | Obsidian | `obsidian.ts`, `obsidian-paths.ts`, `note-records.ts`, `note-storage.ts` |
 | Source PDFs | `ingest.ts`, `page-scope.ts`, `figure-capture.ts`, `figure-coverage.ts` |
-| Rendering | `render/`, `scholar.css`, `equation-presentation.ts` |
 | Tool actions | `tool-actions/` |
 
 Architecture narrative: `docs/architecture.md`. Note hierarchy: `docs/hierarchy.mmd`.

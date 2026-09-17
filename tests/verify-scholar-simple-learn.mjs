@@ -25,6 +25,7 @@ const loadModule = name => jiti.import(join(dirname(extensionPath), name));
 const lesson = await loadModule("lesson.ts");
 const domain = await loadModule("domain.ts");
 const { createScholarToolController } = await loadModule("tool-controller.ts");
+const { REVIEW_CHECKPOINT_MESSAGE } = await loadModule("review-layer.ts");
 const { ScholarRuntimeSession } = await loadModule("runtime-session.ts");
 
 const root = mkdtempSync(join(tmpdir(), "scholar-simple-learn-"));
@@ -130,13 +131,23 @@ async function check(name, test) {
 
 await check("lessonComplete commits after the source, teaching and visual reviews", async () => {
   const h = harness("commit");
+  // Stale load artifacts: a checkpoint that a completed check already supersedes, and a check
+  // bound to a different source. Neither may survive the approval write.
+  const sourceHash = h.book.source.fingerprint.sha256;
+  h.section.learnQuality.reviews.push(
+    { role: "source", contentHash: lesson.learnReviewHash(h.section), sourceHash, model: "fixture/simple-learn", createdAt: now,
+      status: "changes", findings: [], failure: { code: "cancelled", message: REVIEW_CHECKPOINT_MESSAGE }, batches: [] },
+    { role: "visual", contentHash: lesson.learnReviewHash(h.section), sourceHash: "b".repeat(64), model: "fixture/simple-learn", createdAt: now,
+      status: "pass", findings: [] });
   const result = await h.execute({ action: "notes", lessonComplete: true });
   assert.ok(!["review", "error", "retry"].includes(result.details.tone), result.content[0].text);
   const roles = new Set(h.requests.map(request => request.role));
   for (const role of ["source", "teaching", "visual"]) assert.ok(roles.has(role), `the ${role} reviewer ran`);
   assert.ok(h.requests.length >= 3, `at least three reviewer requests were served (${h.requests.length})`);
-  const section = h.section, sourceHash = h.book.source.fingerprint.sha256;
-  assert.equal(section.learnQuality.reviews.length, 3, "one approved receipt per review role");
+  const section = h.section, currentSourceHash = h.book.source.fingerprint.sha256;
+  assert.equal(section.learnQuality.reviews.length, 3, "one approved receipt per review role; stale receipts were pruned");
+  assert.ok(section.learnQuality.reviews.every(receipt => receipt.sourceHash === currentSourceHash && receipt.failure === undefined),
+    "a superseded checkpoint and a foreign-source receipt are gone");
   for (const receipt of section.learnQuality.reviews) {
     assert.equal(receipt.status, "pass", `${receipt.role} passed`);
     assert.ok(["source", "teaching", "visual"].includes(receipt.role));

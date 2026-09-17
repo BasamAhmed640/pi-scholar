@@ -283,6 +283,83 @@ export function parseReviewerVerdict(raw: string): ReviewerVerdict {
   throw new Error("Reviewer output must be one complete JSON verdict.");
 }
 
+/**
+ * Keep the receipts that still describe this target.
+ *
+ * Receipts from another source or reviewer model can never be reused. Within one role and
+ * content hash only the newest completed check and the newest receipt overall survive: the
+ * first is the evidence, the second is what the approval gate consumes. An interrupted
+ * checkpoint is dropped once that role and content hash has a completed check, because the
+ * checkpoint only ever carried finished checks forward.
+ */
+export function pruneReviewReceipts(receipts: ReviewReceipt[], current: { sourceHash: string; model: string }): ReviewReceipt[] {
+  const currentOnly = receipts.filter(receipt => receipt.sourceHash === current.sourceHash && receipt.model === current.model);
+  const groupOf = (receipt: ReviewReceipt) => `${receipt.role}:${receipt.contentHash}`;
+  const newest = new Map<string, ReviewReceipt>();
+  const completed = new Map<string, ReviewReceipt>();
+  for (const receipt of currentOnly) {
+    const group = groupOf(receipt);
+    const leader = newest.get(group);
+    if (!leader || receipt.createdAt > leader.createdAt) newest.set(group, receipt);
+    if (receipt.failure) continue;
+    const finished = completed.get(group);
+    if (!finished || receipt.createdAt > finished.createdAt) completed.set(group, receipt);
+  }
+  return currentOnly.filter(receipt => {
+    const group = groupOf(receipt);
+    // Only the checkpoint carrier writes this code, so `cancelled` identifies one unambiguously.
+    if (receipt.failure?.code === "cancelled" && completed.has(group)) return false;
+    return receipt === newest.get(group) || receipt === completed.get(group);
+  });
+}
+
+export type ReviewPassContext = ReviewGateContext & {
+  /** Author responses to earlier blocking findings; an answered finding no longer blocks. */
+  responses?: readonly { key: string }[];
+};
+
+/**
+ * The gate every mode uses before committing reviewed content.
+ *
+ * A strict pass approves immediately. Otherwise each role's newest receipt for this source is
+ * the evidence: its blocking findings must be answered by the author, an unfinished check still
+ * approves when it found nothing blocking (the failure is reported separately), and a receipt
+ * older than the current content is stale. Receipts are never re-run to satisfy this gate;
+ * answering a finding is what closes it.
+ */
+export function reviewPassIssues(value: unknown, context: ReviewPassContext): string[] {
+  if (!Array.isArray(value) || !value.every(isReviewReceipt)) return ["Completed specialist reviews with valid coordinator receipts are required."];
+  if (!sha256(context.contentHash) || !sha256(context.sourceHash)) return ["Review gating requires current lesson and source hashes."];
+  const roles: readonly ReviewRole[] = context.roles || ["source", "teaching", "visual"];
+  if (!roles.length || roles.some(role => !REVIEW_ROLES.includes(role)) || new Set(roles).size !== roles.length) return ["Specify distinct supported review roles."];
+  if (!reviewGateIssues(value, { contentHash: context.contentHash, sourceHash: context.sourceHash, roles }).length) return [];
+  const receipts = (value as ReviewReceipt[]).filter(receipt => receipt.sourceHash === context.sourceHash);
+  const issues: string[] = [];
+  const latestByRole = new Map<ReviewRole, ReviewReceipt>();
+  for (const role of roles) {
+    const roleReceipts = receipts.filter(receipt => receipt.role === role).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const latest = roleReceipts[0];
+    if (!latest) { issues.push(`Complete the ${role} review.`); continue; }
+    if (roleReceipts.some(receipt => receipt.createdAt === latest.createdAt && JSON.stringify(receipt) !== JSON.stringify(latest))) {
+      issues.push(`The ${role} review has conflicting receipts; run a fresh review.`);
+      continue;
+    }
+    latestByRole.set(role, latest);
+  }
+  if (issues.length) return issues;
+  const responseKeys = new Set((context.responses || []).map(response => response.key));
+  const blockingFindings = [...latestByRole].flatMap(([role, latest]) => latest.findings
+    .filter(finding => finding.severity === "blocking")
+    .map(finding => ({ role, key: computeFindingKey(role, finding), finding })));
+  if (blockingFindings.length) {
+    return blockingFindings.filter(item => !responseKeys.has(item.key))
+      .map(item => `Respond to blocking finding [F-${item.key}] (${item.role}: ${item.finding.issue}).`);
+  }
+  if ([...latestByRole.values()].some(receipt => receipt.failure)) return [];
+  return [...latestByRole].filter(([, latest]) => latest.contentHash !== context.contentHash)
+    .map(([role]) => `The ${role} review is stale; review the current lesson and source.`);
+}
+
 export function isReviewReceipt(value: unknown): value is ReviewReceipt {
   if (!object(value) || !keys(value, ["role", "contentHash", "sourceHash", "model", "createdAt", "status", "findings", "failure", "batches", "diagnostics"])
     || !validReviewFields(value) || !REVIEW_ROLES.includes(value.role as ReviewRole)

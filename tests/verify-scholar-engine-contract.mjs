@@ -41,27 +41,29 @@ function occurrences(text, exactValue) {
 try {
   const source = await readFile(policiesPath, "utf8");
   const quizSource = await readFile(quizPath, "utf8");
-  const questionDefinitions = definitions(source, "QUESTION_ENGINE_POLICY");
-  const teachingDefinitions = definitions(source, "TEACHING_ENGINE_POLICY");
-  const shortQuestionDefinitions = definitions(source, "SHORT_QUESTION_POLICY");
+  // The four universal engines plus the one interactive-surface block. Every engine must be
+  // defined once and composed by every mode; the surface block only by the modes that ask
+  // interactive questions.
+  const ENGINES = {
+    teaching: "TEACHING_ENGINE_POLICY",
+    explanation: "EXPLANATION_POLICY",
+    presentation: "PRESENTATION_POLICY",
+    question: "QUESTION_ENGINE_POLICY",
+    "question-safety": "QUESTION_GROUNDING_POLICY",
+  };
+  const SURFACE = { "short-question": "SHORT_QUESTION_POLICY" };
+  const engineTemplates = Object.entries(ENGINES).map(([label, name]) => ({ label, name, templates: definitions(source, name) }));
+  const surfaceTemplates = Object.entries(SURFACE).map(([label, name]) => ({ label, name, templates: definitions(source, name) }));
 
-  check(
-    "one question-engine definition",
-    questionDefinitions.length === 1,
-    `${questionDefinitions.length} QUESTION_ENGINE_POLICY template definition(s) in ${policiesPath}`,
-  );
-  check(
-    "one teaching-engine definition",
-    teachingDefinitions.length === 1,
-    `${teachingDefinitions.length} TEACHING_ENGINE_POLICY template definition(s) in ${policiesPath}`,
-  );
-  check(
-    "one short-question definition",
-    shortQuestionDefinitions.length === 1,
-    `${shortQuestionDefinitions.length} SHORT_QUESTION_POLICY template definition(s) in ${policiesPath}`,
-  );
+  for (const item of [...engineTemplates, ...surfaceTemplates]) {
+    check(
+      `one ${item.label} definition`,
+      item.templates.length === 1,
+      `${item.templates.length} ${item.name} template definition(s) in ${policiesPath}`,
+    );
+  }
 
-  if (questionDefinitions.length === 1 && teachingDefinitions.length === 1 && shortQuestionDefinitions.length === 1) {
+  if ([...engineTemplates, ...surfaceTemplates].every((item) => item.templates.length === 1)) {
     const { createJiti } = await import(pathToFileURL(jitiPath).href);
     const jiti = createJiti(import.meta.url, {
       moduleCache: false,
@@ -70,9 +72,7 @@ try {
       },
     });
     const policies = await jiti.import(policiesPath);
-    const questionPolicy = questionDefinitions[0];
-    const teachingPolicy = teachingDefinitions[0];
-    const shortQuestionPolicy = shortQuestionDefinitions[0];
+    const templateOf = (name) => [...engineTemplates, ...surfaceTemplates].find((item) => item.name === name).templates[0];
     const book = {
       metadata: { title: "Engine Contract Fixture" },
       chapters: [{
@@ -107,32 +107,29 @@ try {
 
     check(
       "exported question engine matches its sole definition",
-      policies.QUESTION_ENGINE_POLICY === questionPolicy,
+      policies.QUESTION_ENGINE_POLICY === templateOf("QUESTION_ENGINE_POLICY"),
       "the exported runtime value is byte-identical to the single source template",
     );
-    for (const mode of ["Learn", "Exam", "Tutor"]) {
-      const expected = mode === "Exam" ? questionPolicy : shortQuestionPolicy;
-      const count = occurrences(rendered[mode], expected);
-      check(
-        `${mode} includes its shared question policy identically`,
-        count === 1,
-        `exact shared template occurrences=${count}`,
-      );
+    for (const item of engineTemplates) {
+      for (const mode of ["Learn", "Exam", "Tutor"]) {
+        const count = occurrences(rendered[mode], item.templates[0]);
+        check(
+          `${mode} includes every ${item.label} engine identically`,
+          count === 1,
+          `exact shared template occurrences=${count}`,
+        );
+      }
     }
-    for (const mode of ["Learn", "Tutor"]) {
-      const count = occurrences(rendered[mode], teachingPolicy);
-      check(
-        `${mode} includes the shared teaching engine identically`,
-        count === 1,
-        `exact shared template occurrences=${count}`,
-      );
+    for (const item of surfaceTemplates) {
+      for (const mode of ["Learn", "Exam", "Tutor"]) {
+        const count = occurrences(rendered[mode], item.templates[0]);
+        check(
+          mode === "Exam" ? "Exam asks no interactive questions" : `${mode} includes the ${item.label} block identically`,
+          count === (mode === "Exam" ? 0 : 1),
+          `exact shared template occurrences=${count}`,
+        );
+      }
     }
-    const examTeachingCount = occurrences(rendered.Exam, teachingPolicy);
-    check(
-      "Exam excludes the teaching engine",
-      examTeachingCount === 0,
-      `exact teaching-template occurrences=${examTeachingCount}`,
-    );
     const duplicateQuizPolicy = /distractor design|plausible, specific misconception|Avoid tricks|parallel in length|adapt later checks/i.test(quizSource);
     check(
       "quiz tool contains mechanics, not a second question engine",

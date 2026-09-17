@@ -303,7 +303,7 @@ export class ScholarRuntimeCoordinator {
           && !(this.quizRegistered && name === "scholar_quiz"),
       );
       if (this.scholarToolRegistered) next.push("scholar");
-      if (this.quizRegistered && modeCan(this.runtimeSession.mode, "assesses")) {
+      if (this.quizRegistered && modeCan(this.runtimeSession.mode, "interactiveQuestions")) {
         next.push("scholar_quiz");
       }
       if (current.length !== next.length || current.some((name) => !next.includes(name))) {
@@ -484,9 +484,9 @@ export class ScholarRuntimeCoordinator {
       this.toolController.ensureRegistered();
       this.scholarToolRegistered = true;
     }
-    if (modeCan(mode, "assesses") && !this.quizRegistered) {
+    if (modeCan(mode, "interactiveQuestions") && !this.quizRegistered) {
       registerScholarQuiz(this.pi, async (toolCallId) => {
-        if (!this.runtimeSession.active || !this.runtimeSession.bookId || !modeCan(this.runtimeSession.mode, "assesses")) throw new Error("Open Scholar Learn or Tutor first.");
+        if (!this.runtimeSession.active || !this.runtimeSession.bookId || !modeCan(this.runtimeSession.mode, "interactiveQuestions")) throw new Error("Open Scholar Learn or Tutor first.");
         const active = await loadBookState(this.activeConfig, this.runtimeSession.bookId);
         if (!active || !this.ownsActiveAuthority(active)) throw new Error("The active Scholar book changed.");
         const found = this.runtimeSession.mode === "learn" ? findQuizAttempt(active, this.runtimeSession.recordId, toolCallId)

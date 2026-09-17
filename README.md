@@ -36,6 +36,13 @@ The book hubs share a Scholar Home, but each book retains its own records.
 All durable book state lives in your selected Obsidian vault. The separately
 selected PDF library contains the source books, not your learning history.
 
+Learn, Exam, and Tutor each use the same four engines — teaching, question,
+presentation, and review — defined once in Scholar. A mode supplies only its
+surface: which record it writes, where you answer, and which scope it freezes.
+Exam, for example, teaches through its graded answer key and freezes a paper,
+while Learn teaches interactively in Pi; both are the same engines behind
+different surfaces.
+
 [Architecture and storage guide](docs/architecture.md) ·
 [Editable Mermaid source](docs/hierarchy.mmd)
 
@@ -43,7 +50,8 @@ selected PDF library contains the source books, not your learning history.
 
 ### Independent review restored (0.7.1)
 
-Learn deliveries, Tutor explanations and questions, and the Exam form are inspected by an independent crew before they commit, using the current Pi model and its supported thinking level.
+Learn deliveries, Tutor explanations and questions, and the Exam form are inspected by an independent crew before they commit, using the current Pi model at a fixed low reviewer reasoning level.
+Each check is one prepared request: the runner loads exactly that packet's page text, saved crops and lesson passages, so reviewers never spend turns fetching evidence and the visual check judges saved crops rather than full rendered pages. That is a deliberate trade of review depth for latency and token cost.
 Findings come back as `[F-<key>]` requests that the author answers with `findingResponses`; each revision is reviewed once and finished checks are checkpointed and reused.
 There is no wall-clock stop on preparation. The count limits are unchanged (8 rejections, 250 actions, 4 delivery-gap attempts), and the only clock is the bounded reviewer run itself.
 
@@ -193,10 +201,10 @@ returned to the author for inspection as well as saved beside the lesson.
 The current Pi model remains the lead author. Three isolated supporting reviews
 check source fidelity, teaching clarity, and mathematics/visuals before the lesson
 is committed. A fourth role reviews each new question before it is shown. These
-use the selected Pi model and supported thinking level, including custom
+use the selected Pi model, including custom
 providers; there are no fixed model names or extra services. Visual review needs
-an image-capable model. Image-heavy sections are inspected in sequential batches
-within the visual role, while the three lesson roles run independently.
+an image-capable model. Image-heavy sections are inspected in bounded crop batches
+within the visual role, while the lesson roles run independently.
 
 Reviews have finite context, output, tool and time limits. A failed, cancelled or
 incomplete review cannot approve a lesson. Specific findings return to the author

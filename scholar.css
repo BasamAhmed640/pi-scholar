@@ -1,6 +1,14 @@
-/* Scholar built-in note styling. Managed by Scholar; use another snippet for overrides. */
+/* Scholar built-in note styling. Managed by Scholar; use another snippet for overrides.
+   Self-contained: every colour resolves through var(…) or color-mix(in srgb, …) so the
+   stylesheet reads correctly in light, dark and print. */
 
+/* ---- Scale & base ---- */
 .scholar-note {
+  /* One spacing step for every gap Scholar draws: callouts, headings, lesson units. */
+  --scholar-space-1: 0.4rem;
+  --scholar-space-2: 0.8rem;
+  --scholar-space-3: 1.2rem;
+  --scholar-space-4: 1.6rem;
   --file-line-width: 78ch;
   --line-height-normal: 1.65;
   --table-border-color: var(--background-modifier-border);
@@ -10,6 +18,7 @@
   color: var(--text-normal);
 }
 
+/* ---- Headings & prose ---- */
 .scholar-note :is(h2, .HyperMD-header-2) {
   margin-block-start: 2em;
   padding-block-end: 0.45em;
@@ -29,6 +38,11 @@
 .scholar-note li + li { margin-block-start: 0.4em; }
 .scholar-note a.internal-link { text-decoration-thickness: 1px; text-underline-offset: 0.2em; }
 
+/* Lesson units: an `---` rule and the heading that follows it share one step. */
+.scholar-note hr { margin-block: var(--scholar-space-4); border: 0; border-top: 1px solid var(--background-modifier-border); }
+.scholar-note .callout + :is(h2, h3) { margin-block-start: var(--scholar-space-4); }
+
+/* ---- Callouts ---- */
 .scholar-note .callout {
   border: 1px solid var(--background-modifier-border);
   border-radius: 0.65rem;
@@ -87,6 +101,96 @@
 }
 .scholar-note .callout.is-collapsed > .callout-title { font-size: 0.82em; font-weight: 500; }
 
+/* ---- Scholar callouts: status, equation, figure ---- */
+
+/* Status header: metadata, not a headline — it sits above the first heading
+   without competing with it. */
+.scholar-note .callout[data-callout="scholar-status"] {
+  margin-block: var(--scholar-space-1) var(--scholar-space-2);
+  padding: var(--scholar-space-2);
+  border-radius: 0.55rem;
+  background: color-mix(in srgb, var(--background-secondary) 70%, transparent);
+  font-size: 0.86em;
+}
+.scholar-note .callout[data-callout="scholar-status"] .callout-icon { display: none; }
+.scholar-note .callout[data-callout="scholar-status"] > .callout-title { gap: 0; color: var(--text-muted); font-size: 1em; font-weight: 500; }
+.scholar-note .callout[data-callout="scholar-status"] .callout-content { color: var(--text-muted); }
+.scholar-note .callout[data-callout="scholar-status"] .callout-content > p { margin-block: 0; }
+.scholar-note .callout[data-callout="scholar-status"] + :is(h2, h3) { margin-block-start: var(--scholar-space-3); }
+
+/* Key equation: the section's anchor — accent-marked, generous, centred maths,
+   a scannable symbol list and a muted provenance line. */
+.scholar-note .callout[data-callout="scholar-equation"] {
+  --callout-icon: sigma;
+  border-inline-start: 3px solid var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 5%, var(--background-primary));
+  padding: var(--scholar-space-3) var(--scholar-space-3) var(--scholar-space-2);
+  margin-block: var(--scholar-space-3);
+}
+.scholar-note .callout[data-callout="scholar-equation"] > .callout-title { color: var(--text-accent); font-size: 0.85em; font-weight: 600; letter-spacing: 0.02em; }
+.scholar-note .callout[data-callout="scholar-equation"] .math-block { text-align: center; margin-inline: auto; font-size: 1.12em; }
+.scholar-note .callout[data-callout="scholar-equation"] .callout-content > p > strong:first-child {
+  color: var(--text-muted); font-size: 0.85em; font-weight: 600; letter-spacing: 0.03em;
+}
+.scholar-note .callout[data-callout="scholar-equation"] .callout-content ul {
+  list-style: none; padding-inline-start: 0; margin-block: var(--scholar-space-1) var(--scholar-space-2);
+}
+.scholar-note .callout[data-callout="scholar-equation"] .callout-content ul > li {
+  margin-block: 0; padding-block: var(--scholar-space-1); padding-inline-start: 0; line-height: 1.45;
+}
+.scholar-note .callout[data-callout="scholar-equation"] .callout-content ul > li + li {
+  border-block-start: 1px solid color-mix(in srgb, var(--background-modifier-border) 60%, transparent);
+}
+.scholar-note .callout[data-callout="scholar-equation"] .callout-content > p:last-child { color: var(--text-muted); font-size: 0.82em; }
+
+/* Source figure: framed image, caption in body text, provenance muted. */
+.scholar-note .callout[data-callout="scholar-figure"] {
+  --callout-icon: image;
+  background: var(--background-secondary);
+  padding: var(--scholar-space-2) var(--scholar-space-3) var(--scholar-space-3);
+  margin-block: var(--scholar-space-3);
+}
+.scholar-note .callout[data-callout="scholar-figure"] > .callout-title { color: var(--text-muted); font-size: 0.85em; font-weight: 600; letter-spacing: 0.02em; }
+.scholar-note .callout[data-callout="scholar-figure"] .image-embed {
+  border: 1px solid var(--background-modifier-border); border-radius: 0.6rem;
+  background: var(--background-secondary); padding: var(--scholar-space-2);
+  margin-block: var(--scholar-space-2) var(--scholar-space-1);
+}
+.scholar-note .callout[data-callout="scholar-figure"] .image-embed img { border-radius: 0.4rem; margin-inline: auto; }
+.scholar-note .callout[data-callout="scholar-figure"] .callout-content > p { color: var(--text-normal); }
+.scholar-note .callout[data-callout="scholar-figure"] .callout-content > p:last-child { color: var(--text-muted); font-size: 0.82em; }
+
+/* ---- Progress bar & score chip ---- */
+.scholar-note .scholar-progress {
+  width: 100%;
+  height: 0.4rem;
+  margin-block: var(--scholar-space-1) 0;
+  border-radius: 999px;
+  background: var(--background-modifier-border);
+  overflow: hidden;
+}
+.scholar-note .scholar-progress > span {
+  display: block;
+  width: var(--scholar-progress, 0%);
+  height: 100%;
+  border-radius: inherit;
+  background: var(--interactive-accent);
+  transition: width 200ms ease;
+}
+.scholar-note .scholar-score {
+  display: inline-block;
+  padding: 0.1em 0.45em;
+  border-radius: 0.4em;
+  background: color-mix(in srgb, var(--interactive-accent) 15%, transparent);
+  color: var(--text-accent);
+  font-size: 0.88em;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+/* ---- Tables ---- */
 .scholar-note .el-table { overflow-x: auto; }
 .scholar-note table { width: 100%; border-collapse: collapse; font-size: 0.92em; }
 .scholar-note :is(th, td) { padding: 0.7em 0.85em; vertical-align: top; border-inline: none; }
@@ -105,6 +209,7 @@
   background: color-mix(in srgb, var(--interactive-accent) 10%, transparent);
 }
 
+/* ---- Figures, maths & code ---- */
 .scholar-note img { display: block; max-width: 100%; height: auto; margin-inline: auto; }
 .scholar-note .image-embed { display: block; max-width: 100%; margin: 1.25rem auto; }
 .scholar-note:is(.scholar-section, .scholar-tutor) { --file-line-width: 74ch; }
@@ -125,6 +230,28 @@
 .scholar-note .mermaid { text-align: center; }
 .scholar-note .mermaid svg { display: block; margin-inline: auto; }
 .scholar-note pre { max-width: 100%; overflow-x: auto; border: 1px solid var(--background-modifier-border); border-radius: 0.5rem; }
+
+/* ---- Artifact layouts ---- */
+
+/* Home is a hub: a wider measure, roomier sections, quiet tables. */
+.scholar-home { --file-line-width: 84ch; }
+.scholar-note.scholar-home :is(h2, .HyperMD-header-2) { margin-block-start: var(--scholar-space-4); }
+.scholar-note.scholar-home table { font-size: 0.95em; }
+.scholar-note.scholar-home td:first-child { color: var(--text-muted); white-space: nowrap; }
+
+/* The exam record keeps the frozen paper's measure; its questions breathe and
+   its point tables align on the digits. */
+.scholar-exam { --file-line-width: 76ch; }
+.scholar-note.scholar-exam .callout[data-callout="question"] { margin-block: var(--scholar-space-3); }
+.scholar-note.scholar-exam table { font-variant-numeric: tabular-nums; }
+.scholar-note.scholar-exam .scholar-score { font-size: 0.95em; }
+
+/* Answer key: teaching rhythm — headings step, tables stay quiet, scores chip tight. */
+.scholar-answer-key { --file-line-width: 76ch; }
+.scholar-note.scholar-answer-key :is(h2, .HyperMD-header-2) { margin-block-start: var(--scholar-space-4); }
+.scholar-note.scholar-answer-key h3 { margin-block-start: var(--scholar-space-3); }
+.scholar-note.scholar-answer-key td:first-child { color: var(--text-muted); white-space: nowrap; }
+.scholar-note.scholar-answer-key .scholar-score { font-weight: 700; }
 
 /* Exam choices are answers, not completed to-do items. Keep them fully readable. */
 .scholar-exam-paper { --file-line-width: 76ch; }
@@ -164,6 +291,7 @@
   [data-property-key="form_fingerprint"], [data-property-key="answer_format"]
 ) { display: none; }
 
+/* ---- Narrow screens & print ---- */
 @media (max-width: 640px) {
   .scholar-note :is(th, td) { padding: 0.65em 0.5em; }
   .scholar-note .callout { padding: 0.75rem; }
@@ -173,4 +301,10 @@
 @media print {
   .scholar-note .callout.is-collapsible .callout-content { display: block !important; }
   .scholar-note .callout { break-inside: avoid; }
+  /* A figure frame is atomic on paper too. */
+  .scholar-note .callout[data-callout="scholar-figure"] :is(img, .image-embed) { break-inside: avoid; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scholar-note .scholar-progress span { transition: none; }
 }

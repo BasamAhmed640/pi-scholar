@@ -298,7 +298,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
 
   pi.on("tool_call", async (event, ctx) => {
     if (!coordinator.hasConfiguredLibrary() || !coordinator.runtimeSession.active || !coordinator.runtimeSession.bookId || event.toolName !== SCHOLAR_QUIZ_TOOL_NAME) return;
-    if (!modeCan(coordinator.runtimeSession.mode, "assesses")) return;
+    if (!modeCan(coordinator.runtimeSession.mode, "interactiveQuestions")) return;
     const input = parseScholarQuizInput(event.input);
     if (input.question === undefined && !input.resumeAttemptId) return;
     const book = await loadBookState(coordinator.getConfig(), coordinator.runtimeSession.bookId);
@@ -405,7 +405,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
 
   pi.on("tool_execution_update", async (event) => {
     if (!coordinator.hasConfiguredLibrary() || !coordinator.runtimeSession.active || !coordinator.runtimeSession.bookId || event.toolName !== SCHOLAR_QUIZ_TOOL_NAME) return;
-    if (!modeCan(coordinator.runtimeSession.mode, "assesses")) return;
+    if (!modeCan(coordinator.runtimeSession.mode, "interactiveQuestions")) return;
     const partial = event.partialResult as { details?: unknown } | undefined;
     const details = parseScholarQuizDetails(partial?.details);
     if (!details.options) return;
@@ -431,7 +431,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
 
   pi.on("tool_result", async (event, ctx) => {
     if (!coordinator.hasConfiguredLibrary() || !coordinator.runtimeSession.active || !coordinator.runtimeSession.bookId || event.toolName !== SCHOLAR_QUIZ_TOOL_NAME) return;
-    if (!modeCan(coordinator.runtimeSession.mode, "assesses")) return;
+    if (!modeCan(coordinator.runtimeSession.mode, "interactiveQuestions")) return;
     if (!coordinator.loading.active) coordinator.startFeedbackLoading(ctx);
     const details = parseScholarQuizDetails(event.details);
     const mutation = await coordinator.mutateBook(coordinator.runtimeSession.bookId, (book) => {

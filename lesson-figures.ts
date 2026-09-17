@@ -41,8 +41,8 @@ export function resolveLessonFigures(markdown: string, record: ScholarSection | 
     const caption = neutralizeScholarMarkers(markdownText(snapshot.caption)).replace(/\[!info\]- Scholar/g, "\\[!info]- Scholar");
     const figure = [wikiEmbed(notePath, snapshotAssetPath(config, book, snapshot), 720), "",
       caption, "", `*Source: PDF viewer page ${snapshot.page}.*`].join("\n");
-    const alreadyFramed = depth > 0 && ["example", "figure"].includes(callouts.get(depth) || "");
-    const expanded = alreadyFramed ? figure : callout("example", `Figure · PDF page ${snapshot.page}`, figure).trimEnd();
+    const alreadyFramed = depth > 0 && ["example", "figure", "scholar-figure"].includes(callouts.get(depth) || "");
+    const expanded = alreadyFramed ? figure : callout("scholar-figure", `Figure · PDF page ${snapshot.page}`, figure).trimEnd();
     return expanded.split("\n").map(part => `${prefix}${part}`.trimEnd()).join("\n");
   }).join("\n");
 }

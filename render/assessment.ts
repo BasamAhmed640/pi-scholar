@@ -27,6 +27,7 @@ import {
   isSectionMaterialized,
   markdownText,
   referenceImageLines,
+  statusCallout,
   unknownMarkdown,
   wikiLink,
   yaml,
@@ -147,7 +148,7 @@ export function displayedCorrectAnswer(question: ExamQuestion): string {
 export function gradedQuestionLines(question: ExamQuestion, result: ExamItemResult | undefined, index: number, figures = ""): string[] {
   const correctAnswer = displayedCorrectAnswer(question);
   const lines = [
-    ...(result ? [`**Score:** ${breakdownPoints(result.earnedPoints)}/${breakdownPoints(result.maxPoints)} · ${markdownText(result.outcome)}`, ""] : []),
+    ...(result ? [`**Score:** <span class="scholar-score">${breakdownPoints(result.earnedPoints)}/${breakdownPoints(result.maxPoints)}</span> · ${markdownText(result.outcome)}`, ""] : []),
     ...(correctAnswer ? [`**Correct answer:** ${correctAnswer}`, ""] : []),
     ...(question.explanation ? [`**Explanation:** ${markdownText(question.explanation)}`, ""] : []),
     ...(question.claim.trim() ? [`**Claim:** ${markdownText(question.claim)}`] : []),
@@ -246,13 +247,15 @@ export function renderExam(config: ScholarConfig, book: ScholarBook, exam: Schol
     ...(exam.submittedAt ? [`submitted: ${yaml(exam.submittedAt)}`] : []),
     ...(exam.gradedAt ? [`graded: ${yaml(exam.gradedAt)}`] : []), `updated: ${yaml(exam.updatedAt)}`,
   ]), [
-    graded
-      ? `> [!success] Exam graded · ${breakdownPoints(exam.earnedPoints)}/${breakdownPoints(exam.maxPoints)} · ${breakdownPoints(exam.percent)}%`
-      : `> [!info] ${submitted ? "Submitted · Awaiting grading" : exam.questions.length ? "Exam · Not yet submitted" : "Exam · Preparing questions"}`,
-    `> ${exam.questions.length} ${exam.questions.length === 1 ? "question" : "questions"} · ${breakdownPoints(points)} ${points === 1 ? "point" : "points"}`,
-    ...(submitted || graded ? [`> Submitted completeness: ${submittedResponses}/${exam.questions.length} answered · ${exam.questions.length - submittedResponses} blank`] : []),
-    ...(!graded && !submitted && exam.questions.length ? [">", "> Answer and save the paper in Obsidian, then submit once in Pi."] : []),
-    "", wikiLink(notePath, bookHomePath(config, book), book.metadata.title), "",
+    statusCallout(
+      graded ? `Exam graded · ${breakdownPoints(exam.earnedPoints)}/${breakdownPoints(exam.maxPoints)} · ${breakdownPoints(exam.percent)}%`
+        : submitted ? "Submitted · Awaiting grading" : exam.questions.length ? "Exam · Not yet submitted" : "Exam · Preparing questions",
+      [
+        `${exam.questions.length} ${exam.questions.length === 1 ? "question" : "questions"} · ${breakdownPoints(points)} ${points === 1 ? "point" : "points"}`,
+        submitted || graded ? `submitted completeness: ${submittedResponses}/${exam.questions.length} answered · ${exam.questions.length - submittedResponses} blank` : "",
+      ].filter(Boolean).join(" · ")), "",
+    ...(!graded && !submitted && exam.questions.length ? [callout("note", "Next step", "Answer and save the paper in Obsidian, then submit once in Pi."), ""] : []),
+    wikiLink(notePath, bookHomePath(config, book), book.metadata.title), "",
     ...block("## Scope", scopeLines(config, book, notePath, exam.scope, { includeSections: false })),
     ...block("## Source figures", sourceFigureLines(config, book, notePath, exam.snapshots || [])),
     ...(exam.questions.length ? block("## Answer paper", [
@@ -305,8 +308,8 @@ export function renderTutorSession(config: ScholarConfig, book: ScholarBook, ses
     "type: scholar-tutor", `book_id: ${yaml(book.id)}`, `tutor_id: ${yaml(session.id)}`, `status: ${yaml(session.status)}`,
     `created: ${yaml(session.createdAt)}`, ...(session.closedAt ? [`closed: ${yaml(session.closedAt)}`] : []), `updated: ${yaml(session.updatedAt)}`,
   ]), [
-    `*Tutor · ${session.status === "active" ? "In progress" : "Closed"} · Assisted practice*`,
-    "", "Practice does not change Exam scores or Learn completion.",
+    statusCallout("Tutor", `${session.status === "active" ? "In progress" : "Closed"} · Assisted practice`), "",
+    "Practice does not change Exam scores or Learn completion.",
     "", wikiLink(notePath, bookHomePath(config, book), book.metadata.title), "",
     ...(content.some((line) => line.trim()) ? content : ["This session is ready. The model and practice will appear as you work."]),
   ].join("\n"));

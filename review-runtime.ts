@@ -51,15 +51,17 @@ export const REVIEW_STALL_MS = 180_000;
 export const REVIEW_BACKSTOP_MS = 45 * 60_000;
 
 export const DEFAULT_REVIEWER_LIMITS: Readonly<ReviewerLimits> = Object.freeze({
-  maxTurns: 16,
-  maxToolCalls: 48,
+  // Every production pass now prepares its evidence, so the default is a single
+  // bounded request rather than a long tool loop.
+  maxTurns: 2,
+  maxToolCalls: 8,
   maxPromptChars: 180_000,
-  maxToolTextChars: 120_000,
-  maxImages: 24,
+  maxToolTextChars: 40_000,
+  maxImages: 8,
   maxImageBytes: 8 * 1024 * 1024,
   maxTotalImageBytes: 64 * 1024 * 1024,
-  maxOutputTokens: 12_000,
-  maxTotalOutputTokens: 96_000,
+  maxOutputTokens: 4_000,
+  maxTotalOutputTokens: 8_000,
   maxResponseChars: 360_000,
   timeoutMs: REVIEW_BACKSTOP_MS,
 });

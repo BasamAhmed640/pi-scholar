@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { compactStrings, sectionLabel } from "./domain.ts";
+import { CATCH_ALL_OPTION, MAX_RECOGNITION_SHARE, MIN_MCQ_OPTIONS, MIN_RUBRIC_CRITERIA, MIXED_FORM_THRESHOLD, optionIssues } from "./quiz-contract.ts";
 import { markdownText } from "./render/common.ts";
 import { isExamQuestion } from "./state-schema.ts";
 import { findSection, type ExamBreakdown, type ExamItemResult, type ExamQuestion, type ScholarBook, type ScholarExam } from "./types.ts";
@@ -9,21 +10,6 @@ const ANSWER_END = "<!-- /scholar:answer:";
 
 /** Mirrors state-schema's isStableId so a rejection names its own field. */
 const MAX_STABLE_ID = 200;
-
-/**
- * Question-engine thresholds, enforced when a form is frozen.
- *
- * These are the mechanically checkable parts of the engine. They do not make an
- * exam good, but they make the cheapest ways of making it bad impossible: a
- * two-option coin flip, a catch-all option that tests bookkeeping, a distractor
- * that diagnoses nothing, a holistic one-line rubric, or an all-recognition
- * paper that never asks the learner to generate anything.
- */
-const MIN_MCQ_OPTIONS = 3;
-const MIN_RUBRIC_CRITERIA = 2;
-const MIXED_FORM_THRESHOLD = 4;
-const MAX_RECOGNITION_SHARE = 0.7;
-const CATCH_ALL_OPTION = /\b(all|none|both|any|either|neither)\s+of\s+(the\s+)?(above|these|them|the\s+others)\b/i;
 
 /** What a frozen form actually covers, reported back so weak coverage is visible. */
 export type ExamBlueprint = {
@@ -184,23 +170,20 @@ export function validateExamQuestions(exam: ScholarExam, questions: ExamQuestion
       }
       const values = options.map((option) => option.value);
       if (new Set(values).size !== values.length) throw new Error(`MCQ ${id} option values must be unique.`);
-      const catchAll = options.find((option) => CATCH_ALL_OPTION.test(option.label));
-      if (catchAll) {
-        throw new Error(`MCQ ${id} uses a catch-all option (${JSON.stringify(catchAll.label)}). The question engine forbids all/none-of-the-above: it tests bookkeeping rather than a decision.`);
-      }
       const correct = [...new Set(coerceAnswerValues(question.correctAnswer).map((value) => value.trim()))];
       if (!correct.length || correct.some((value) => !values.includes(value))) {
         throw new Error(`MCQ ${id} has an invalid correctAnswer value.`);
       }
-      // Question engine: every distractor targets one distinct misconception.
-      // Without that a wrong option teaches nothing and diagnoses nothing.
-      const distractors = options.filter((option) => !correct.includes(option.value));
-      const undiagnosed = distractors.filter((option) => !option.misconception);
-      if (undiagnosed.length) {
+      // Question engine: the shared option rules decide, this gate only phrases the rejection.
+      const issues = optionIssues(options, correct);
+      if (issues.includes("catch-all")) {
+        throw new Error(`MCQ ${id} uses a catch-all option (${JSON.stringify(options.find((option) => CATCH_ALL_OPTION.test(option.label))?.label)}). The question engine forbids all/none-of-the-above: it tests bookkeeping rather than a decision.`);
+      }
+      if (issues.includes("missing-misconception")) {
+        const undiagnosed = options.filter((option) => !correct.includes(option.value) && !option.misconception);
         throw new Error(`MCQ ${id} distractor(s) ${undiagnosed.map((option) => option.value).join(", ")} declare no misconception. Each distractor must name the one distinct misconception it targets.`);
       }
-      const misconceptions = distractors.map((option) => option.misconception!.toLowerCase());
-      if (new Set(misconceptions).size !== misconceptions.length) {
+      if (issues.includes("duplicate-misconception")) {
         throw new Error(`MCQ ${id} repeats a distractor misconception. Each wrong option must target a different error.`);
       }
       normalized = {

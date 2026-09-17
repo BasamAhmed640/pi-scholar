@@ -4,7 +4,7 @@ import { transcriptBlock } from "../note-records.ts";
 import { callout } from "./callouts.ts";
 import { chapterNotePath, sectionNotePath, snapshotAssetPath } from "../obsidian-paths.ts";
 import type { AssessmentAttempt, AssessmentKind, ScholarBook, ScholarChapter, ScholarConfig, ScholarSection, ScholarSnapshot, TranscriptEntry } from "../types.ts";
-import { block, collapsedRecord, frontmatter, generatedDocument, markdownText, pageRange, readableOutcome, statusLabel, tableText, titleCase, wikiEmbed, wikiLink, yaml } from "./common.ts";
+import { block, collapsedRecord, frontmatter, generatedDocument, markdownText, pageRange, readableOutcome, statusCallout, statusLabel, tableText, titleCase, wikiEmbed, wikiLink, yaml } from "./common.ts";
 
 export function comparableTranscriptText(value: string): string {
   return markdownText(value).replace(/^\*\*([\s\S]*)\*\*$/, "$1").replace(/\s+/g, " ").trim().toLowerCase();
@@ -97,7 +97,7 @@ export function sourceFigureLines(config: ScholarConfig, book: ScholarBook, note
     .flatMap((snapshot) => {
       if (seen.has(snapshot.assetFile)) return [];
       seen.add(snapshot.assetFile);
-      return [callout("example", `Figure · PDF page ${snapshot.page}`, [
+      return [callout("scholar-figure", `Figure · PDF page ${snapshot.page}`, [
         wikiEmbed(notePath, snapshotAssetPath(config, book, snapshot), 640), "",
         markdownText(snapshot.caption), "",
         `*Source: ${markdownText(book.source.fileName).replace(/\n/g, " ")} · PDF viewer page ${snapshot.page}.*`, "",
@@ -234,9 +234,12 @@ export function renderSection(config: ScholarConfig, book: ScholarBook, chapter:
     "type: scholar-section", `book_id: ${yaml(book.id)}`, `chapter_id: ${yaml(chapter.id)}`, `section_id: ${yaml(section.id)}`,
     `status: ${yaml(section.status)}`, `current: ${current}`, `created: ${yaml(section.createdAt)}`, `updated: ${yaml(section.updatedAt)}`,
   ]), [
-    `*${statusLabel(section.status)}${current ? " · Current section" : ""} · ${pageRange(section.startPage, section.endPage)}*`, "",
-    ...(section.status === "complete" ? ["**Section complete.** Reopen for practice anytime; practice does not change your earned completion.", ""]
-      : section.status !== "not-started" ? [`**Progress:** ${lessonProgress}${pendingChecks ? ` · ${pendingChecks} short ${pendingChecks === 1 ? "question" : "questions"} remaining` : ""}. Details are in the Learning record below.`, ""] : []),
+    statusCallout(statusLabel(section.status), [
+      current ? "Current section" : "",
+      pageRange(section.startPage, section.endPage),
+      section.status === "complete" ? "Section complete · reopen for practice anytime"
+        : pendingChecks ? `${pendingChecks} short ${pendingChecks === 1 ? "question" : "questions"} remaining` : lessonProgress,
+    ].filter(Boolean).join(" · ")), "",
     wikiLink(notePath, chapterNotePath(config, book, chapter), chapterLabel), "",
     ...(content.some((line) => line.trim()) ? content : ["This section is ready. Notes will appear as you work through it."]),
   ].join("\n"));

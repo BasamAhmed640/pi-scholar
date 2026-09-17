@@ -181,17 +181,16 @@ await assert.rejects(evaluate(), /no learner response/);
       fingerprint: { sha256, size: bytes.length, mtimeMs: (await stat(sourcePath)).mtimeMs } } };
     gate.clear();
     let definition;
-    const requests = [];
+    const requests = [], shapes = [];
     const model = { id: "assessment-review", provider: "fixture", api: "fixture", input: ["text"], contextWindow: 32_000, maxTokens: 4000 };
     const modelRegistry = { complete: async (_selected, reviewContext) => {
-      const answered = reviewContext.messages.some(message => message.role === "toolResult");
       const role = /Assigned role: (\w+)\./.exec(reviewContext.systemPrompt)?.[1] || "unknown";
-      requests.push(role === "assessment" && !answered ? "assessment-review" : role);
+      if (role === "assessment") {
+        requests.push("assessment-review");
+        shapes.push({ tools: reviewContext.tools.length, messages: reviewContext.messages.length });
+      } else requests.push(role);
       const reply = (content, stopReason = "stop") => ({ role: "assistant", api: model.api, provider: model.provider, model: model.id, stopReason, timestamp: Date.now(), content,
         usage: { input: 120, output: 30, cacheRead: 0, cacheWrite: 0, totalTokens: 150, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
-      if (role === "assessment" && !answered) {
-        return reply([{ type: "toolCall", name: "read_source", arguments: { startPage: 1, endPage: 1 }, id: `read-${requests.length}` }], "toolUse");
-      }
       const verdict = requests.filter(item => item === "assessment-review").length >= 2
         ? { status: "changes", findings: [{ severity: "blocking", target: "question wording", sourcePages: [1], issue: "The prompt hides that the speed stays fixed.", repair: "State that the speed stays fixed." }] }
         : { status: "pass", findings: [] };
@@ -222,6 +221,7 @@ await assert.rejects(evaluate(), /no learner response/);
     assert.ok(["review", "error", "retry"].includes(refused.details.tone), refused.content[0].text);
     assert.match(refused.content[0].text, /Repair the proposed question/);
     assert.equal(requests.filter(item => item === "assessment-review").length, 2, "each question is reviewed once");
+    assert.deepEqual(shapes, [{ tools: 0, messages: 2 }, { tools: 0, messages: 2 }], "a question review is one prepared request with no tool loop");
     assert.equal(target().attempts.length, 1, "a refused question is never shown to the learner");
   } finally {
     await rm(folder, { recursive: true, force: true });

@@ -146,7 +146,7 @@ check("navigation tables identify the current section and never link an unstarte
   assert.ok(samples.book.includes("\\|Chapter 1: Signals, models and physical reasoning]]"));
 });
 check("Tutor keeps assisted practice distinct and preserves teaching and active question", () => {
-  assert.ok(samples.tutor.includes("*Tutor · In progress · Assisted practice*") && samples.tutor.includes("does not change Exam scores or Learn completion"));
+  assert.ok(samples.tutor.includes("> [!scholar-status] Tutor") && samples.tutor.includes("In progress · Assisted practice") && samples.tutor.includes("does not change Exam scores or Learn completion"));
   const order = ["## Lesson", longExplanation, "> [!note]- Source references", "> [!note]- Recap", "> ### Key points", "> [!note]- Practice scope", "## Questions", "### Question 1", section.attempts[0].feedback, "### Question 2", section.attempts[1].feedback, "### Question 3", "*Awaiting response*"];
   assert.ok(order.every((text, index) => samples.tutor.includes(text) && (index === 0 || samples.tutor.indexOf(text) > samples.tutor.indexOf(order[index - 1]))));
   assert.ok(samples.tutor.includes("p0007-snapshot-bbbbbbbbbbbbbbbb.png|640]]"));

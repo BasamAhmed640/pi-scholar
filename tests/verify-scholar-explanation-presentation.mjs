@@ -36,8 +36,8 @@ const asset = snapshotAssetPath(config, book, snapshots[0]);
 const embed = wikiEmbed(path, asset, 640);
 const blocks = [
   "### What the operation tells you\n\nTwo arrows can describe directions in a shared flat surface, such as a sheet of paper. The cross product gives another arrow pointing straight out of that surface. This perpendicular direction is called the normal direction.",
-  `> [!example] Figure · PDF page 1\n>\n> ${embed}\n>\n> *Illustrative fixture, PDF page 1.*\n\nFollow the input arrows together. The output points perpendicular to both; reversing their order reverses the output arrow.`,
-  "> [!note] Key equation · Reversing the order\n>\n> $$\n> \\mathbf B\\times\\mathbf A = -(\\mathbf A\\times\\mathbf B)\n> $$\n>\n> **Symbols:** $\\mathbf A$ → first input vector; $\\mathbf B$ → second input vector.\n>\n> The minus sign reverses direction without changing magnitude. This order-reversal property is called anti-commutativity.\n>\n> *Illustrative fixture, PDF page 1.*",
+  `> [!scholar-figure] Figure · PDF page 1\n>\n> ${embed}\n>\n> *Illustrative fixture, PDF page 1.*\n\nFollow the input arrows together. The output points perpendicular to both; reversing their order reverses the output arrow.`,
+  "> [!scholar-equation] Key equation · Reversing the order\n>\n> $$\n> \\mathbf B\\times\\mathbf A = -(\\mathbf A\\times\\mathbf B)\n> $$\n>\n> **Symbols**\n>\n> - $\\mathbf A$ — first input vector\n> - $\\mathbf B$ — second input vector\n>\n> The minus sign reverses direction without changing magnitude. This order-reversal property is called anti-commutativity.\n>\n> *Illustrative fixture, PDF page 1.*",
   "### Apply the idea\n\nSuppose the original cross product points upward. Swapping the input order makes it point downward with the same magnitude. We reverse the whole result, rather than negating both inputs.",
   "> [!example] Explanatory schematic · Following the change\n>\n> ```mermaid\n> flowchart LR\n> A[Swap input order] --> B[Reverse output direction]\n> ```\n>\n> The arrow describes the consequence of one operation. It does not describe a physical cause.\n> *Illustrative fixture, PDF page 1.*",
 ];
@@ -47,14 +47,14 @@ const topLevel = marked.lexer(note);
 const callouts = topLevel.filter(token => token.type === "blockquote");
 const reference = callouts.find(token => token.text.startsWith("[!note]- Source references"));
 assert.ok(reference, "unused captures remain inspectable in one collapsed reference area");
-assert.equal(callouts.filter(token => token.text.startsWith("[!example] Figure")).length, 1,
+assert.equal(callouts.filter(token => token.text.startsWith("[!scholar-figure] Figure")).length, 1,
   "only the figure authored into the explanation is expanded");
-assert.equal((reference.text.match(/\[!example\] Figure/g) || []).length, 15);
+assert.equal((reference.text.match(/\[!scholar-figure\] Figure/g) || []).length, 15);
 assert.equal(note.split(snapshots[0].assetFile).length - 1, 1, "placed figure has no duplicate full-size reference");
 for (const snapshot of snapshots.slice(1)) assert.ok(reference.text.includes(snapshot.assetFile));
 for (const block of blocks) assert.ok(note.includes(block), "composed instructional content is preserved verbatim");
 assert.ok(note.indexOf("The minus sign") < note.indexOf("### Apply the idea"));
-assert.ok(callouts.some(token => token.text.startsWith("[!note] Key equation") && token.text.includes("$$")));
+assert.ok(callouts.some(token => token.text.startsWith("[!scholar-equation] Key equation") && token.text.includes("$$")));
 assert.ok(callouts.some(token => token.text.startsWith("[!example] Explanatory schematic") && token.text.includes("```mermaid")));
 assert.ok(topLevel.some(token => token.type === "paragraph" && token.text.startsWith("Follow the input arrows")), "figure interpretation stays readable outside metadata");
 console.log("[PASS] a composed lesson preserves prose, equation, purposeful figure and Mermaid; sixteen captures do not become a wall");
@@ -84,12 +84,12 @@ const token = "[[scholar-figure:figure-1]]";
 const placed = resolveLessonFigures(`Meaning before the figure.\n\n${token}\n\nNow interpret its labels.`, section, book, [1], config);
 assert.doesNotMatch(placed, /scholar-figure:/);
 assert.ok(placed.includes(snapshots[0].caption));
-assert.equal(marked.lexer(placed).filter(token => token.type === "blockquote" && token.text.startsWith("[!example] Figure")).length, 1);
+assert.equal(marked.lexer(placed).filter(token => token.type === "blockquote" && token.text.startsWith("[!scholar-figure] Figure")).length, 1);
 const framed = resolveLessonFigures(`> [!example] Original source figure\n>\n> ${token}\n>\n> Explain the labels together.`, section, book, [1], config);
 assert.equal((framed.match(/\[!example\]/g) || []).length, 1, "an existing figure callout is not wrapped again");
 assert.ok(framed.split("\n").every(line => line.startsWith(">")), "every expanded line retains the surrounding callout prefix");
 const nested = resolveLessonFigures(`> [!note] Worked reasoning\n>\n> ${token}`, section, book, [1], config);
-assert.match(nested, /^> > \[!example\] Figure/m);
+assert.match(nested, /^> > \[!scholar-figure\] Figure/m);
 assert.match(nested, /^> > !\[\[/m);
 for (const invalid of [`Inline ${token}`, `${token}\n\n${token}`, `\`\`\`markdown\n${token}\n\`\`\``, "[[scholar-figure:missing]]", "[[scholar-figure:figure-1]"]) {
   assert.throws(() => resolveLessonFigures(invalid, section, book, [1], config));
@@ -113,10 +113,11 @@ const longPlan = { ...section, objectives: longObjectives, coveredObjectives: []
   objectiveChecks: longObjectives.map(objective => ({ objective, checks: ["conceptual", "computation"] })), attempts: [] };
 const longNote = renderSection(config, book, chapter, longPlan);
 const preLesson = longNote.slice(0, longNote.indexOf("## Lesson"));
-assert.match(preLesson, /Lesson in progress · 3 short questions remaining/);
+assert.match(preLesson, /^> \[!scholar-status\] In progress$/m);
+assert.match(preLesson, /Current section · Pages 1–16 · 3 short questions remaining/);
 assert.doesNotMatch(preLesson, /Objective \d+:|evidence for:|Remaining to complete/);
-const progressLine = preLesson.split("\n").find(line => line.startsWith("**Progress:**"));
-assert.ok(progressLine.length < 150, "progress above the lesson stays short regardless of objective length");
+const statusHeader = preLesson.split("\n").find(line => line.startsWith("> [!scholar-status]"));
+assert.ok(statusHeader.length < 150, "the status header above the lesson stays one short line regardless of objective length");
 const learningRecord = marked.lexer(longNote).find(token => token.type === "blockquote" && token.text.startsWith("[!note]- Learning record"));
 assert.ok(learningRecord);
 for (const objective of longObjectives) assert.ok(learningRecord.text.includes(objective));
@@ -140,5 +141,10 @@ assert.match(learnPolicy, /notes\.lessonComplete=true/);
 assert.match(learnPolicy, /Diagnostic and practice results cannot satisfy missing mastery checks|Never announce completion unless it says Section complete/);
 assert.match(tutorPolicy, /Remain interactive/);
 assert.match(tutorPolicy, /does not require a complete section lesson/);
-assert.doesNotMatch(examPolicy, /Explanation quality|reading-first|lessonComplete|Native Obsidian presentation/);
-console.log("[PASS] Learn finishes the explanation before confirmation; Tutor stays interactive and Exam stays isolated");
+assert.ok(learnPolicy.includes("Issue independent source calls together in one message — up to four `read`/`view` calls"), "Learn batches independent source calls so page reads, views and crops do not cost one model turn each");
+assert.ok(tutorPolicy.includes("issue independent source calls together in one message"), "Tutor uses the same batching rule when it prepares an explanation");
+assert.match(examPolicy, /Explanation quality/, "Exam composes the shared explanation engine");
+assert.match(examPolicy, /Native Obsidian presentation/, "Exam composes the shared presentation engine");
+assert.match(examPolicy, /Question engine \(general, concept-centered, evidence-first\)/, "Exam composes the shared question engine");
+assert.doesNotMatch(examPolicy, /lessonComplete/, "Exam still never claims a Learn section delivery");
+console.log("[PASS] Learn finishes the explanation before confirmation; every mode composes the same four engines and Exam keeps its own surface");

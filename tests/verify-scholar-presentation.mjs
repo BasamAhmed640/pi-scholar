@@ -63,9 +63,9 @@ try {
   const finalQuestion=notes.questionChunks(text)[1];assert.ok(finalQuestion.includes(snapshots[0].assetFile));assert.ok(!finalQuestion.includes(snapshots[1].assetFile));
   const blocks=marked.lexer(text).filter(t=>t.type==="blockquote");
   assert.ok(blocks.some(t=>t.text.startsWith("[!question] Question 2")&&t.text.includes(snapshots[0].assetFile)));
-  assert.equal(blocks.filter(t=>t.text.startsWith("[!example] Figure")).length,0);
+  assert.equal(blocks.filter(t=>t.text.startsWith("[!scholar-figure] Figure")).length,0);
   const references=blocks.find(t=>t.text.startsWith("[!note]- Source references"));
-  assert.ok(references);assert.equal((references.text.match(/\[!example\] Figure/g)||[]).length,2);
+  assert.ok(references);assert.equal((references.text.match(/\[!scholar-figure\] Figure/g)||[]).length,2);
   assert.ok(text.includes("> $$t_d = \\frac{\\ell}{v}$$"));assert.ok(text.includes("> ```mermaid"));
   for(let i=0;i<snapshots.length;i++)assert.equal(hash(await readFile(paths.snapshotAssetPath(config,book,snapshots[i]))),snapshots[i].sha256);
   pass("explicit question figures share the question frame; equations and Mermaid stay expanded, supplemental captures stay collapsed");
@@ -84,7 +84,7 @@ try {
   pass("native checkboxes stay inside their question and an existing filled paper is never restyled by rewriting");
   const policy=await readFile(join(extension,"policies.ts"),"utf8");
   assert.match(policy,/notes\.lesson\.keyEquations/);assert.match(policy,/Optionally use a small fenced mermaid/);
-  const exported=await mod("policies.ts");assert.match(exported.learnInstructions(book,section),/Key equation/);assert.match(exported.tutorInstructions(book,tutor),/mermaid/);assert.doesNotMatch(exported.examInstructions(book,exam),/Native Obsidian presentation/);
+  const exported=await mod("policies.ts");assert.match(exported.learnInstructions(book,section),/Key equation/);assert.match(exported.tutorInstructions(book,tutor),/mermaid/);assert.match(exported.examInstructions(book,exam),/Native Obsidian presentation/, "every mode composes the one presentation engine");
   pass("central equations are explicitly framed and Mermaid is optional in Learn/Tutor presentation guidance");
   if(preview){
     await writeFile(join(config.obsidianRoot,".obsidian","app.json"),JSON.stringify({livePreview:true,readableLineLength:true}));

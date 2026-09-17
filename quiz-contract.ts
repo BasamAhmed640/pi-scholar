@@ -10,6 +10,19 @@ import type { AssessmentKind, QuestionGrounding } from "./types.ts";
 
 export const SCHOLAR_QUIZ_TOOL_NAME = "scholar_quiz" as const;
 
+/**
+ * Question-engine thresholds, enforced when an interactive quiz is prepared and when an exam
+ * form is frozen. They do not make a question good, but they make the cheapest ways of making
+ * it bad impossible: a two-option coin flip, a catch-all option that tests bookkeeping, a
+ * distractor that diagnoses nothing, a holistic one-line rubric, or an all-recognition paper
+ * that never asks the learner to generate anything.
+ */
+export const MIN_MCQ_OPTIONS = 3;
+export const MIN_RUBRIC_CRITERIA = 2;
+export const MIXED_FORM_THRESHOLD = 4;
+export const MAX_RECOGNITION_SHARE = 0.7;
+export const CATCH_ALL_OPTION = /\b(all|none|both|any|either|neither)\s+of\s+(the\s+)?(above|these|them|the\s+others)\b/i;
+
 export type ScholarQuizMode = "single-select" | "multi-select";
 export type ScholarQuizStatus = "answered" | "cancelled" | "unavailable";
 
@@ -48,15 +61,33 @@ export interface ScholarQuizOption {
   misconception?: string;
 }
 
+export type QuestionOptionIssue = "catch-all" | "no-distractor" | "missing-misconception" | "duplicate-misconception";
+
+/** The question engine's option rules, shared by the interactive quiz gate and the frozen exam form. */
+export function optionIssues(options: ScholarQuizOption[], correctValues: string[]): QuestionOptionIssue[] {
+  const issues: QuestionOptionIssue[] = [];
+  if (options.some((option) => CATCH_ALL_OPTION.test(option.label))) issues.push("catch-all");
+  const distractors = options.filter((option) => !correctValues.includes(option.value));
+  if (!distractors.length) {
+    issues.push("no-distractor");
+    return issues;
+  }
+  const diagnoses = distractors.map((option) => option.misconception?.trim().replace(/\s+/g, " ").toLowerCase() || "");
+  if (diagnoses.some((value) => !value)) issues.push("missing-misconception");
+  else if (new Set(diagnoses).size !== diagnoses.length) issues.push("duplicate-misconception");
+  return issues;
+}
+
 /** Apply to new forms only. Previously frozen unanswered questions remain resumable unchanged. */
 export function assertScholarQuizDistractors(options: ScholarQuizOption[], correctValues: string[]): void {
-  const catchAll = options.find((option) => /\b(all|none|both|any|either|neither)\s+of\s+(the\s+)?(above|these|them|the\s+others)\b/i.test(option.label));
-  if (catchAll) throw new Error(`scholar_quiz forbids catch-all options such as ${JSON.stringify(catchAll.label)}; ask for a specific decision.`);
-  const distractors = options.filter((option) => !correctValues.includes(option.value));
-  if (!distractors.length) throw new Error("scholar_quiz needs at least one plausible wrong option.");
-  if (distractors.some((option) => !option.misconception?.trim())) throw new Error("Every wrong scholar_quiz option must declare the specific misconception it targets.");
-  const diagnoses = distractors.map((option) => option.misconception!.trim().replace(/\s+/g, " ").toLowerCase());
-  if (new Set(diagnoses).size !== diagnoses.length) throw new Error("Each wrong scholar_quiz option must target a distinct misconception.");
+  const issues = optionIssues(options, correctValues);
+  if (issues.includes("catch-all")) {
+    const catchAll = options.find((option) => CATCH_ALL_OPTION.test(option.label));
+    throw new Error(`scholar_quiz forbids catch-all options such as ${JSON.stringify(catchAll?.label)}; ask for a specific decision.`);
+  }
+  if (issues.includes("no-distractor")) throw new Error("scholar_quiz needs at least one plausible wrong option.");
+  if (issues.includes("missing-misconception")) throw new Error("Every wrong scholar_quiz option must declare the specific misconception it targets.");
+  if (issues.includes("duplicate-misconception")) throw new Error("Each wrong scholar_quiz option must target a distinct misconception.");
 }
 
 export interface ScholarQuizAnswer {

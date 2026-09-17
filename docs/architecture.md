@@ -7,10 +7,15 @@ You do not have to finish Learn before taking an Exam or opening Tutor.
 New Learn delivery uses the selected Pi model as lead author and four independent
 review responsibilities. Source, teaching and math/visual reviewers run after
 the saved draft is prepared; the assessment reviewer checks a new proposed
-question before the interactive form is persisted. These are fresh in-memory
-conversations with scoped, read-only source/image tools, not extension-loaded
-Pi sessions. They cannot access other modes' history, write notes, change progress,
-run shell commands, or grade the learner. No fixed model/provider is assumed.
+question before the interactive form is persisted. Each check is one prepared
+request: the runner loads exactly that packet's page text, saved crops and
+lesson passages, so a reviewer never fetches its own evidence. Reviewers run at
+a fixed low reasoning level and inspect saved crops rather than full rendered
+pages — a deliberate trade of review depth for latency and token cost, not the
+learner's reasoning budget. These are fresh in-memory conversations, not
+extension-loaded Pi sessions. They cannot access other modes' history, write
+notes, change progress, run shell commands, or grade the learner. No fixed
+model/provider is assumed.
 
 ## The Obsidian hierarchy
 
@@ -115,12 +120,17 @@ flowchart TB
 ```
 
 The arrows summarize responsibilities rather than every import or event.
-There is deliberately one definition of each engine:
+There is deliberately one definition of each engine, and every mode composes all four:
 
-| Shared policy | Learn | Exam | Tutor |
+| Shared engine | Learn | Exam | Tutor |
 | --- | --- | --- | --- |
-| Teaching Engine | Yes | No | Yes |
-| Question Engine | Yes | Yes | Yes |
+| Teaching | Yes | Yes | Yes |
+| Question | Yes | Yes | Yes |
+| Presentation | Yes | Yes | Yes |
+| Review | Yes | Yes | Yes |
+
+A mode supplies only its surface: which record it writes, where the learner answers,
+and which scope it freezes. Engine definitions, gates and receipts are shared code.
 
 `modes.ts` defines capabilities, `types.ts` defines shared contracts, and
 `state-schema.ts` validates persisted records. Durable-history checks and

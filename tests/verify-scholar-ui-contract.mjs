@@ -159,15 +159,8 @@ try {
     cwd: root,
     model: { id: "ui-fixture", provider: "fixture", api: "openai-responses", name: "UI fixture", input: ["text", "image"], reasoning: false, contextWindow: 262144, maxTokens: 16384 },
     // Exercise the production review preflight without a network/model account.
-    modelRegistry: { complete: async (model, review) => {
-      const prompt = review.messages[0].content;
-      let content = [{ type: "text", text: JSON.stringify({ status: "pass", findings: [] }) }], stopReason = "stop";
-      if (review.messages.length === 1 && /Required read_source pages: 1\./.test(prompt)) {
-        content = [{ type: "toolCall", id: "read-ui", name: "read_source", arguments: { startPage: 1, endPage: 1 } }]; stopReason = "toolUse";
-      } else if (review.messages.length === 1 && /Required view_source pages: 1\./.test(prompt)) {
-        content = [{ type: "toolCall", id: "view-ui", name: "view_source", arguments: { page: 1 } }]; stopReason = "toolUse";
-      }
-      return { role: "assistant", content, stopReason, api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), usage: { input: 100, output: 100, cacheRead: 0, cacheWrite: 0 } };
+    modelRegistry: { complete: async (model) => {
+      return { role: "assistant", content: [{ type: "text", text: JSON.stringify({ status: "pass", findings: [] }) }], stopReason: "stop", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), usage: { input: 100, output: 100, cacheRead: 0, cacheWrite: 0 } };
     } },
     hasUI: true,
     isIdle: () => true,

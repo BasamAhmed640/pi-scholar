@@ -23,7 +23,7 @@ const jiti = createJiti(import.meta.url, {
 
 const EXT = dirname(process.env.PI_SCHOLAR_EXTENSION || packagedExtensionPath);
 const mod = (rel) => jiti.import(join(EXT, rel));
-const { MODE_CAPABILITIES, SCHOLAR_MODES, isScholarMode, modeCan } = await mod("modes.ts");
+const { MODE_CAPABILITIES, MODE_ENGINES, SCHOLAR_MODES, isScholarMode, modeCan } = await mod("modes.ts");
 const { modeInstructions } = await mod("policies.ts");
 const { questionGroundingIssues } = await mod("question-grounding.ts");
 const lesson = await mod("lesson.ts");
@@ -35,7 +35,7 @@ const check = (name, ok, detail) => {
 };
 
 // ------------------------------------------------------------ table shape --
-const CAPABILITIES = ["teaches", "assesses", "citesLearnObjectives", "usesWebImages", "materializesSections"];
+const CAPABILITIES = ["interactiveTeaching", "interactiveQuestions", "citesLearnObjectives", "usesWebImages", "materializesSections"];
 check("every mode declares every capability",
   SCHOLAR_MODES.every((mode) => CAPABILITIES.every((cap) => typeof MODE_CAPABILITIES[mode][cap] === "boolean")),
   SCHOLAR_MODES.join(", "));
@@ -71,13 +71,28 @@ const targetFor = { learn: section, exam, tutor };
 
 const TEACHING_MARKER = "Teaching engine (guided mastery with fading support)";
 const QUESTION_MARKER = "Question engine (general, concept-centered, evidence-first)";
-const SHORT_QUESTION_MARKER = "Short questions (Learn and Tutor are answered in a terminal)";
+const SHORT_QUESTION_MARKER = "Short questions (interactive delivery surfaces)";
+const ENGINE_MARKERS = [
+  TEACHING_MARKER,
+  "Explanation quality (precision with fewer assumed prerequisites)",
+  "Native Obsidian presentation (formatting only)",
+  QUESTION_MARKER,
+  "Question safety gate (fairness without reduced rigor)",
+];
+// The four engines are universal, so every mode's prompt carries every engine; only the
+// interactive-surface block follows the interactiveTeaching surface.
+check("every mode declares every engine",
+  SCHOLAR_MODES.every((mode) => Object.values(MODE_ENGINES[mode]).every((value) => value === true)),
+  JSON.stringify(MODE_ENGINES.learn));
 for (const mode of SCHOLAR_MODES) {
   const prompt = modeInstructions(mode, book, targetFor[mode]);
-  check(`policies match teaches=${MODE_CAPABILITIES[mode].teaches} for ${mode}`,
-    prompt.includes(TEACHING_MARKER) === MODE_CAPABILITIES[mode].teaches,
-    MODE_CAPABILITIES[mode].teaches ? "teaching engine present" : "teaching engine absent");
-  check(`${mode} always receives its question policy`, prompt.includes(mode === "exam" ? QUESTION_MARKER : SHORT_QUESTION_MARKER), "present");
+  check(`${mode} carries every engine exactly once`,
+    ENGINE_MARKERS.every((marker) => prompt.split(marker).length - 1 === 1),
+    `${ENGINE_MARKERS.filter((marker) => prompt.includes(marker)).length}/${ENGINE_MARKERS.length} engine blocks present`);
+  const shortQuestions = prompt.split(SHORT_QUESTION_MARKER).length - 1;
+  check(`${mode} matches interactiveTeaching=${MODE_CAPABILITIES[mode].interactiveTeaching} for the interactive question surface`,
+    shortQuestions === (MODE_CAPABILITIES[mode].interactiveTeaching ? 1 : 0),
+    MODE_CAPABILITIES[mode].interactiveTeaching ? "short-question block present" : "short-question block absent");
 }
 
 // citesLearnObjectives is the rule that keeps Tutor evidence from borrowing

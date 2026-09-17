@@ -22,21 +22,23 @@ const value = equation();
 const original = structuredClone(value);
 const output = render(input, [value], [200, 201, 202]);
 assert.deepEqual(value, original, "rendering must not mutate the author's record");
-assert.match(output, /^> \[!note\] Key equation · Electric displacement$/m);
+assert.match(output, /^> \[!scholar-equation\] Key equation · Electric displacement$/m);
 assert.ok(output.includes(`> $$\n> ${value.latex}\n> $$`), "math body is preserved with separate paired delimiters");
-assert.ok(output.includes(String.raw`**Symbols:** $\mathbf D$ → electric displacement; $\epsilon_0$ → vacuum permittivity; $\mathbf E$ → electric field; $\mathbf P$ → polarization`));
+assert.ok(output.includes(String.raw`**Symbols**`) && output.includes(String.raw`- $\mathbf D$ — electric displacement`)
+  && output.includes(String.raw`- $\epsilon_0$ — vacuum permittivity`) && output.includes(String.raw`- $\mathbf E$ — electric field`)
+  && output.includes(String.raw`- $\mathbf P$ — polarization`), "symbols render as one definition-list entry per symbol");
 assert.ok(output.includes(`**Assumptions:** ${value.assumptions}`));
 assert.ok(output.includes(String.raw`physical field $\mathbf E$`));
 assert.ok(output.includes("*Source: PDF pages 200, 201.*"));
 assert.ok(output.includes(ordinary), "ordinary display equations must not all become boxes");
 assert.ok(!output.includes("[[scholar-equation:") && !output.includes("[!note]-"));
-assert.equal((output.match(/\[!note\]/g) || []).length, 1);
+assert.equal((output.match(/\[!scholar-equation\]/g) || []).length, 1);
 assert.equal(render(ordinary, [], [200]), ordinary);
 console.log("[PASS] central equations receive deterministic expanded callouts, arrow definitions, assumptions, meaning and source pages; intermediate math stays in prose");
 
 const other = { ...equation(), id: "gauss", title: "Gauss’s law for displacement", latex: String.raw`\nabla\cdot\mathbf D = \rho_f`, sourcePages: [201] };
 const adjacent = render(`${marker}\n[[scholar-equation:gauss]]`, [equation(), other], [200, 201]);
-assert.match(adjacent, /\*Source: PDF pages 200, 201\.\*\n\n\n> \[!note\]/);
+assert.match(adjacent, /\*Source: PDF pages 200, 201\.\*\n\n\n> \[!scholar-equation\]/);
 assert.match(adjacent, /\*Source: PDF page 201\.\*/);
 const aligned = { ...equation(), latex: String.raw`\begin{aligned}
 \bar A_y &= A_y\cos\phi + A_z\sin\phi \\[4pt]

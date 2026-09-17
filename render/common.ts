@@ -145,6 +145,20 @@ export function progress(completed: number, total: number): { percent: number; b
   return { percent, bar: `${"█".repeat(filled)}${"░".repeat(10 - filled)}` };
 }
 
+/**
+ * The one status header of a Scholar note: a short factual line plus, in the hub notes,
+ * a progress bar. The bar is the only HTML the renderers emit; everything else stays
+ * native Markdown so Obsidian keeps styling it.
+ */
+export function statusCallout(title: string, line: string, percent?: number): string {
+  return [
+    `> [!scholar-status] ${title}`,
+    ">",
+    `> ${line}`,
+    ...(percent === undefined ? [] : [">", `> <div class="scholar-progress" style="--scholar-progress: ${percent}%"><span></span></div>`]),
+  ].join("\n");
+}
+
 export function frontmatter(lines: string[]): string {
   const noteType = lines.find((line) => /^type: scholar-(home|book|chapter|section|exam|exam-paper|answer-key|tutor)$/.test(line))?.slice(6);
   return [

@@ -103,6 +103,7 @@ try {
         }
     }
     if (role === "visual") {
+      let pageRenders = 0;
       for (let index = 0; index < evidence.length; index++) {
         const image = evidence[index];
         if (image.type !== "image") continue;
@@ -111,8 +112,9 @@ try {
         const bytes = Buffer.from(image.data, "base64");
         assert.ok(bytes.readUInt32BE(16) >= 32 && bytes.readUInt32BE(20) >= 32, "review image must be a real rendered page or crop");
         if (label.startsWith("Saved crop ")) reviewedCrops.add(createHash("sha256").update(bytes).digest("hex"));
-        else { assert.match(label, /^Full source PDF page \d+$/); reviewedPages.add(Number(label.match(/\d+$/)[0])); }
+        else { assert.match(label, /^Full source PDF page \d+$/); pageRenders++; reviewedPages.add(Number(label.match(/\d+$/)[0])); }
       }
+      assert.equal(pageRenders, 0, "the visual crew inspects saved crops, never full rendered pages");
     }
     return reply();
   } });
@@ -214,7 +216,8 @@ try {
     assert.equal(active(reloaded).learnQuality.version, 1, "fresh fixture uses the current quality contract");
     assert.deepEqual(active(reloaded).learnQuality.reviews.map(review => review.role), ["source", "teaching", "visual"]);
     assert.ok(reviewedCrops.has(savedSnapshot.sha256), "visual reviewer must inspect the actual immutable crop");
-    assert.ok([1, 2].every(page => readPages.has(page) && reviewedPages.has(page)), "the crew must read and view every active-section page");
+    assert.ok([1, 2].every(page => readPages.has(page)), "the crew reads every active-section page");
+    assert.deepEqual([...reviewedPages], [], "no crew packet renders a full page");
     assert.deepEqual(active(reloaded).transcript[0].lesson.embeddedSnapshotIds, [savedSnapshot.id]);
     assert.equal(active(reloaded).figureCoverage.pages[1].review.figures[0].snapshotId, savedSnapshot.id);
     imagePath = snapshotAssetPath(config, reloaded, savedSnapshot);
@@ -293,7 +296,7 @@ try {
     successful(await execute(notes([{ page: 3, observation: "This page contains an uncaptained vector diagram connecting two process boxes.", figures: [{ label: "Uncaptioned vector process diagram", snapshotId: snapshot.id }] }])));
     const reloaded = await load();
     await coverage.assertLearnFigureCoverage(config, reloaded, active(reloaded, 2));
-    assert.ok(reviewedPages.has(3) && readPages.has(3), "vector-only page still reaches real source readers");
+    assert.ok(reviewedPages.size === 0 && readPages.has(3), "a vector-only page reaches the source reader without a page render");
     assert.ok(reviewedCrops.has(snapshot.sha256), "a vector-only crop must also reach independent visual review");
   });
   await check("unmapped chapter context remains readable without adding invalid section receipt pages", async () => {

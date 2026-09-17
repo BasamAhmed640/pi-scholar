@@ -49,7 +49,7 @@ await check("Actual SDK registry receives the selected custom model and isolated
     assert.equal(selected, model);
     captures.push(structuredClone(context));
     requestSignal = request.signal;
-    assert.equal(request.maxTokens, 12_000);
+    assert.equal(request.maxTokens, 4_000);
     assert.equal(request.maxRetries, 0);
     assert.equal(request.transport, "sse");
     assert.equal(request.signal.aborted, false);
@@ -188,8 +188,13 @@ await check("Unavailable tools, invalid arguments, and failed readers cannot app
   let requests = 0;
   await rejectCode(runReviewer(options(async () => message([call()], "toolUse"), { tools: [reader(async () => {
     requests++; return { content: [{ type: "text", text: "ok" }] };
-  })] })), "tool");
+  })], limits: { maxTurns: 4 } })), "tool");
   assert.equal(requests, 1, "A repeated tool ID is rejected before a second execution");
+  assert.deepEqual(
+    { turns: DEFAULT_REVIEWER_LIMITS.maxTurns, tools: DEFAULT_REVIEWER_LIMITS.maxToolCalls, images: DEFAULT_REVIEWER_LIMITS.maxImages,
+      output: DEFAULT_REVIEWER_LIMITS.maxOutputTokens, total: DEFAULT_REVIEWER_LIMITS.maxTotalOutputTokens, text: DEFAULT_REVIEWER_LIMITS.maxToolTextChars },
+    { turns: 2, tools: 8, images: 8, output: 4_000, total: 8_000, text: 40_000 },
+    "the default reviewer budget is one bounded prepared request");
 });
 
 await check("Prompt, context, output, turn, and tool-count limits stop extra work", async () => {

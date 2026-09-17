@@ -1,14 +1,11 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { learnReviewHash, lessonHash, validLessonEntries } from "./lesson.ts";
+import { learnReviewHash, validLessonEntries } from "./lesson.ts";
 import {
-  isReviewReceipt,
   matchesLessonId,
   reviewGateIssues,
   type ReviewBatchPass,
   type ReviewReceipt,
   type ReviewRole,
-  type ReviewerVerdict,
-  type ReviewFailure,
   type SourceCoverageItem,
 } from "./learn-quality.ts";
 import {
@@ -17,41 +14,16 @@ import {
 } from "./review-runtime.ts";
 import type { ScholarBook, ScholarConfig, ScholarSection, ScholarSnapshot } from "./types.ts";
 import {
-  ReviewPacket,
-  ReviewPacketRole,
-  ReviewEvidence,
-  createReviewEvidence,
-  REVIEW_CONCURRENCY,
   REVIEW_CHECKPOINT_MESSAGE,
-  REVIEW_INSTRUCTIONS,
-  reviewOne,
-  runReviewPass,
-  aggregateReviews,
   blocking,
-  pageRuns,
-  planExamReviewPackets,
-  planTutorExplanationPacket,
+  currentReviewSnapshots,
   reviewTargetQuestion,
+  reviewerModelName,
+  runReviewPass,
+  uniqueBatches,
+  type ReviewPacket,
   type ReviewRunnerOptions,
 } from "./review-layer.ts";
-
-export {
-  ReviewPacket,
-  ReviewPacketRole,
-  ReviewEvidence,
-  createReviewEvidence,
-  REVIEW_CONCURRENCY,
-  REVIEW_CHECKPOINT_MESSAGE,
-  REVIEW_INSTRUCTIONS,
-  reviewOne,
-  runReviewPass,
-  aggregateReviews,
-  blocking,
-  pageRuns,
-  planExamReviewPackets,
-  planTutorExplanationPacket,
-  reviewTargetQuestion,
-};
 
 export type LessonReviewRole = "source" | "teaching" | "visual";
 export type ReviewAssignment = ReviewPacket;
@@ -61,16 +33,8 @@ export type ReviewOptions = ReviewRunnerOptions & {
 
 const SOURCE_WINDOW_PAGES = 4;
 const VISUAL_PACKET_IMAGES = 6;
-const instructions = REVIEW_INSTRUCTIONS;
-
-/** Replaced/unused crops remain in the note's history but are not current review work. */
-export function currentReviewSnapshots(section: ScholarSection, sourceHash: string) {
-  const ids = new Set(validLessonEntries(section, sourceHash).flatMap(entry => entry.lesson!.embeddedSnapshotIds || []));
-  for (const page of section.figureCoverage?.pages || []) {
-    for (const figure of page.review?.figures || []) if (figure.snapshotId) ids.add(figure.snapshotId);
-  }
-  return (section.snapshots || []).filter(snapshot => ids.has(snapshot.id));
-}
+/** Independent topics share one explanation check while their combined load stays reviewable. */
+const TEACHING_TOPICS_PER_PACKET = 4;
 
 /** Topic boundaries are ### headings outside code fences; every line belongs to exactly one topic. */
 function splitTopics(markdown: string): Array<{ heading: string; markdown: string }> {
@@ -90,9 +54,10 @@ type Topic = { heading: string; markdown: string; pages: number[]; cropIds: stri
 
 /**
  * Plan the crew: a fidelity check per source-page window, an explanation check per
- * topic, a visual/math packet per topic figure set, leftover pages and crops, and one
- * whole-lesson coherence check. Every page is read and viewed, and every current crop
- * inspected, by at least one packet, so the aggregate keeps full evidence coverage.
+ * group of topics, a visual/math packet per packed figure set, leftover pages and
+ * crops, and one whole-lesson coherence check. Every required page is read, and
+ * every current crop inspected, by exactly one packet, so the aggregate keeps full
+ * evidence coverage without one request per topic.
  */
 export function planReviewAssignments(section: ScholarSection, sourceHash: string, contextWindow?: number): ReviewAssignment[] {
   const smallWindow = typeof contextWindow === "number" && contextWindow > 0 && contextWindow < 64_000;
@@ -121,19 +86,24 @@ export function planReviewAssignments(section: ScholarSection, sourceHash: strin
     add("source", `source:${window[0]}`, `Crew assignment: source pages ${window.join(", ")}. Check that the lesson passages below deliver these pages faithfully, and report essential content on these pages that no passage explains. Other crew members cover the other pages, and a coherence check covers the whole lesson.`,
       { reads: window }, { checklist: coverage.filter(item => touches(item.sourcePages)), passages: topics.filter(topic => touches(topic.pages)).map(({ heading, markdown }) => ({ heading, markdown })) });
   }
-  topics.forEach((topic, index) => add("teaching", `teaching:${index + 1}`, `Crew assignment: topic ${index + 1} of ${topics.length}, "${topic.heading}". Review only this topic's explanation against its source pages; the outline shows where it sits, and earlier topics may already define terms. The objective check plan and whole-lesson flow are reviewed by a separate coherence check.`,
-    { reads: topic.pages }, { topic: { index: index + 1, heading: topic.heading, markdown: topic.markdown }, checklist: topic.coverage }));
+  for (let index = 0; index < topics.length; index += TEACHING_TOPICS_PER_PACKET) {
+    const group = topics.slice(index, index + TEACHING_TOPICS_PER_PACKET);
+    add("teaching", `teaching:${index / TEACHING_TOPICS_PER_PACKET + 1}`,
+      `Crew assignment: topics ${index + 1}-${index + group.length} of ${topics.length}, ${group.map(topic => `"${topic.heading}"`).join(", ")}. Review only these topics' explanations against their source pages; the outline shows where they sit, and earlier topics may already define terms. The objective check plan and whole-lesson flow are reviewed by a separate coherence check.`,
+      { reads: sorted(group.flatMap(topic => topic.pages)) },
+      { topics: group.map((topic, offset) => ({ index: index + offset + 1, heading: topic.heading, markdown: topic.markdown })), checklist: group.flatMap(topic => topic.coverage) });
+  }
   add("teaching", "teaching:coherence", "Crew assignment: whole-lesson coherence. Using the outline, checklist, recap, key points and key equations, check topic order, gaps or repetition between topics, consistent notation and terminology, and the objective check plan. Other crew members check each topic against its pages; do not demand passages you cannot see.",
     {}, { checks: section.objectiveChecks, requiredChecks: section.requiredChecks, recap: section.synthesis, keyPoints: section.keyPoints,
       checklist: coverage.map(({ id, kind, description, sourcePages, objective }) => ({ id, kind, description, sourcePages, objective })),
       keyEquations: topics.flatMap(topic => topic.markdown.match(/^> \[!note\][+-]? Key equation[^\n]*(?:\n>[^\n]*)*/gm) || []) });
 
-  const packets: Array<{ pages: number[]; crops: ScholarSnapshot[]; topic?: Topic }> = [];
+  const packets: Array<{ pages: number[]; crops: ScholarSnapshot[]; topics: Topic[] }> = [];
   // A crop always travels with its full page; a crowded page repeats in each packet.
-  const pack = (topic: Topic | undefined, viewPages: number[], packetCrops: ScholarSnapshot[]) => {
-    let current = { pages: [] as number[], crops: [] as ScholarSnapshot[], topic };
+  const pack = (packetTopics: Topic[], viewPages: number[], packetCrops: ScholarSnapshot[]) => {
+    let current = { pages: [] as number[], crops: [] as ScholarSnapshot[], topics: packetTopics };
     const size = () => current.pages.length + current.crops.length;
-    const flush = () => { if (current.pages.length) packets.push(current); current = { pages: [], crops: [], topic }; };
+    const flush = () => { if (current.pages.length) packets.push(current); current = { pages: [], crops: [], topics: packetTopics }; };
     for (const page of viewPages) {
       const own = packetCrops.filter(crop => crop.page === page);
       if (size() && size() + 1 + Math.min(own.length, visualPacketImages - 1) > visualPacketImages) flush();
@@ -145,30 +115,57 @@ export function planReviewAssignments(section: ScholarSection, sourceHash: strin
     }
     flush();
   };
-  for (const topic of topics) {
+  // One unit per topic that carries a figure or an equation. Independent topics share a
+  // packet while the page+crop budget holds, so a figure-heavy section plans a few broad
+  // visual checks instead of one request per topic.
+  const units = topics.flatMap(topic => {
     const topicCrops = crops.filter(crop => topic.cropIds.includes(crop.id)), math = topic.markdown.includes("$$");
-    if (topicCrops.length || math) pack(topic, sorted([...topicCrops.map(crop => crop.page), ...(math ? topic.pages : [])]), topicCrops);
+    if (!topicCrops.length && !math) return [];
+    return [{ topic, pages: sorted([...topicCrops.map(crop => crop.page), ...(math ? topic.pages : [])]), crops: topicCrops }];
+  });
+  for (let index = 0; index < units.length;) {
+    const group = { topics: [] as Topic[], pages: [] as number[], crops: [] as ScholarSnapshot[] };
+    while (index < units.length) {
+      const unit = units[index]!;
+      const fits = group.pages.length + group.crops.length + unit.pages.length + unit.crops.length <= visualPacketImages;
+      // A single oversized unit still forms a group; the filler below splits it by page.
+      if (!fits && group.topics.length) break;
+      group.topics.push(unit.topic);
+      group.pages.push(...unit.pages);
+      group.crops.push(...unit.crops);
+      index += 1;
+    }
+    pack(group.topics, sorted(group.pages), group.crops);
   }
   const viewed = new Set(packets.flatMap(packet => packet.pages)), placed = new Set(packets.flatMap(packet => packet.crops.map(crop => crop.id)));
   const loose = crops.filter(crop => !placed.has(crop.id));
-  pack(undefined, sorted([...pages.filter(page => !viewed.has(page)), ...loose.map(crop => crop.page)]), loose);
-  packets.forEach((packet, index) => add("visual", `visual:${index + 1}`, packet.topic
-    ? `Crew assignment: figures and equations for topic "${packet.topic.heading}" (pages ${packet.pages.join(", ")}). Compare the listed full pages and crops with this topic's captions, explanations and Key equation callouts. Other crew members review the other topics and pages.`
-    : `Crew assignment: full source pages ${packet.pages.join(", ")} and crops not placed in a lesson topic. Check crop completeness and labels, and whether the figure inventory observations match these pages. Other crew members review placed figures and equations.`,
-    { views: packet.pages, cropIds: packet.crops.map(crop => crop.id) },
-    packet.topic ? { topic: { heading: packet.topic.heading, markdown: packet.topic.markdown }, figures: packet.crops }
-      : { pages: packet.pages, figureInventory: (section.figureCoverage?.pages || []).filter(page => packet.pages.includes(page.page)), figures: packet.crops }));
+  // The visual role always closes with an inventory check, so every section has one visual
+  // receipt: it judges the saved figure observations and the lesson's key equations where no
+  // topic packet reaches them, and it carries any crop no topic placed. Pages no topic packet
+  // named are listed as inventory context, never rendered.
+  const strayPages = pages.filter(page => !viewed.has(page));
+  for (let index = 0; index < Math.max(1, Math.ceil(loose.length / visualPacketImages)); index++) {
+    const chunk = loose.slice(index * visualPacketImages, (index + 1) * visualPacketImages);
+    packets.push({ pages: chunk.length ? sorted(chunk.map(crop => crop.page)) : strayPages, crops: chunk, topics: [] });
+  }
+  packets.forEach((packet, index) => add("visual", `visual:${index + 1}`, packet.topics.length
+    ? `Crew assignment: figures and equations for topic(s) ${packet.topics.map(topic => `"${topic.heading}"`).join(", ")} (pages ${packet.pages.join(", ")}). Compare the listed crops with each topic's captions, explanations and Key equation callouts. Other crew members review the other topics and pages.`
+    : `Crew assignment: figure inventory and equation check for pages ${packet.pages.join(", ")}.${packet.crops.length ? " Inspect each listed crop against its figure's observation and the lesson text; a saved crop must show its complete source figure with its labels, arrows and units." : ""} Check that every listed page's visual observation accounts for its figures, and that central equations appear in expanded native Key equation callouts with definitions, assumptions and meaning. You see no page render: judge only the listed evidence. Other crew members review the placed figures and equations topic by topic.`,
+    // No full-page renders: the visual check judges the saved crops, their captions and the
+    // inventory observations. Crops are the largest remaining image cost, so a page is bundled
+    // only when one of its figures is actually placed in a topic.
+    { cropIds: packet.crops.map(crop => crop.id) },
+    packet.topics.length
+      ? { topics: packet.topics.map(({ heading, markdown }) => ({ heading, markdown })), figures: packet.crops }
+      : { pages: packet.pages, figureInventory: (section.figureCoverage?.pages || []).filter(page => packet.pages.includes(page.page)), figures: packet.crops,
+        keyEquations: topics.flatMap(topic => topic.markdown.match(/^> \[!note\][+-]? Key equation[^\n]*(?:\n>[^\n]*)*/gm) || []) }));
   return assignments;
-}
-
-function uniqueBatches(batches: ReviewBatchPass[]): ReviewBatchPass[] {
-  return [...new Map(batches.map(batch => [batch.key, batch])).values()].slice(0, 128);
 }
 
 /** A saved in-progress receipt: never approval, only a carrier for finished checks. */
 export function reviewCheckpoint(section: ScholarSection, book: ScholarBook, ctx: ExtensionContext, role: LessonReviewRole, batches: ReviewBatchPass[]): ReviewReceipt {
   return { ...blocking(REVIEW_CHECKPOINT_MESSAGE), role, contentHash: learnReviewHash(section), sourceHash: book.source.fingerprint.sha256,
-    model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "unavailable", createdAt: new Date().toISOString(),
+    model: reviewerModelName(ctx), createdAt: new Date().toISOString(),
     failure: { code: "cancelled", message: REVIEW_CHECKPOINT_MESSAGE }, batches: uniqueBatches(batches) };
 }
 

@@ -16,10 +16,10 @@ import type { ScholarMode } from "./types.ts";
  * them.
  */
 export type ModeCapabilities = {
-  /** Receives the teaching engine and may save source-grounded teaching notes. */
-  teaches: boolean;
-  /** Asks graded questions through the quiz and two-phase assess paths. */
-  assesses: boolean;
+  /** Teaches interactively in Pi and may save source-grounded teaching notes. */
+  interactiveTeaching: boolean;
+  /** Asks graded questions through the quiz and two-phase assess paths in Pi. */
+  interactiveQuestions: boolean;
   /** May cite the learner's Learn objectives as a question basis. */
   citesLearnObjectives: boolean;
   /** May select freely licensed web images as optional presentation aids. */
@@ -31,35 +31,44 @@ export type ModeCapabilities = {
 };
 
 export const MODE_CAPABILITIES: Readonly<Record<ScholarMode, Readonly<ModeCapabilities>>> = Object.freeze({
-  // Learn is the only mode that owns section progress, and the only one barred
-  // from the internet: for Learn, the book is the sole visual source.
+  // Learn teaches interactively and owns section progress; it is barred from the
+  // internet: the book is its only visual source.
   learn: Object.freeze({
-    teaches: true,
-    assesses: true,
+    interactiveTeaching: true,
+    interactiveQuestions: true,
     citesLearnObjectives: true,
     usesWebImages: false,
     capturesSourceFigures: true,
     materializesSections: true,
   }),
-  // Exam deliberately does not teach. It builds a frozen form and grades it.
+  // Exam delivers through a frozen paper in Obsidian: no interactive teaching or
+  // questions in Pi; its teaching artifact is the graded answer key.
   exam: Object.freeze({
-    teaches: false,
-    assesses: false,
+    interactiveTeaching: false,
+    interactiveQuestions: false,
     citesLearnObjectives: false,
     usesWebImages: true,
     capturesSourceFigures: true,
     materializesSections: false,
   }),
-  // Tutor teaches and assesses, but its evidence is assisted practice, so it
+  // Tutor teaches and assesses in Pi, but its evidence is assisted practice, so it
   // may never borrow what Learn certified.
   tutor: Object.freeze({
-    teaches: true,
-    assesses: true,
+    interactiveTeaching: true,
+    interactiveQuestions: true,
     citesLearnObjectives: false,
     usesWebImages: true,
     capturesSourceFigures: true,
     materializesSections: false,
   }),
+});
+
+/** The four engines are universal: every mode uses every engine. Only the delivery surface differs. */
+export type ModeEngines = { teaching: boolean; question: boolean; presentation: boolean; review: boolean };
+export const MODE_ENGINES: Readonly<Record<ScholarMode, Readonly<ModeEngines>>> = Object.freeze({
+  learn: Object.freeze({ teaching: true, question: true, presentation: true, review: true }),
+  exam: Object.freeze({ teaching: true, question: true, presentation: true, review: true }),
+  tutor: Object.freeze({ teaching: true, question: true, presentation: true, review: true }),
 });
 
 export const SCHOLAR_MODES = Object.keys(MODE_CAPABILITIES) as ScholarMode[];
