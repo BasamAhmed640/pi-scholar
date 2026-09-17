@@ -74,7 +74,7 @@ export function currentReviewSnapshots(section: import("./types.ts").ScholarSect
 }
 
 export const REVIEW_CONCURRENCY = 12;
-/** Reviewers never inherit the learner's reasoning level: the crew is deliberately a
+/** Reviewers never inherit the learner's reasoning level: an audit is deliberately a
  * shallow, fast second pass over evidence, not a second attempt at the lesson. */
 export const REVIEWER_THINKING_LEVEL = "low" as const;
 export const REVIEW_CHECKPOINT_MESSAGE = "Review in progress; finished checks are saved and will be reused.";

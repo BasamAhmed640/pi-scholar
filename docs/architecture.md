@@ -5,16 +5,17 @@ Exam, and Tutor are independent entry points for the same selected PDF book.
 You do not have to finish Learn before taking an Exam or opening Tutor.
 
 New Learn delivery uses the selected Pi model as lead author and four independent
-review responsibilities. Source, teaching and math/visual reviewers run after
-the saved draft is prepared; the assessment reviewer checks a new proposed
-question before the interactive form is persisted. Each check is one prepared
-request: the runner loads exactly that packet's page text, saved crops and
-lesson passages, so a reviewer never fetches its own evidence. Reviewers run at
-a fixed low reasoning level and inspect saved crops rather than full rendered
-pages — a deliberate trade of review depth for latency and token cost, not the
-learner's reasoning budget. These are fresh in-memory conversations, not
-extension-loaded Pi sessions. They cannot access other modes' history, write
-notes, change progress, run shell commands, or grade the learner. No fixed
+review responsibilities. Source, teaching and math/visual reviewers audit each
+saved explanation revision as it is saved, while the author continues working;
+the assessment reviewer checks a new proposed question before the interactive
+form is persisted. Each check is one prepared request: the runner loads exactly
+that packet's page text, saved crops and lesson passages, so a reviewer never
+fetches its own evidence. Reviewers run at a fixed low reasoning level and
+inspect saved crops rather than full rendered pages — a deliberate trade of
+review depth for latency and token cost, not the learner's reasoning budget.
+These are fresh in-memory conversations, not extension-loaded Pi sessions. They
+cannot access other modes' history, write notes, change progress, run shell
+commands, or grade the learner. No fixed
 model/provider is assumed.
 
 ## The Obsidian hierarchy
@@ -40,24 +41,29 @@ does not use Learn or Tutor performance to alter the test.
 
 ## Code boundaries
 
-Shared review orchestration lives in `review-layer.ts`, providing a single-pass review pipeline across Learn, Tutor, and Exam targets.
-Targets commit immediately after one review pass by recording finding responses rather than triggering re-review cycles.
-Count-based action budgets, the reviewer's single bounded run inside `review-runtime.ts`, and tool isolation prevent runaway execution while ensuring model independence. There is no wall-clock stop on preparation; the only clock is that bounded reviewer run.
+Shared review work lives in `review-layer.ts` and `review-runtime.ts`: they plan each audit unit's packets and run its bounded reviewer pass across Learn, Tutor, and Exam targets.
+`tool-controller.ts` owns the per-preparation audit scheduler, delivers unresolved findings into later tool results, and finalizes delivery; the per-unit gate helpers live in `learn-quality.ts` and `lesson.ts`.
+Count-based action budgets, the reviewer's single bounded run, and tool isolation prevent runaway execution while ensuring model independence. There is no wall-clock stop on preparation; the only clock is that bounded reviewer run.
+Audit-as-you-go; one audit pass per saved unit revision; no re-review of unchanged work; delivery stays controller-owned and hash-bound.
 
-`learn-quality.ts` defines coverage and review contracts. `equation-presentation.ts`
+`learn-quality.ts` defines coverage and per-unit review contracts, and
+`lesson.ts` binds them to saved explanation revisions. `equation-presentation.ts`
 builds equation callouts from validated fields and explicit placement markers.
-`learn-review.ts` binds reviewers to the saved section and its source evidence;
-`review-runtime.ts` bounds their tool loops and uses Pi's active model registry,
-authentication and supported reasoning interface. Source review must actually
-read every scoped page; visual review must see each full page and saved crop.
-Learn review is planned as a parallel crew of scoped checks (source windows, topics,
-figure packets, one coherence check); finished checks are saved as they complete and
-reused only for identical evidence. The model still judges semantic fidelity and readability.
+`learn-review.ts` plans each unit's packets against the saved revision and its
+source evidence; `review-runtime.ts` bounds their tool loops and uses Pi's active
+model registry, authentication and supported reasoning interface. Source review
+must actually read every scoped page; visual review inspects every current saved
+crop and never a full page render.
+A unit's checks are its own bounded source windows, one explanation check, and —
+only when it embeds saved crops that still exist — a visual check over exactly
+those crops; finished checks are saved as they complete and reused only for
+identical evidence. The model still judges semantic fidelity and readability.
 
 `tool-controller.ts` alone saves review receipts and commits approved delivery.
-Network review runs outside the book's mutation queue. It then reloads and checks
-the active vault/section, source identity, actual figure bytes and the exact draft
-hash before saving approval. The hash includes the lesson, coverage, recap,
+Audits run outside the book's mutation queue; finalization waits for the
+outstanding audits of the current revisions, then reloads and checks the active
+vault/section, source identity, actual figure bytes and the exact draft hash
+before saving approval. The hash includes the lesson, coverage, recap,
 assessment plan and figure metadata. Changed content invalidates approval.
 Reviewer findings live in the same section note's collapsible details; model
 conversations and credentials are never written there. New Learn authoring

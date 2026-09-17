@@ -4,7 +4,7 @@ import { pageInRanges, scopedPageRanges } from "./page-scope.ts";
 import { resolveLessonFigures } from "./lesson-figures.ts";
 import { normalizeObsidianMath } from "./math-formatting.ts";
 import { renderKeyEquations, type KeyEquation } from "./equation-presentation.ts";
-import { sourceCoverageIssues, reviewPassIssues } from "./learn-quality.ts";
+import { sourceCoverageIssues, reviewUnitIssues, type ReviewRole } from "./learn-quality.ts";
 import { recordValidatedLessonRevision } from "./history.ts";
 import type { AssessmentKind, ScholarBook, ScholarConfig, ScholarSection, TranscriptEntry, TutorSession } from "./types.ts";
 
@@ -263,11 +263,61 @@ export function learnDeliveryIssues(section: ScholarSection, sourceHash?: string
   }, { delivered: true });
 }
 
+/** The audit identity of one saved unit: the lesson revision plus the evidence its audit reads.
+ * Receipts store `contentHash` (the lesson revision); the evidence revision is what decides
+ * whether that audit is still current, so re-citing pages or crops re-audits the unit. */
+export const lessonUnitRevision = (contentHash: string, sourcePages: readonly number[], snapshotIds: readonly string[]): string =>
+  lessonHash(JSON.stringify(["lesson-unit-v1", contentHash, sourcePages, snapshotIds]));
+
+/**
+ * One saved explanation revision is one audit unit. A Learn unit is checked against its own
+ * cited source pages, and visually only when it embeds saved crops that still exist; a Tutor
+ * explanation is a teaching-only unit bound to the markdown hash its gate already uses.
+ */
+export type LessonReviewUnit = {
+  key: string;
+  entryId: string;
+  /** The audited evidence revision. A change here means the stored receipts no longer describe this unit. */
+  revision: string;
+  /** The lesson revision stored receipts bind to; `validLessonEntries` keeps it `lessonHash(markdown)`. */
+  contentHash: string;
+  roles: ReviewRole[];
+  markdown: string;
+  title: string;
+  keyPoints: string[];
+  sourcePages: number[];
+  snapshotIds: string[];
+};
+
+export function lessonReviewUnits(section: ScholarSection, sourceHash: string): LessonReviewUnit[] {
+  const snapshots = new Set((section.snapshots || []).map(snapshot => snapshot.id));
+  return validLessonEntries(section, sourceHash).map(entry => {
+    const snapshotIds = (entry.lesson!.embeddedSnapshotIds || []).filter(id => snapshots.has(id));
+    const sourcePages = [...entry.lesson!.sourcePages];
+    return { key: `lesson:${entry.id}`, entryId: entry.id, contentHash: entry.lesson!.contentHash,
+      revision: lessonUnitRevision(entry.lesson!.contentHash, sourcePages, snapshotIds),
+      roles: ["source", "teaching", ...(snapshotIds.length ? ["visual"] as ReviewRole[] : [])],
+      markdown: entry.markdown, title: entry.lesson!.title, keyPoints: [...entry.lesson!.keyPoints],
+      sourcePages, snapshotIds };
+  });
+}
+
+export function tutorReviewUnits(tutor: TutorSession): LessonReviewUnit[] {
+  return tutor.transcript.filter(entry => entry.kind === "assistant" && entry.lesson
+    && entry.lesson.contentHash === lessonHash(entry.markdown))
+    .map(entry => ({ key: `lesson:${entry.id}`, entryId: entry.id, revision: lessonHash(entry.markdown),
+      contentHash: entry.lesson!.contentHash, roles: ["teaching"] as ReviewRole[],
+      markdown: entry.markdown, title: entry.lesson!.title, keyPoints: [...entry.lesson!.keyPoints],
+      sourcePages: [...entry.lesson!.sourcePages], snapshotIds: [] }));
+}
+
+/** The per-unit gate: receipts bind to the lesson revision they stored; a unit whose evidence
+ * revision changed has its superseded receipts retired before this can ever approve it. */
 export function learnReviewIssues(section: ScholarSection, sourceHash: string): string[] {
   if (!section.learnQuality) return [];
-  return reviewPassIssues(section.learnQuality.reviews, {
-    contentHash: learnReviewHash(section), sourceHash, roles: ["source", "teaching", "visual"], responses: section.learnQuality.responses,
-  });
+  return lessonReviewUnits(section, sourceHash).flatMap(unit => reviewUnitIssues(section.learnQuality!.reviews, {
+    contentHash: unit.contentHash, sourceHash, roles: unit.roles, responses: section.learnQuality!.responses,
+  }).map(issue => `${unit.key}: ${issue}`));
 }
 
 export function lessonObjectiveHash(section: ScholarSection): string {

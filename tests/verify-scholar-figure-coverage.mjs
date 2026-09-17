@@ -69,11 +69,18 @@ try {
   await storage.createBookState(config, initial);
   const load = () => storage.loadBookState(config, initial.id);
   const active = (book, index = 0) => book.chapters[0].sections[index];
-  const mutateBook = async (bookId, mutate) => {
-    const book = await load(), revision = book.revision;
-    const result = await mutate(book);
-    await storage.saveBookState(config, book, revision);
-    return { book: await load(), result };
+  // The production writer serializes its mutations; the audit's receipt/checkpoint writes run
+  // beside authoring, so this fixture must too. An unqueued writer races on the book revision.
+  let writeChain = Promise.resolve();
+  const mutateBook = (bookId, mutate) => {
+    const run = writeChain.then(async () => {
+      const book = await load(), revision = book.revision;
+      const result = await mutate(book);
+      await storage.saveBookState(config, book, revision);
+      return { book: await load(), result };
+    });
+    writeChain = run.then(() => undefined, () => undefined);
+    return run;
   };
   const session = new ScholarRuntimeSession();
   session.activate(initial.id, "learn", "section-1");

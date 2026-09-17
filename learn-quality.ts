@@ -295,21 +295,23 @@ export function parseReviewerVerdict(raw: string): ReviewerVerdict {
 export function pruneReviewReceipts(receipts: ReviewReceipt[], current: { sourceHash: string; model: string }): ReviewReceipt[] {
   const currentOnly = receipts.filter(receipt => receipt.sourceHash === current.sourceHash && receipt.model === current.model);
   const groupOf = (receipt: ReviewReceipt) => `${receipt.role}:${receipt.contentHash}`;
-  const newest = new Map<string, ReviewReceipt>();
-  const completed = new Map<string, ReviewReceipt>();
-  for (const receipt of currentOnly) {
+  // Selection is by position, not object identity, so repeating an already-saved receipt
+  // (the same object twice in one merge) collapses instead of surviving as a duplicate.
+  const newest = new Map<string, number>();
+  const completed = new Map<string, number>();
+  currentOnly.forEach((receipt, index) => {
     const group = groupOf(receipt);
     const leader = newest.get(group);
-    if (!leader || receipt.createdAt > leader.createdAt) newest.set(group, receipt);
-    if (receipt.failure) continue;
+    if (leader === undefined || receipt.createdAt > currentOnly[leader]!.createdAt) newest.set(group, index);
+    if (receipt.failure) return;
     const finished = completed.get(group);
-    if (!finished || receipt.createdAt > finished.createdAt) completed.set(group, receipt);
-  }
-  return currentOnly.filter(receipt => {
+    if (finished === undefined || receipt.createdAt > currentOnly[finished]!.createdAt) completed.set(group, index);
+  });
+  return currentOnly.filter((receipt, index) => {
     const group = groupOf(receipt);
     // Only the checkpoint carrier writes this code, so `cancelled` identifies one unambiguously.
     if (receipt.failure?.code === "cancelled" && completed.has(group)) return false;
-    return receipt === newest.get(group) || receipt === completed.get(group);
+    return index === newest.get(group) || index === completed.get(group);
   });
 }
 
@@ -358,6 +360,44 @@ export function reviewPassIssues(value: unknown, context: ReviewPassContext): st
   if ([...latestByRole.values()].some(receipt => receipt.failure)) return [];
   return [...latestByRole].filter(([, latest]) => latest.contentHash !== context.contentHash)
     .map(([role]) => `The ${role} review is stale; review the current lesson and source.`);
+}
+
+export type UnitReviewFinding = { role: ReviewRole; key: string; finding: ReviewFinding };
+
+/**
+ * The approval evidence for one saved unit revision: the newest receipt per role bound to
+ * this exact content revision and source. A receipt from another revision is never selected,
+ * so an old pass can neither approve nor block the replacement.
+ */
+export function unitReviewRoles(value: unknown, context: { contentHash: string; sourceHash: string; roles: readonly ReviewRole[] }): Array<{ role: ReviewRole; receipt?: ReviewReceipt }> {
+  const receipts = (Array.isArray(value) ? value : []).filter(isReviewReceipt);
+  return context.roles.map(role => ({
+    role,
+    receipt: receipts.filter(receipt => receipt.role === role && receipt.contentHash === context.contentHash && receipt.sourceHash === context.sourceHash)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0],
+  }));
+}
+
+/** The per-unit gate: only receipts of this revision are evidence for it. */
+export function reviewUnitIssues(value: unknown, context: ReviewPassContext & { contentHash: string }): string[] {
+  if (!Array.isArray(value) || !value.every(isReviewReceipt)) return ["Completed specialist reviews with valid coordinator receipts are required."];
+  return reviewPassIssues(value.filter(receipt => receipt.contentHash === context.contentHash), context);
+}
+
+/** Blocking findings of this revision that the author has not answered. A receipt's own
+ * execution-failure carrier is excluded: an unfinished check is retried, not answered. */
+export function unitBlockingFindings(value: unknown, context: { contentHash: string; sourceHash: string; roles: readonly ReviewRole[]; responses?: readonly { key: string }[] }): UnitReviewFinding[] {
+  const responses = new Set((context.responses || []).map(response => response.key));
+  return unitReviewRoles(value, context).flatMap(({ role, receipt }) => !receipt || receipt.status !== "changes" ? []
+    : receipt.findings.filter(finding => finding.severity === "blocking")
+      .filter(finding => !(receipt.failure && finding.target === "review evidence" && finding.issue === receipt.failure.message))
+      .map(finding => ({ role, key: computeFindingKey(role, finding), finding }))
+      .filter(item => !responses.has(item.key)));
+}
+
+/** Runner-owned execution failures recorded for this revision. */
+export function unitReviewFailures(value: unknown, context: { contentHash: string; sourceHash: string; roles: readonly ReviewRole[] }): ReviewFailure[] {
+  return unitReviewRoles(value, context).flatMap(({ receipt }) => receipt?.failure ? [receipt.failure] : []);
 }
 
 export function isReviewReceipt(value: unknown): value is ReviewReceipt {

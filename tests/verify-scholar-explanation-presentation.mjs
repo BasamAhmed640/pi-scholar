@@ -113,7 +113,7 @@ const longPlan = { ...section, objectives: longObjectives, coveredObjectives: []
   objectiveChecks: longObjectives.map(objective => ({ objective, checks: ["conceptual", "computation"] })), attempts: [] };
 const longNote = renderSection(config, book, chapter, longPlan);
 const preLesson = longNote.slice(0, longNote.indexOf("## Lesson"));
-assert.match(preLesson, /^> \[!scholar-status\] In progress$/m);
+assert.match(preLesson, /^> \[!scholar-status\] In progress · Current section · Pages 1–16 · 3 short questions remaining$/m);
 assert.match(preLesson, /Current section · Pages 1–16 · 3 short questions remaining/);
 assert.doesNotMatch(preLesson, /Objective \d+:|evidence for:|Remaining to complete/);
 const statusHeader = preLesson.split("\n").find(line => line.startsWith("> [!scholar-status]"));

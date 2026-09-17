@@ -50,9 +50,10 @@ different surfaces.
 
 ### Independent review restored (0.7.1)
 
-Learn deliveries, Tutor explanations and questions, and the Exam form are inspected by an independent crew before they commit, using the current Pi model at a fixed low reviewer reasoning level.
+Learn lesson and Tutor explanation revisions are audited once, as they are saved, while the author continues working; proposed questions are inspected before they are shown, and the Exam form before it freezes. Each audit uses the current Pi model at a fixed low reviewer reasoning level.
 Each check is one prepared request: the runner loads exactly that packet's page text, saved crops and lesson passages, so reviewers never spend turns fetching evidence and the visual check judges saved crops rather than full rendered pages. That is a deliberate trade of review depth for latency and token cost.
-Findings come back as `[F-<key>]` requests that the author answers with `findingResponses`; each revision is reviewed once and finished checks are checkpointed and reused.
+Unresolved blocking findings come back as `[F-<key>]` blocks on the author's next Scholar tool result and are answered with `findingResponses`; a repair is resolved by the audit of its new revision, unchanged content is never re-audited, and no second review round runs.
+`lessonComplete` waits only for the outstanding audits of the current revisions, so a pending, failed, stale or unresolved audit cannot approve delivery. Approval stays controller-owned and hash-bound.
 There is no wall-clock stop on preparation. The count limits are unchanged (8 rejections, 250 actions, 4 delivery-gap attempts), and the only clock is the bounded reviewer run itself.
 
 ### Simplified study flow (0.7.0)
@@ -72,10 +73,9 @@ Robust output handling defaults to resilient JSON parsing, follow-up prompt fall
 
 ### Recoverable Learn preparation (0.5.4)
 
-Reopening a saved, unfinished lesson asks whether to continue preparing it now or
-only show its Obsidian draft location. Only viewing starts no generation and leaves
-Learn inactive, so chat cannot resume it. `/scholar learn "9.3" continue` skips the
-question; without an interactive UI, reopening only shows the draft. Existing
+Viewing a saved, unfinished lesson only shows its Obsidian draft location: no
+generation starts and Learn stays inactive, so chat cannot resume it. A later
+`/scholar learn "<scope>"` starts a fresh, bounded preparation attempt. Existing
 unanswered questions retain their normal resume behavior. A visible draft is not
 scientific approval or mastery.
 
@@ -103,9 +103,8 @@ This is a recovery ceiling, not a promised completion time. Provider failures ca
 still leave a saved draft awaiting a later retry; they never count as approval.
 
 **A stop is sticky.** Chat messages and input sent by other extensions do not
-clear it or reset the round and time budgets. Reopening an unapproved draft with
-`/scholar learn "9.3"` and choosing to only view it leaves Learn inactive, so chat
-cannot resume preparation. Choosing to continue, or `/scholar learn "9.3" continue`,
+clear it or reset the round and time budgets. Viewing an unapproved draft leaves
+Learn inactive, so chat cannot resume preparation. A later `/scholar learn "9.3"`
 starts a fresh, bounded preparation attempt.
 
 `lessonPatch.calloutEdits` replaces one equation or source-figure callout through

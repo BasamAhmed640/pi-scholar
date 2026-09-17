@@ -206,6 +206,13 @@ await assert.rejects(evaluate(), /no learner response/);
       markdown: "### Travel time at fixed speed\n\nA model connects an input to an observable result, so the explanation states the relation before giving a number.",
       keyPoints: ["Delay grows with path length at fixed speed."] } });
     assert.ok(!["review", "error", "retry"].includes(explain.details.tone), explain.content[0].text);
+    // Audit-as-you-go runs the teaching audit beside authoring; wait for the receipt it lands.
+    const audited = () => requests.filter(item => item === "teaching").length === 1 && target().review?.receipts?.some(receipt => receipt.role === "teaching");
+    const settleStarted = Date.now();
+    while (!audited()) {
+      if (Date.now() - settleStarted > 5000) throw new Error("The saved Tutor explanation was never audited by the teaching role.");
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
     assert.equal(requests.filter(item => item === "teaching").length, 1, "a saved explanation is reviewed once");
     assert.ok(target().review?.receipts?.some(receipt => receipt.role === "teaching"), "the explanation keeps its teaching receipt");
     const prepareQuestion = (id, prompt) => execute(id, { action: "assess", outcome: "pending", kind: "conceptual", question: prompt,

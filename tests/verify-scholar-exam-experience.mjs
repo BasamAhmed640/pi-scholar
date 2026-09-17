@@ -22,7 +22,7 @@ const mod = (rel) => jiti.import(join(EXT, rel));
 const { parseExamResponses } = await mod("exam.ts");
 const { examAnswerNoteText, renderExam, renderExamAnswerKey } = await mod("render/assessment.ts");
 const { answerKeyNotePath, examNotePath, examAnswerNotePath } = await mod("obsidian-paths.ts");
-const { chooseUnfinishedExam, unfinishedExams } = await mod("commands.ts");
+const { unfinishedExams } = await mod("commands.ts");
 
 let pass = 0, fail = 0;
 const check = (name, ok, detail) => {
@@ -190,44 +190,19 @@ check("the graded exam note links to the key instead of inlining it",
 
 // ==================================================== 4. resuming an exam ===
 const draft = { ...exam, id: "exam-002", title: "Exam 02 — chapter 1", status: "draft", questions: [], createdAt: "2026-03-01T00:00:00.000Z" };
-const silentCtx = () => ({ ui: { notify: () => {} } });
-const pickingCtx = (answer) => ({ ui: { notify: () => {}, select: async () => answer } });
 
 check("graded exams are not offered for resume",
   unfinishedExams({ ...book, exams: [graded] }).length === 0, "nothing unfinished");
-// A lone unfinished exam is still offered. Resuming it silently looked exactly
-// like starting a fresh one at the prompt, and it left no way to open a new exam
-// from a bare command while the first was still unfinished.
-const solo = { ...book, exams: [graded, exam] };
-const soloOptions = [];
-const soloCtx = { ui: { notify: () => {}, select: async (_title, options) => { soloOptions.push(...options); return options[0]; } } };
-check("a single unfinished exam is still shown in the picker",
-  (await chooseUnfinishedExam(solo, soloCtx)).exam?.id === "exam-001",
-  soloOptions.join(" | "));
-check("the single-exam picker still offers a new exam",
-  soloOptions.length === 2 && soloOptions[1] === "Start a new exam instead…",
-  String(soloOptions[1]));
-check("a new exam is reachable while exactly one is unfinished",
-  (await chooseUnfinishedExam(solo, pickingCtx("Start a new exam instead…"))).kind === "none",
-  "declining opens scope selection");
-check("without a picker a single unfinished exam still resumes",
-  (await chooseUnfinishedExam(solo, silentCtx())).exam?.id === "exam-001",
-  "fallback resumes directly");
-
+check("a submitted exam is still unfinished",
+  unfinishedExams({ ...book, exams: [{ ...exam, status: "submitted" }] }).length === 1,
+  "awaiting grading");
 const many = { ...book, exams: [graded, exam, draft], currentExamId: "exam-001" };
 const listed = unfinishedExams(many);
-check("multiple unfinished exams are all offered", listed.length === 2, listed.map((item) => item.id).join(", "));
-check("the picker resumes the chosen exam",
-  (await chooseUnfinishedExam(many, pickingCtx("Exam 01 — chapter 1 — 2 question(s) · not yet submitted"))).exam?.id === "exam-001",
-  "selection honoured");
-check("the picker can decline and start a new exam",
-  (await chooseUnfinishedExam(many, pickingCtx("Start a new exam instead…"))).kind === "none",
-  "falls through to scope selection");
-check("cancelling the picker creates nothing",
-  (await chooseUnfinishedExam(many, pickingCtx(undefined))).kind === "cancelled",
-  "no exam created");
-check("without a picker the current exam wins",
-  (await chooseUnfinishedExam(many, silentCtx())).exam?.id === "exam-001", "currentExamId preferred");
+check("multiple unfinished exams are all listed", listed.length === 2, listed.map((item) => item.id).join(", "));
+check("the most recently touched exam comes first",
+  listed[0].id === "exam-002", listed.map((item) => item.id).join(", "));
+// The bare-command resume itself — deterministic choice, no picker, no prompt —
+// is gated by tests/verify-scholar-resume-determinism.mjs.
 
 console.log(`\nScholar exam-experience summary: ${pass} passed, ${fail} failed.`);
 process.exitCode = fail ? 1 : 0;

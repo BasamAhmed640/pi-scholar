@@ -1,10 +1,11 @@
 import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiPath as sdkJitiPath, resolvePiDependency } from "./sdk.mjs";
 // Scholar exam-scope prompt gate.
 //
-// Choosing an exam scope is the first thing a new exam asks for, and a near
-// miss used to end the command with a bare "No chapter or section matches".
-// The picker must instead say what shapes are accepted, using this book's real
-// numbers, and re-ask with the specific reason rather than giving up.
+// An explicit `/scholar exam "<scope>"` is the only way to create an exam, and
+// a near miss used to end the command with a bare "No chapter or section
+// matches". It must instead say what shapes are accepted, using this book's
+// real numbers, and re-ask with the specific reason rather than giving up.
+// A bare `/scholar exam` never reaches this resolver at all.
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -87,19 +88,19 @@ for (const [name, input, expected] of [
 
 // ------------------------------------------------ re-ask on a bad entry ----
 {
-  const ctx = fakeCtx(["quantum tunnelling", "1-2"]);
-  const scope = await resolveExamScope(book, undefined, ctx);
-  check("an unmatched entry is re-asked, then accepted", scope?.sectionIds.length === 2,
+  const ctx = fakeCtx(["1-2"]);
+  const scope = await resolveExamScope(book, "quantum tunnelling", ctx);
+  check("an unmatched typed scope is re-asked, then accepted", scope?.sectionIds.length === 2,
     `${scope?.sectionIds.length ?? "rejected"} section(s) after ${ctx.prompts.length} prompt(s)`);
   check("the retry prompt carries the specific reason",
-    /No chapter or section matches/.test(ctx.prompts[1] || ""),
-    JSON.stringify((ctx.prompts[1] || "").split("\n")[0]));
-  check("the retry prompt repeats the guidance", /Accepted formats:/.test(ctx.prompts[1] || ""), "guidance repeated");
+    /No chapter or section matches/.test(ctx.prompts[0] || ""),
+    JSON.stringify((ctx.prompts[0] || "").split("\n")[0]));
+  check("the retry prompt repeats the guidance", /Accepted formats:/.test(ctx.prompts[0] || ""), "guidance repeated");
 }
 {
   const ctx = fakeCtx(["nonsense", "2-3"]);
   const scope = await resolveExamScope(book, "also nonsense", ctx);
-  check("a bad command-line scope reopens the picker", scope?.sectionIds.length === 2,
+  check("a bad command-line scope reopens the dialog", scope?.sectionIds.length === 2,
     `${scope?.sectionIds.length ?? "rejected"} section(s) after ${ctx.prompts.length} prompt(s)`);
   check("the first prompt already explains the failure",
     /No chapter or section matches/.test(ctx.prompts[0] || ""), "reason shown up front");
@@ -107,8 +108,10 @@ for (const [name, input, expected] of [
 
 // -------------------------------------------------------------- giving up --
 {
-  const ctx = fakeCtx(["bad one", "bad two", "bad three", "1-2"]);
-  const scope = await resolveExamScope(book, undefined, ctx);
+  // The valid answer left at the end of the queue must stay unused: the loop is
+  // bounded, not rescued by one more prompt.
+  const ctx = fakeCtx(["bad two", "bad three", "1-2"]);
+  const scope = await resolveExamScope(book, "bad one", ctx);
   check("repeated bad entries stop after a bounded number of tries", scope === undefined,
     `${ctx.prompts.length} prompt(s), then ${ctx.notices.length} notice(s)`);
   check("giving up says no exam was created",
@@ -116,7 +119,7 @@ for (const [name, input, expected] of [
 }
 {
   const ctx = fakeCtx([undefined]);
-  const scope = await resolveExamScope(book, undefined, ctx);
+  const scope = await resolveExamScope(book, "not a chapter", ctx);
   check("cancelling the dialog creates no exam and warns nothing",
     scope === undefined && ctx.notices.length === 0, `${ctx.notices.length} notice(s)`);
 }

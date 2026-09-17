@@ -85,8 +85,8 @@ export type ScholarRuntimeCoordinator = {
   ) => Promise<RecoveryOutcome>;
 };
 
-/** How many times a mistyped exam scope is re-asked before giving up. */
-const MAX_EXAM_SCOPE_PROMPTS = 3;
+/** How many times an exam scope is tried (the typed value counts) before giving up. */
+const MAX_EXAM_SCOPE_ATTEMPTS = 3;
 
 /**
  * Book-specific guidance for an exam scope. Examples use this book's real
@@ -118,10 +118,12 @@ export function examScopeGuidance(book: ScholarBook): string {
 /**
  * Detailed but precise user guidance for Scholar tools and workflows.
  */
-export function scholarGuide(book?: ScholarBook): string {
+export function scholarGuide(book?: ScholarBook, unreadable = false): string {
   const current = book
     ? `Selected book: ${titleFor(book)}`
-    : "No book currently selected. Run /scholar open to choose a textbook.";
+    : unreadable
+      ? "Selected book: state could not be read. Book-specific guidance is omitted; /scholar open can switch books."
+      : "No book currently selected. Run /scholar open to choose a textbook.";
 
   return [
     current,
@@ -135,7 +137,7 @@ export function scholarGuide(book?: ScholarBook): string {
     '  Guided study with source-grounded explanations and 3 short questions. Reopening a section continues where it stopped. Pending unanswered questions resume unchanged.',
     "",
     "• /scholar exam <scope>",
-    '  Answer an exam in Obsidian. Specify chapters (e.g. "1-3", "1, 2", or "all"), or reopen an exam by ID. Run bare (/scholar exam) to resume an in-progress exam or begin a new one.',
+    '  Answer an exam in Obsidian. Specify chapters (e.g. "1-3", "1, 2", or "all"), or reopen an exam by ID. Bare /scholar exam resumes the most recently touched unfinished exam and names any others; it never prompts.',
     '• /scholar exam "exam-001" submit',
     '  Confirm and submit saved Obsidian answers; blanks receive 0 points. /scholar exam submit offers active exams. Reopening a submitted exam resumes grading; reopening a graded exam restores a missing answer key without re-grading.',
     "",
@@ -152,24 +154,26 @@ export function scholarGuide(book?: ScholarBook): string {
 }
 
 /**
- * Resolve an exam scope, re-asking with the specific reason when the entry does
- * not match the book. A scope typed on the command line gets the same treatment,
- * so a near miss reopens the picker instead of ending the command.
+ * Resolve an explicit exam scope, re-asking with the specific reason when the
+ * entry does not match the book. The scope typed on the command line is the
+ * first attempt, so a near miss reopens the dialog instead of ending the
+ * command. A bare `/scholar exam` never reaches this: it resumes an unfinished
+ * exam or explains the creation syntax without prompting.
  */
 export async function resolveExamScope(
   book: ScholarBook,
-  provided: string | undefined,
+  provided: string,
   ctx: ExtensionCommandContext,
 ): Promise<ScholarScope | undefined> {
   const guidance = examScopeGuidance(book);
   const canPrompt = typeof ctx.ui?.input === "function";
-  let candidate = provided?.trim() ? provided : undefined;
+  let candidate = cleanArgument(provided);
   let problem: string | undefined;
 
-  for (let attempt = 0; attempt < MAX_EXAM_SCOPE_PROMPTS; attempt += 1) {
+  for (let attempt = 0; attempt < MAX_EXAM_SCOPE_ATTEMPTS; attempt += 1) {
     if (!candidate) {
       if (!canPrompt) {
-        ctx.ui.notify(`${problem ? `${problem}\n\n` : ""}Choose an exam scope.\n\n${guidance}`, problem ? "warning" : "warning");
+        ctx.ui.notify(`${problem || "No exam scope was given."}\n\n${guidance}`, "warning");
         return undefined;
       }
       const heading = problem
@@ -177,34 +181,37 @@ export async function resolveExamScope(
         : `Create an exam from ${titleFor(book)}.\n\n${guidance}`;
       const entered = await ctx.ui.input(heading, "e.g. 1-3");
       if (entered === undefined) return undefined;
-      if (!entered.trim()) {
+      candidate = cleanArgument(entered);
+      if (!candidate) {
         problem = "No scope entered.";
         continue;
       }
-      candidate = cleanArgument(entered);
     }
     try {
       return resolveScope(book, candidate, false);
     } catch (error) {
       problem = error instanceof Error ? error.message : String(error);
       candidate = undefined;
-      if (!canPrompt) {
-        ctx.ui.notify(`${problem}\n\n${guidance}`, "warning");
-        return undefined;
-      }
     }
   }
   ctx.ui.notify(`${problem || "That exam scope could not be matched."}\n\nNo exam was created.\n\n${guidance}`, "warning");
   return undefined;
 }
 
-const START_A_NEW_EXAM = "Start a new exam instead…";
-
-/** Every exam that can still be answered or graded, newest first. */
+/**
+ * Every exam that can still be answered or graded, most recently touched first.
+ *
+ * Activity wins over creation time so an exam that was just answered outranks
+ * one that was only created later. Ties break on createdAt and then the ID, so
+ * identical state always produces the same order.
+ */
 export function unfinishedExams(book: ScholarBook): ScholarExam[] {
   return book.exams
     .filter((exam) => exam.status !== "graded")
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    .sort((left, right) =>
+      (right.updatedAt ?? right.createdAt).localeCompare(left.updatedAt ?? left.createdAt)
+      || right.createdAt.localeCompare(left.createdAt)
+      || right.id.localeCompare(left.id));
 }
 
 function examResumeLabel(exam: ScholarExam): string {
@@ -213,43 +220,7 @@ function examResumeLabel(exam: ScholarExam): string {
     : exam.status === "active"
       ? `${exam.questions.length} question(s) · not yet submitted`
       : "draft · questions not built yet";
-  return `${exam.title} — ${state}`;
-}
-
-type ExamResume =
-  | { kind: "resume"; exam: ScholarExam }
-  | { kind: "none" }
-  | { kind: "cancelled" };
-
-/**
- * Pick up an exam that was started and not finished.
- *
- * A bare `/scholar exam` used to consult only currentExamId, so a second
- * unfinished exam was unreachable and silently became a new one. Offer every
- * unfinished exam instead, and treat cancelling the picker as "do nothing"
- * rather than "create another".
- *
- * The picker also runs for a single unfinished exam. Resuming silently made a
- * resume and a fresh start look identical at the prompt, and it left no way to
- * begin a new exam from a bare command while one was still open.
- */
-export async function chooseUnfinishedExam(book: ScholarBook, ctx: ExtensionCommandContext, config?: ScholarConfig): Promise<ExamResume> {
-  const unfinished = unfinishedExams(book);
-  if (unfinished.length === 0) return { kind: "none" };
-
-  const current = unfinished.find((exam) => exam.id === book.currentExamId);
-  if (typeof ctx.ui?.select !== "function") {
-    return { kind: "resume", exam: current || unfinished[0]! };
-  }
-  const labels = await Promise.all(unfinished.map((exam) => config && exam.status === "active" ? examPaperLabel(config, book, exam) : examResumeLabel(exam)));
-  const chosen = await ctx.ui.select(
-    `Resume an unfinished exam from ${titleFor(book)}`,
-    [...labels, START_A_NEW_EXAM],
-  );
-  if (chosen === undefined) return { kind: "cancelled" };
-  if (chosen === START_A_NEW_EXAM) return { kind: "none" };
-  const index = labels.indexOf(chosen);
-  return index >= 0 ? { kind: "resume", exam: unfinished[index]! } : { kind: "cancelled" };
+  return `${exam.title} [${exam.id}] — ${state}`;
 }
 
 async function examPaperLabel(config: ScholarConfig, book: ScholarBook, exam: ScholarExam): Promise<string> {
@@ -313,6 +284,39 @@ async function recoverActiveOutgoingSession(
   }
 }
 
+/**
+ * Book state that cannot be read is a failure the learner must see. Reporting
+ * it as "no selected book" hides a broken authority behind advice to open a
+ * book that is already open.
+ */
+function loadFailureMessage(error: unknown, what: string): string {
+  return `Scholar could not load ${what}: ${error instanceof Error ? error.message : String(error)}`;
+}
+
+/**
+ * The guide documents commands, not book state. A selected book that cannot be
+ * read is reported, then the same guide still runs: `/scholar help` and bare
+ * `/scholar` must stay reachable when book state is broken.
+ */
+async function notifyScholarGuide(
+  coordinator: ScholarRuntimeCoordinator,
+  config: ScholarConfig,
+  ctx: ExtensionCommandContext,
+): Promise<void> {
+  const bookId = coordinator.runtimeSession.bookId || config.currentBookId;
+  let book: ScholarBook | undefined;
+  let unreadable = false;
+  if (bookId) {
+    try {
+      book = await loadBookState(config, bookId);
+    } catch (error) {
+      unreadable = true;
+      ctx.ui.notify(loadFailureMessage(error, "the selected book"), "warning");
+    }
+  }
+  ctx.ui.notify(scholarGuide(book, unreadable), "info");
+}
+
 export async function handleScholarCommand(
   args: string,
   ctx: ExtensionCommandContext,
@@ -327,9 +331,7 @@ export async function handleScholarCommand(
     }
 
     if (parsed.action === "help") {
-      const bookId = coordinator.runtimeSession.bookId || coordinator.getConfig().currentBookId;
-      const book = bookId ? await loadBookState(coordinator.getConfig(), bookId).catch(() => undefined) : undefined;
-      ctx.ui.notify(scholarGuide(book), "info");
+      await notifyScholarGuide(coordinator, coordinator.getConfig(), ctx);
       return;
     }
 
@@ -348,10 +350,23 @@ export async function handleScholarCommand(
     // read disk configuration when no Scholar operation is in flight.
     let activeConfig = activeRun ? coordinator.getConfig() : await coordinator.loadFreshConfig();
 
-    if (!coordinator.getSetupRun() && coordinator.runtimeSession.active && coordinator.runtimeSession.bookId && !await loadBookState(activeConfig, coordinator.runtimeSession.bookId).catch(() => undefined)) {
-      coordinator.deactivateSession();
-      coordinator.persistSessionPointer();
-      await coordinator.setStatus(ctx);
+    // Only a command that actually needs the book may be stopped by a book load
+    // failure. Closing the session, switching books, and reading the guide must
+    // still work while the active book's state is unreadable.
+    const bookDependent = parsed.action === "learn" || parsed.action === "exam" || parsed.action === "tutor";
+    if (bookDependent && !coordinator.getSetupRun() && coordinator.runtimeSession.active && coordinator.runtimeSession.bookId) {
+      let activeBook: ScholarBook | undefined;
+      try {
+        activeBook = await loadBookState(activeConfig, coordinator.runtimeSession.bookId);
+      } catch (error) {
+        ctx.ui.notify(loadFailureMessage(error, "the active book"), "warning");
+        return;
+      }
+      if (!activeBook) {
+        coordinator.deactivateSession();
+        coordinator.persistSessionPointer();
+        await coordinator.setStatus(ctx);
+      }
     }
 
     if (typeof ctx.isIdle === "function" && !ctx.isIdle()) {
@@ -456,12 +471,20 @@ export async function handleScholarCommand(
       return;
     }
 
-    const bookId = coordinator.runtimeSession.bookId || activeConfig.currentBookId;
-    let book = bookId ? await loadBookState(activeConfig, bookId).catch(() => undefined) : undefined;
-
     if (parsed.action === "default") {
-      ctx.ui.notify(scholarGuide(book), "info");
+      await notifyScholarGuide(coordinator, activeConfig, ctx);
       return;
+    }
+
+    const bookId = coordinator.runtimeSession.bookId || activeConfig.currentBookId;
+    let book: ScholarBook | undefined;
+    if (bookId) {
+      try {
+        book = await loadBookState(activeConfig, bookId);
+      } catch (error) {
+        ctx.ui.notify(loadFailureMessage(error, "the selected book"), "warning");
+        return;
+      }
     }
 
     if (!coordinator.hasConfiguredLibrary()) {
@@ -548,12 +571,19 @@ export async function handleScholarCommand(
           // Already-submitted/graded requests follow the resume route below;
           // they never parse the edited paper or replace the saved answers.
         } else if (!parsed.value) {
-          const resume = await chooseUnfinishedExam(book, ctx, activeConfig);
-          if (resume.kind === "cancelled") return;
-          if (resume.kind === "resume") {
-            exam = resume.exam;
-            ctx.ui.notify(`Resuming ${examResumeLabel(exam)}.`, "info");
+          // Bare `/scholar exam` never prompts: the most recently touched
+          // unfinished exam wins, and the rest are named rather than offered.
+          const unfinished = unfinishedExams(book);
+          if (!unfinished.length) {
+            ctx.ui.notify(`No unfinished exam to resume. Create one with /scholar exam "<scope>".\n\n${examScopeGuidance(book)}`, "info");
+            return;
           }
+          exam = unfinished[0]!;
+          const others = unfinished.slice(1);
+          ctx.ui.notify(
+            `Resuming ${examResumeLabel(exam)}.${others.length ? `\nOther unfinished exams: ${others.map((item) => `${item.title} [${item.id}]`).join("; ")}.` : ""}`,
+            "info",
+          );
         } else {
           const found = findNamedExam(book, parsed.value);
           if (found) {
@@ -563,37 +593,35 @@ export async function handleScholarCommand(
             } else {
               ctx.ui.notify(`Resuming ${examResumeLabel(exam)}.`, "info");
             }
+          } else {
+            const scope = await resolveExamScope(book, parsed.value, ctx);
+            if (!scope) return;
+            const now = new Date().toISOString();
+            const number = book.exams.length + 1;
+            const created: ScholarExam = {
+              id: `exam-${String(number).padStart(3, "0")}`,
+              title: `Exam ${String(number).padStart(2, "0")} — ${scope.description}`,
+              scope,
+              status: "draft",
+              questions: [],
+              rawResponses: [],
+              itemResults: [],
+              breakdown: [],
+              earnedPoints: 0,
+              maxPoints: 0,
+              percent: 0,
+              transcript: [],
+              createdAt: now,
+              updatedAt: now,
+            };
+            const mutation = await coordinator.mutateBook(book.id, (state) => {
+              state.exams.push(created);
+              state.currentExamId = created.id;
+            });
+            book = mutation.book;
+            exam = book.exams.find((item) => item.id === created.id)!;
+            ctx.ui.notify(`Started ${exam.title}.`, "info");
           }
-        }
-        if (!exam) {
-          const scope = await resolveExamScope(book, parsed.value, ctx);
-          if (!scope) return;
-          const now = new Date().toISOString();
-          const number = book.exams.length + 1;
-          exam = {
-            id: `exam-${String(number).padStart(3, "0")}`,
-            title: `Exam ${String(number).padStart(2, "0")} — ${scope.description}`,
-            scope,
-            status: "draft",
-            questions: [],
-            rawResponses: [],
-            itemResults: [],
-            breakdown: [],
-            earnedPoints: 0,
-            maxPoints: 0,
-            percent: 0,
-            transcript: [],
-            createdAt: now,
-            updatedAt: now,
-          };
-          const created = exam;
-          const mutation = await coordinator.mutateBook(book.id, (state) => {
-            state.exams.push(created);
-            state.currentExamId = created.id;
-          });
-          book = mutation.book;
-          exam = book.exams.find((item) => item.id === created.id)!;
-          ctx.ui.notify(`Started ${exam.title}.`, "info");
         }
         if (exam.status === "active") {
           const presented = await coordinator.toolController.presentExam(book.id, exam.id, ctx);
@@ -604,7 +632,7 @@ export async function handleScholarCommand(
             ctx.ui.notify(`${exam.title}\nAnswer and save in Obsidian: ${presented.path}\nThen /scholar exam "${exam.id}" submit`, "info");
             return;
           }
-          // Another Pi may have submitted/graded between the picker and open.
+          // Another Pi may have submitted/graded between the resume and open.
           // Route the fresh saved status instead of showing an undefined path.
         }
         if (exam.status === "graded") {

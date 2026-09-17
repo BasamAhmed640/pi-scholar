@@ -4,7 +4,7 @@ import { transcriptBlock } from "../note-records.ts";
 import { callout } from "./callouts.ts";
 import { chapterNotePath, sectionNotePath, snapshotAssetPath } from "../obsidian-paths.ts";
 import type { AssessmentAttempt, AssessmentKind, ScholarBook, ScholarChapter, ScholarConfig, ScholarSection, ScholarSnapshot, TranscriptEntry } from "../types.ts";
-import { block, collapsedRecord, frontmatter, generatedDocument, markdownText, pageRange, readableOutcome, statusCallout, statusLabel, tableText, titleCase, wikiEmbed, wikiLink, yaml } from "./common.ts";
+import { block, collapsedRecord, frontmatter, generatedDocument, markdownText, pageRange, readableOutcome, statusLabel, tableText, titleCase, wikiEmbed, wikiLink, yaml } from "./common.ts";
 
 export function comparableTranscriptText(value: string): string {
   return markdownText(value).replace(/^\*\*([\s\S]*)\*\*$/, "$1").replace(/\s+/g, " ").trim().toLowerCase();
@@ -228,19 +228,23 @@ export function renderSection(config: ScholarConfig, book: ScholarBook, chapter:
       ...block("### Understanding checks", checks),
       ...block("### Remaining work", otherRemaining.map(item => `- ${markdownText(item)}`)),
     ]),
+    // The chapter link travels with the metadata appendix below the lesson, so
+    // the generated note opens with the status line and the teaching itself.
+    wikiLink(notePath, chapterNotePath(config, book, chapter), chapterLabel), "",
     ...assessmentQuestionBlock(section.attempts),
   ];
+  const status = [
+    statusLabel(section.status),
+    current ? "Current section" : "",
+    pageRange(section.startPage, section.endPage),
+    section.status === "complete" ? "Section complete · reopen for practice anytime"
+      : pendingChecks ? `${pendingChecks} short ${pendingChecks === 1 ? "question" : "questions"} remaining` : lessonProgress,
+  ].filter(Boolean).join(" · ");
   return generatedDocument(frontmatter([
     "type: scholar-section", `book_id: ${yaml(book.id)}`, `chapter_id: ${yaml(chapter.id)}`, `section_id: ${yaml(section.id)}`,
     `status: ${yaml(section.status)}`, `current: ${current}`, `created: ${yaml(section.createdAt)}`, `updated: ${yaml(section.updatedAt)}`,
   ]), [
-    statusCallout(statusLabel(section.status), [
-      current ? "Current section" : "",
-      pageRange(section.startPage, section.endPage),
-      section.status === "complete" ? "Section complete · reopen for practice anytime"
-        : pendingChecks ? `${pendingChecks} short ${pendingChecks === 1 ? "question" : "questions"} remaining` : lessonProgress,
-    ].filter(Boolean).join(" · ")), "",
-    wikiLink(notePath, chapterNotePath(config, book, chapter), chapterLabel), "",
+    `> [!scholar-status] ${status}`, "",
     ...(content.some((line) => line.trim()) ? content : ["This section is ready. Notes will appear as you work through it."]),
   ].join("\n"));
 }

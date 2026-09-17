@@ -143,12 +143,13 @@ export function readTranscript(text: string): TranscriptEntry[] {
 
 export function studyDocument(document: string, kind: "section" | "tutor", record: ScholarSection | TutorSession, figures: (question: string) => string = () => ""): string {
   const { attempts, transcript, ...metadata } = record;
-  // Synthesis/coverage are explicitly inspectable in this note's details, never a second database.
-  document = attachDetails(document, kind, metadata);
   document = document.replace(/^## Questions\r?\n[\s\S]*?(?=^## |<!-- scholar:generated:end -->)/m, "");
   // All questions are in note order. New questions are appended; cancellation never shuffles them.
-  if (attempts.length) document = document.replace(GENERATED_END, () => `## Questions\n\n${attempts.map((attempt, i) => questionBlock(attempt, i, figures([attempt.question, attempt.quiz?.context].filter(Boolean).join("\n")))).join("\n")}\n${GENERATED_END}`);
-  return document;
+  const questions = attempts.length ? `## Questions\n\n${attempts.map((attempt, i) => questionBlock(attempt, i, figures([attempt.question, attempt.quiz?.context].filter(Boolean).join("\n")))).join("\n")}\n` : "";
+  // Synthesis/coverage are explicitly inspectable in this note's appendix, never a second
+  // database. It closes the lesson above the question region, so no transcript entry or
+  // question chunk can absorb it and the note stays content-first.
+  return document.replace(GENERATED_END, () => `\n${details(kind, metadata)}\n\n${questions}${GENERATED_END}`);
 }
 
 export function readStudyDocument(text: string, kind: "section" | "tutor"): ScholarSection | TutorSession {

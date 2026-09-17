@@ -1,9 +1,10 @@
-// The restored Learn flow: lessonComplete runs the independent source, teaching and
-// visual review crew and commits only after all three pass; blocking findings come
-// back as [F-<key>] repair requests the author answers with findingResponses without
-// re-running the crew; three resolved short questions complete the section; multi-part
-// questions are refused; and the consecutive-rejection loop guard still stops delivery.
-// Synthetic in-memory records plus one real single-page PDF fixture; no vault or network access.
+// The restored Learn flow: audits run per saved explanation revision as it is saved, so
+// lessonComplete waits only for outstanding audits and commits after every unit passes;
+// blocking findings come back as [F-<key>] repair requests the author answers with
+// findingResponses without re-running the audits; three resolved short questions complete
+// the section; multi-part questions are refused; and the consecutive-rejection loop guard
+// still stops delivery. Synthetic in-memory records plus one real single-page PDF fixture;
+// no vault or network access.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -25,7 +26,7 @@ const loadModule = name => jiti.import(join(dirname(extensionPath), name));
 const lesson = await loadModule("lesson.ts");
 const domain = await loadModule("domain.ts");
 const { createScholarToolController } = await loadModule("tool-controller.ts");
-const { REVIEW_CHECKPOINT_MESSAGE } = await loadModule("review-layer.ts");
+const { reviewCheckpoint } = await loadModule("learn-review.ts");
 const { ScholarRuntimeSession } = await loadModule("runtime-session.ts");
 
 const root = mkdtempSync(join(tmpdir(), "scholar-simple-learn-"));
@@ -129,47 +130,48 @@ async function check(name, test) {
   catch (error) { failed++; console.error(`[FAIL] ${name}: ${error.stack || error.message}`); }
 }
 
-await check("lessonComplete commits after the source, teaching and visual reviews", async () => {
+await check("lessonComplete commits after every saved unit's source and teaching audits", async () => {
   const h = harness("commit");
-  // Stale load artifacts: a checkpoint that a completed check already supersedes, and a check
-  // bound to a different source. Neither may survive the approval write.
+  // Stale load artifacts: a checkpoint for this unit revision that completed checks supersede,
+  // a receipt for a foreign source, and a blocking receipt for a superseded revision. None may
+  // survive as approval evidence or block the replacement revision.
   const sourceHash = h.book.source.fingerprint.sha256;
+  const revision = h.section.transcript[0].lesson.contentHash;
   h.section.learnQuality.reviews.push(
-    { role: "source", contentHash: lesson.learnReviewHash(h.section), sourceHash, model: "fixture/simple-learn", createdAt: now,
-      status: "changes", findings: [], failure: { code: "cancelled", message: REVIEW_CHECKPOINT_MESSAGE }, batches: [] },
-    { role: "visual", contentHash: lesson.learnReviewHash(h.section), sourceHash: "b".repeat(64), model: "fixture/simple-learn", createdAt: now,
-      status: "pass", findings: [] });
+    reviewCheckpoint(revision, sourceHash, { model: { id: "simple-learn", provider: "fixture" } }, "source", []),
+    { role: "visual", contentHash: revision, sourceHash: "b".repeat(64), model: "fixture/simple-learn", createdAt: now,
+      status: "pass", findings: [] },
+    { role: "teaching", contentHash: "c".repeat(64), sourceHash, model: "fixture/simple-learn", createdAt: now, status: "changes",
+      findings: [{ severity: "blocking", target: "an older revision", sourcePages: [1], issue: "A defect of a superseded revision.", repair: "Already replaced by the saved revision." }] });
   const result = await h.execute({ action: "notes", lessonComplete: true });
   assert.ok(!["review", "error", "retry"].includes(result.details.tone), result.content[0].text);
   const roles = new Set(h.requests.map(request => request.role));
-  for (const role of ["source", "teaching", "visual"]) assert.ok(roles.has(role), `the ${role} reviewer ran`);
-  assert.ok(h.requests.length >= 3, `at least three reviewer requests were served (${h.requests.length})`);
+  for (const role of ["source", "teaching"]) assert.ok(roles.has(role), `the ${role} reviewer ran`);
+  assert.equal(h.requests.length, 2, `one prepared request per required role (${h.requests.length})`);
+  assert.equal(roles.has("visual"), false, "a unit with no embedded saved crops has no visual audit");
   const section = h.section, currentSourceHash = h.book.source.fingerprint.sha256;
-  assert.equal(section.learnQuality.reviews.length, 3, "one approved receipt per review role; stale receipts were pruned");
-  assert.ok(section.learnQuality.reviews.every(receipt => receipt.sourceHash === currentSourceHash && receipt.failure === undefined),
-    "a superseded checkpoint and a foreign-source receipt are gone");
-  for (const receipt of section.learnQuality.reviews) {
-    assert.equal(receipt.status, "pass", `${receipt.role} passed`);
-    assert.ok(["source", "teaching", "visual"].includes(receipt.role));
-    assert.equal(receipt.contentHash, lesson.learnReviewHash(section), "the receipt is bound to the reviewed content");
-    assert.equal(receipt.sourceHash, sourceHash);
-  }
+  const current = section.learnQuality.reviews.filter(receipt => receipt.contentHash === revision);
+  assert.deepEqual(current.map(receipt => receipt.role), ["source", "teaching"], "one approved receipt per role of this unit revision");
+  assert.ok(current.every(receipt => receipt.status === "pass" && receipt.sourceHash === currentSourceHash && receipt.failure === undefined));
+  assert.equal(section.learnQuality.reviews.some(receipt => receipt.sourceHash === "b".repeat(64)), false, "a foreign-source receipt is gone");
+  assert.equal(reviewCheckpoint(revision, sourceHash, { model: { id: "simple-learn", provider: "fixture" } }, "source", []).failure.code, "cancelled");
   assert.match(result.content[0].text, /Full lesson committed after source, teaching and visual review/);
   assert.ok(section.lessonCommit, "the reviewed lesson is committed");
   assert.ok(lesson.lessonReady(section, sourceHash), "the commit satisfies the Learn delivery gate");
+  assert.deepEqual(section.lessonCommit.entryIds, [section.transcript[0].id]);
   domain.recomputeProgress(h.book, section);
   assert.notEqual(section.status, "complete", "the lesson alone does not complete the section");
   assert.deepEqual(domain.quickQuestionBlockers(section), ["3 more short questions"]);
 });
 
-await check("a blocking finding pauses the commit until the author answers, then commits without a second crew", async () => {
+await check("a blocking finding pauses the commit until the author answers, then commits without a second audit", async () => {
   const issue = "The proportional claim is not qualified.";
   const h = harness("findings", () => ({ status: "changes", findings: [{ severity: "blocking", target: "lesson-boundary / travel time", sourcePages: [1], issue, repair: "State that the speed stays fixed." }] }));
   const first = await h.execute({ action: "notes", lessonComplete: true });
   assert.equal(first.details.tone, "review");
   assert.match(first.content[0].text, /specialist review found repairs/);
   const keys = findingKeys(first.content.map(item => item.text).join("\n"));
-  assert.ok(keys.length >= 3, `every finding is named with its repair key: ${keys.join(", ")}`);
+  assert.ok(keys.length >= 2, `every finding is named with its repair key: ${keys.join(", ")}`);
   assert.equal(h.section.lessonCommit, undefined, "an open finding leaves the lesson uncommitted");
   assert.equal(lesson.lessonReady(h.section, h.book.source.fingerprint.sha256), false, "an unapproved draft is never delivered");
   const requestsBeforeAnswer = h.requests.length;
@@ -177,8 +179,8 @@ await check("a blocking finding pauses the commit until the author answers, then
   const second = await h.execute({ action: "notes", lessonComplete: true,
     findingResponses: keys.map(key => ({ key, action: "fixed", note: "Qualified the proportional claim." })) });
   assert.ok(!["review", "error", "retry"].includes(second.details.tone), second.content[0].text);
-  assert.match(second.content[0].text, /Full lesson committed after specialist review and author responses/);
-  assert.equal(h.requests.length, requestsBeforeAnswer, "an answered resubmission checks responses instead of re-running the crew");
+  assert.match(second.content[0].text, /Full lesson committed after source, teaching and visual review/);
+  assert.equal(h.requests.length, requestsBeforeAnswer, "an answered resubmission checks responses instead of re-running the audits");
   assert.ok(h.section.lessonCommit, "the answered lesson commits");
   assert.ok(keys.every(key => (h.section.learnQuality.responses || []).some(response => response.key === key)), "every author response is stored");
 });

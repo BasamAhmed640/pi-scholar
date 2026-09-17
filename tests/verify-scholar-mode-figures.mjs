@@ -111,7 +111,7 @@ async function check(name, test) {
 }
 
 try {
-  await check("tutor explanations are reviewed before delivery and answered findings do not re-run the crew", async () => {
+  await check("tutor explanations are audited beside authoring and answered findings do not re-run the audit", async () => {
     const h = await harness("tutor");
     const model = { id: "tutor-review", provider: "fixture", api: "fixture", input: ["text"], contextWindow: 32_000, maxTokens: 4000 };
     const issue = "The explanation jumps from the diagram to the result.";
@@ -127,21 +127,36 @@ try {
     } } };
     const lesson = { id: "tutor-unit", title: "Source causes", objectives: [], keyPoints: ["Changes propagate through each step."], sourcePages: [2],
       markdown: "### Source causes\n\nA change at the input reaches the observed result through each intermediate step of the source diagram." };
+    const settle = async predicate => {
+      const started = Date.now();
+      for (;;) {
+        if (await predicate()) return;
+        if (Date.now() - started > 5000) throw new Error("Timed out waiting for the Tutor audit");
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    };
 
+    // The save is never blocked by its audit; the teaching check runs beside authoring.
     const first = await h.execute({ action: "notes", lesson }, context);
-    assert.equal(teachingReviews, 1, "the saved explanation is reviewed once by the teaching role");
-    assert.equal(first.details.tone, "review");
-    const findingsText = first.content.map(item => item.text).join("\n");
+    success(first);
+    await settle(async () => (h.record(await h.load())?.review?.receipts?.length || 0) === 1);
+    assert.equal(teachingReviews, 1, "the saved explanation is audited once by the teaching role");
+    const reviewed = h.record(await h.load());
+    assert.equal(reviewed.review.receipts.filter(receipt => receipt.role === "teaching").length, 1, "the teaching receipt is stored on the Tutor session");
+    assert.equal(reviewed.review.receipts[0].status, "changes");
+
+    // The finding reaches the author on the next Scholar result, named with its repair key.
+    const following = await h.execute({ action: "status" }, context);
+    const findingsText = following.content.map(item => item.text).join("\n");
     assert.ok(findingsText.includes(issue), findingsText);
     const keys = [...new Set([...findingsText.matchAll(/\[F-([0-9a-f]{12})\]/g)].map(match => match[1]))];
     assert.equal(keys.length, 1, `the blocking finding is named with its repair key: ${keys.join(", ")}`);
-    const reviewed = h.record(await h.load());
-    assert.equal(reviewed.review.receipts.filter(receipt => receipt.role === "teaching").length, 1, "the teaching receipt is stored on the Tutor session");
 
     const second = await h.execute({ action: "notes", lesson,
       findingResponses: keys.map(key => ({ key, action: "fixed", note: "Named the intermediate step in the explanation." })) }, context);
-    assert.ok(!["error", "retry", "review"].includes(second.details.tone), second.content[0].text);
-    assert.equal(teachingReviews, 1, "an answered resubmission never re-runs the crew");
+    success(second);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(teachingReviews, 1, "an answered revision never re-runs the audit");
     const answered = h.record(await h.load());
     assert.ok(keys.every(key => (answered.review.responses || []).some(response => response.key === key)), "the author response is stored on the Tutor session");
   });

@@ -35,8 +35,9 @@ function fixture({ completed = false } = {}) {
     exams: [], tutorSessions: [], currentSectionId: "s1", createdAt: now, updatedAt: now };
   lesson.saveLesson(section, book, { id: "flux", title: "A zero-divergence counterexample", markdown: `### A uniform field\n\n${explanation}`,
     objectives: [objective], keyPoints: [keyPoint], sourcePages: [1] });
-  section.learnQuality.reviews = ["source", "teaching", "visual"].map(role => ({ role, status: "pass", findings: [], model: "any-provider/reviewer",
-    sourceHash, contentHash: lesson.learnReviewHash(section), createdAt: now }));
+  // One audit unit per saved explanation revision: source and teaching for a unit with no crops.
+  section.learnQuality.reviews = ["source", "teaching"].map(role => ({ role, status: "pass", findings: [], model: "any-provider/reviewer",
+    sourceHash, contentHash: section.transcript[0].lesson.contentHash, createdAt: now }));
   lesson.commitLesson(section, book);
   if (completed) section.attempts.push(attempt("mastery-1"), attempt("mastery-2"), attempt("mastery-3"));
   domain.recomputeProgress(book, section);
@@ -81,11 +82,12 @@ await check("Reviewed completion survives later practice explanation and recap c
   assert.equal(sectionOf(book).status, "complete");
   assert.equal(book.chapters[0].status, "complete");
   assert.deepEqual(sectionOf(book).learnQuality.earnedDelivery, earned);
-  assert(lesson.learnReviewIssues(sectionOf(book), sourceHash).length, "Old editorial receipts honestly become stale");
+  assert.equal(lesson.learnReviewIssues(sectionOf(book), sourceHash).length, 0, "A recap-only practice note leaves the unit revision's audit valid");
   assert(lesson.lessonReady(sectionOf(book), sourceHash), "Earned instructional delivery survives an additional practice note");
   const current = sectionOf(book).transcript[0];
   await notes(book, { lesson: { id: "flux", title: "A zero-divergence counterexample", markdown: `${current.markdown}\n\nThe equal fluxes have opposite signs because the outward normals point in opposite directions.`,
     expectedContentHash: lesson.lessonHash(current.markdown), objectives: [objective], keyPoints: [keyPoint], sourcePages: [1] } });
+  assert(lesson.learnReviewIssues(sectionOf(book), sourceHash).length, "Editing the saved explanation makes its audit honestly stale");
   assert.equal(sectionOf(book).status, "complete");
   assert.equal(domain.learnQuestionGrounding(sectionOf(book), attempt().grounding).purpose, "practice");
 });

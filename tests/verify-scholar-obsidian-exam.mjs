@@ -319,6 +319,15 @@ try {
 
   await check("exam_build ends with active paper and explicit submission, never grading packet or key", async () => {
     const h = await harness("build", { status: "draft" });
+    // The form is audited before activation, so this pass needs a reviewer that returns a
+    // verdict; an unavailable reviewer leaves the exam a draft instead of freezing it.
+    const simModel = { id: "sim-model", provider: "sim", api: "sim", input: ["text"], contextWindow: 32000, maxTokens: 4096 };
+    h.context.model = simModel;
+    h.context.modelRegistry = { complete: async () => ({
+      role: "assistant", api: simModel.api, provider: simModel.provider, model: simModel.id,
+      content: [{ type: "text", text: JSON.stringify({ status: "pass", findings: [] }) }],
+      stopReason: "stop", usage: { input: 200, output: 40, cacheRead: 0, cacheWrite: 0, totalTokens: 240 }, timestamp: Date.now(),
+    }) };
     const result = await h.execute({ action: "exam_build", questions: fixture(h.config).exams[0].questions });
     assert.equal((await h.current()).exams[0].status, "active", result.content?.[0]?.text);
     assert.match(result.content[0].text, /paper|Obsidian/i); assert.match(result.content[0].text, /submit/i);

@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { lessonHash, learnReviewHash, lessonCoverageIssues, commitLesson, learnReviewIssues, lessonReady } from "./lesson.ts";
-import { reviewCheckpoint, reviewLearnDraft, reviewLearnQuestion, type LessonReviewRole } from "./learn-review.ts";
-import { reviewerModelName, runReviewPass, planExamReviewPackets, planTutorExplanationPacket, reviewTargetQuestion, type ReviewPacket, type ReviewPacketRole } from "./review-layer.ts";
-import { computeFindingKey, isFindingResponse, pruneReviewReceipts, reviewPassIssues, type ReviewBatchPass } from "./learn-quality.ts";
-import { DEFAULT_REVIEWER_LIMITS, type ReviewerProgress } from "./review-runtime.ts";
+import { lessonHash, lessonCoverageIssues, commitLesson, learnReviewIssues, lessonReady, lessonReviewUnits, tutorReviewUnits, type LessonReviewUnit } from "./lesson.ts";
+import { planLessonUnitPackets, reviewCheckpoint, reviewLearnQuestion, type LessonReviewRole } from "./learn-review.ts";
+import { reviewerModelName, runReviewPass, planExamReviewPackets, planTutorExplanationPacket, reviewTargetQuestion, currentReviewSnapshots, type ReviewPacket, type ReviewPacketRole } from "./review-layer.ts";
+import { computeFindingKey, isFindingResponse, pruneReviewReceipts, reviewUnitIssues, unitBlockingFindings, unitReviewFailures, type ReviewBatchPass, type ReviewFailure, type ReviewFinding, type ReviewReceipt, type ReviewRole, type UnitReviewFinding } from "./learn-quality.ts";
+import type { ReviewerProgress } from "./review-runtime.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 
@@ -40,7 +40,7 @@ import {
   type OutlineValidationReport,
   type OutlineValidationRun,
 } from "./outline-validation.ts";
-import type { ScholarRuntimeSession } from "./runtime-session.ts";
+import type { ScholarRuntimeSession, ScholarRuntimeState } from "./runtime-session.ts";
 import {
   MAX_TOOL_CHARS,
   MAX_TOOL_PAGES,
@@ -55,6 +55,7 @@ import {
   type ScholarExam,
   type ScholarMode,
   type ScholarSection,
+  type ScholarSnapshot,
   type TutorSession,
 } from "./types.ts";
 
@@ -125,6 +126,53 @@ export type ScholarToolController = {
   submitExam(bookId: string, examId: string, ctx: ExtensionContext): Promise<ExamSubmission>;
 };
 
+/** The identity of one saved revision under audit. `revision` is the audited evidence a change
+ * re-audits; `contentHash` is the lesson/form revision stored receipts bind to. */
+type AuditUnit = Pick<LessonReviewUnit, "key" | "entryId" | "revision" | "contentHash" | "roles">;
+
+/** One saved unit revision under audit. Its receipts are owner-produced and land only through mutateBook. */
+type UnitAudit = {
+  unit: AuditUnit;
+  sourceHash: string;
+  roles: ReviewRole[];
+  stop: AbortController;
+  settled: boolean;
+  done: Promise<void>;
+  receipts?: ReviewReceipt[];
+  failure?: string;
+};
+
+/** Receipt storage inside one book mutation: a Learn quality record, a Tutor session's review
+ * record, or an exam's review record. The accessor pair exists because the records name the
+ * same list differently. */
+type ReviewReceiptStore = (state: ScholarBook) => { read(): ReviewReceipt[]; write(receipts: ReviewReceipt[]): void } | undefined;
+
+/** In-memory audit state of one preparation; discarded when the preparation ends or is replaced. */
+type PreparationAuditor = {
+  activation: ScholarRuntimeState;
+  bookId: string;
+  key: string;
+  units: Map<string, UnitAudit>;
+  delivered: Set<string>;
+  /** Set while a finished audit may carry findings the author has not seen; gates the delivery
+   * book load so tool results with nothing to deliver never re-read the vault. */
+  pendingFindings: boolean;
+};
+
+/** The per-unit gate verdict of one submitted exam form revision. */
+type ExamFormReport = {
+  findings: UnitReviewFinding[];
+  failures: ReviewFailure[];
+  thrown: Array<{ code: "tool"; message: string }>;
+  issues: string[];
+};
+
+/** Signals a form that is not approved yet out of the freeze mutation. It is never written
+ * anywhere: the frozen revision stays a draft and the caller reports the report as a result. */
+class ExamFormGate extends Error {
+  constructor(readonly report: ExamFormReport) { super("The submitted exam form is not approved yet."); this.name = "ExamFormGate"; }
+}
+
 export function createScholarToolController(ports: ScholarToolControllerPorts): ScholarToolController {
   const { pi, session, loadBook, mutateBook } = ports;
   let toolRegistered = false;
@@ -192,27 +240,255 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
       try { if (!ports.onReviewProgress && ctx.hasUI) ctx.ui.setStatus("scholar-review", undefined); } catch { /* best-effort status cleanup */ }
     }
   };
-  /** Persist finished crew checks while review continues, so Esc, a timeout or a restart keeps them. */
-  const saveReviewCheckpoints = (draft: ScholarBook, section: ScholarSection, activation: typeof session.state, ctx: ExtensionContext) => {
-    const latest = new Map<LessonReviewRole, ReviewBatchPass[]>();
+  let auditor: PreparationAuditor | undefined;
+  /** Book+unit key to the evidence revision whose in-flight audit a preparation change discarded.
+   * Finalization explains that discard instead of reporting a review it never got. */
+  const discardedAudits = new Map<string, string>();
+  const discardAudits = (reason: string): void => {
+    const preparation = auditor;
+    if (preparation) {
+      for (const task of preparation.units.values()) {
+        task.stop.abort(new Error(reason));
+        if (!task.receipts) discardedAudits.set(`${preparation.bookId}\u0000${task.unit.key}`, task.unit.revision);
+      }
+    }
+    auditor = undefined;
+  };
+  /** The audit state of the current preparation; a superseded preparation discards its own. */
+  const auditorFor = (book: ScholarBook): PreparationAuditor => {
+    const key = `${session.mode}\u0000${session.recordId || ""}\u0000${book.id}\u0000${book.instanceId}`;
+    if (!auditor || auditor.activation !== session.state || auditor.key !== key) {
+      discardAudits("Scholar's active preparation changed; its pending audits were discarded.");
+      auditor = { activation: session.state, bookId: book.id, key, units: new Map(), delivered: new Set(), pendingFindings: false };
+    }
+    return auditor;
+  };
+  const activeRecord = (draft: ScholarBook): ScholarSection | TutorSession | undefined => {
+    if (!session.recordId) return undefined;
+    if (session.mode === "learn") return findSection(draft, session.recordId);
+    return session.mode === "tutor" ? draft.tutorSessions.find(item => item.id === session.recordId) : undefined;
+  };
+  const recordReviews = (target: ScholarSection | TutorSession): ReviewReceipt[] =>
+    ("objectives" in target ? target.learnQuality?.reviews : target.review?.receipts) || [];
+  const recordUnits = (target: ScholarSection | TutorSession, sourceHash: string): LessonReviewUnit[] =>
+    "objectives" in target ? lessonReviewUnits(target, sourceHash) : tutorReviewUnits(target);
+  /** Receipt storage inside a book mutation; Tutor sessions and exams create their review record on demand. */
+  const reviewStore = (target: ScholarSection | TutorSession | ScholarExam): ReviewReceiptStore => (state: ScholarBook) => {
+    if ("objectives" in target) {
+      const quality = findSection(state, target.id)?.learnQuality;
+      if (!quality) return undefined;
+      return { read: () => quality.reviews, write: receipts => { quality.reviews = receipts; } };
+    }
+    if ("questions" in target) {
+      const exam = state.exams.find(item => item.id === target.id);
+      if (!exam) return undefined;
+      exam.review ||= { version: 1, receipts: [], responses: [] };
+      return { read: () => exam.review!.receipts, write: receipts => { exam.review!.receipts = receipts; } };
+    }
+    const tutor = state.tutorSessions.find(item => item.id === target.id);
+    if (!tutor) return undefined;
+    tutor.review ||= { version: 1, receipts: [], responses: [] };
+    return { read: () => tutor.review!.receipts, write: receipts => { tutor.review!.receipts = receipts; } };
+  };
+  /** Whether this unit still carries the revision it audited in one book. Learn and Tutor units
+   * are derived from the note, so a save that replaced them makes the old revision stale; an exam
+   * form's proposed revision is frozen only through the gate that revalidates its fingerprint. */
+  const unitIsCurrent = (book: ScholarBook, target: ScholarSection | TutorSession | ScholarExam, unit: AuditUnit, sourceHash: string): boolean => {
+    if ("objectives" in target) {
+      const section = findSection(book, target.id);
+      return Boolean(section && lessonReviewUnits(section, sourceHash).some(item => item.key === unit.key && item.revision === unit.revision));
+    }
+    if ("questions" in target) return true;
+    const tutor = book.tutorSessions.find(item => item.id === target.id);
+    return Boolean(tutor && tutorReviewUnits(tutor).some(item => item.key === unit.key && item.revision === unit.revision));
+  };
+  /** A live audit's verdicts land only in its own preparation and only for the revision they
+   * audited; a discarded or superseded audit's late completion never becomes current evidence. */
+  const persistReceipts = (bookId: string, target: ScholarSection | TutorSession | ScholarExam, preparation: PreparationAuditor,
+    unit: AuditUnit, sourceHash: string, ctx: ExtensionContext, receipts: ReviewReceipt[]) => mutateBook(bookId, book => {
+    if (auditor !== preparation || preparation.activation !== session.state || !ports.isActiveAuthority(book)
+      || book.source.fingerprint.sha256 !== sourceHash) return;
+    const store = reviewStore(target)(book);
+    if (!store || !unitIsCurrent(book, target, unit, sourceHash)) return;
+    store.write(pruneReviewReceipts([...store.read(), ...receipts], { sourceHash, model: reviewerModelName(ctx) }));
+  });
+  /** Persist finished unit checks while its audit continues, so Esc, a timeout or a restart keeps them. */
+  const saveReviewCheckpoints = (draft: ScholarBook, target: ScholarSection | TutorSession | ScholarExam,
+    preparation: PreparationAuditor, unit: AuditUnit, ctx: ExtensionContext) => {
+    const latest = new Map<ReviewRole, ReviewBatchPass[]>();
     let chain = Promise.resolve(), scheduled = false, closed = false;
-    const write = () => mutateBook(draft.id, state => {
-      if (closed || activation !== session.state || !ports.isActiveAuthority(state) || state.source.fingerprint.sha256 !== draft.source.fingerprint.sha256) return;
-      const current = findSection(state, section.id);
-      if (!current?.learnQuality) return;
-      const checkpoints = [...latest].map(([role, batches]) => reviewCheckpoint(section, draft, ctx, role, batches));
-      current.learnQuality.reviews = pruneReviewReceipts([...current.learnQuality.reviews, ...checkpoints],
-        { sourceHash: draft.source.fingerprint.sha256, model: reviewerModelName(ctx) });
+    const write = () => mutateBook(draft.id, book => {
+      if (closed || auditor !== preparation || preparation.activation !== session.state || !ports.isActiveAuthority(book)
+        || book.source.fingerprint.sha256 !== draft.source.fingerprint.sha256) return;
+      const store = reviewStore(target)(book);
+      if (!store || !unitIsCurrent(book, target, unit, draft.source.fingerprint.sha256)) return;
+      const checkpoints = [...latest].map(([role, batches]) => reviewCheckpoint(unit.contentHash, draft.source.fingerprint.sha256, ctx,
+        // Exam units finish assessment packets too; the checkpoint only stamps the role it
+        // carries, so a finished question check resumes under its own audit role.
+        role as LessonReviewRole, batches));
+      store.write(pruneReviewReceipts([...store.read(), ...checkpoints],
+        { sourceHash: draft.source.fingerprint.sha256, model: reviewerModelName(ctx) }));
     }).then(() => undefined, () => undefined); // best-effort: the returned receipts remain authoritative
     return {
       save: (role: ReviewPacketRole, batches: ReviewBatchPass[]) => {
-        if (closed) return;
-        if (role === "source" || role === "teaching" || role === "visual") latest.set(role, batches);
+        if (closed || (role !== "source" && role !== "teaching" && role !== "visual" && role !== "assessment")) return;
+        latest.set(role, batches);
         if (!scheduled) { scheduled = true; chain = chain.then(() => { scheduled = false; return write(); }); }
       },
       /** Drain pending writes before the approval write, so no checkpoint can land after it. */
       close: async () => { await chain; closed = true; },
     };
+  };
+  /** Whether the stored receipts cover every role of this unit's lesson revision and source.
+   * A unit whose audited evidence changed has its superseded receipts retired by its save. */
+  const unitAudited = (receipts: ReviewReceipt[], unit: AuditUnit, sourceHash: string): boolean =>
+    unit.roles.every(role => receipts.some(receipt => receipt.role === role && receipt.contentHash === unit.contentHash
+      && receipt.sourceHash === sourceHash && !receipt.failure));
+  /** The evidence identity of every saved unit, captured before a save so its mutation can tell
+   * which units now cite different pages or crops. */
+  const evidenceIdentities = (section: ScholarSection, sourceHash: string): Map<string, { contentHash: string; revision: string }> =>
+    new Map(lessonReviewUnits(section, sourceHash).map(unit => [unit.entryId, { contentHash: unit.contentHash, revision: unit.revision }]));
+  /** A save that changed a unit's audited evidence (same lesson text, different cited pages or
+   * crops) retires that unit's receipts: they describe evidence it no longer cites and must
+   * never approve its replacement. Its own save schedules the replacement audit. */
+  const retireSupersededEvidence = (section: ScholarSection, sourceHash: string,
+    evidenceBefore: ReadonlyMap<string, { contentHash: string; revision: string }>): void => {
+    if (!section.learnQuality) return;
+    const retired = new Set(lessonReviewUnits(section, sourceHash).flatMap(unit => {
+      const before = evidenceBefore.get(unit.entryId);
+      return before && before.contentHash === unit.contentHash && before.revision !== unit.revision ? [unit.contentHash] : [];
+    }));
+    if (retired.size) section.learnQuality.reviews = section.learnQuality.reviews.filter(receipt => !retired.has(receipt.contentHash));
+  };
+  /** Start one unit audit. It runs beside authoring and never blocks the save that scheduled it.
+   * The planned packets and audited scope belong to the caller. */
+  const startUnitAudit = (state: PreparationAuditor, draft: ScholarBook, target: ScholarSection | TutorSession | ScholarExam,
+    unit: AuditUnit, sourceHash: string, ctx: ExtensionContext,
+    plan: { packets: ReviewPacket[]; existing?: ReviewReceipt[]; section?: ScholarSection; snapshots?: ScholarSnapshot[] }): void => {
+    const stop = new AbortController();
+    const signal = ctx.signal ? AbortSignal.any([stop.signal, ctx.signal]) : stop.signal;
+    reviewStops.add(stop);
+    const checkpoints = saveReviewCheckpoints(draft, target, state, unit, ctx);
+    const task: UnitAudit = { unit, sourceHash, roles: [...unit.roles], stop, settled: false, done: Promise.resolve() };
+    state.units.set(unit.key, task);
+    task.done = (async () => {
+      try {
+        const receipts = await runReviewPass({
+          book: draft, section: plan.section, config: { ...ports.getConfig() }, ctx, signal,
+          sourceHash, contentHash: unit.contentHash,
+          snapshots: plan.snapshots || [],
+          prepared: true, existingReviews: plan.existing || [], onCheckpoint: checkpoints.save,
+        }, plan.packets);
+        // Drain the debounced checkpoint writes before the authoritative receipt write: two
+        // overlapping mutations could otherwise race on the same book revision, and a late
+        // checkpoint must never land after the receipts it belongs to.
+        await checkpoints.close();
+        task.receipts = receipts;
+        await persistReceipts(draft.id, target, state, unit, sourceHash, ctx, receipts);
+        // A verdict for this revision replaces any discarded predecessor and may carry repairs
+        // that still ride the next Scholar result of this preparation.
+        discardedAudits.delete(`${draft.id}\u0000${unit.key}`);
+        if (unitBlockingFindings(receipts, { contentHash: unit.contentHash, sourceHash, roles: unit.roles })
+          .some(item => !state.delivered.has(deliveryKey(unit, item.key)))) state.pendingFindings = true;
+      } catch (error) {
+        // An owner abort leaves no verdict; a transport failure is recorded for finalization.
+        if (!stop.signal.aborted) task.failure = error instanceof Error ? error.message : String(error);
+      } finally {
+        reviewStops.delete(stop);
+        // Only a fully drained audit is settled: finalization must not race a checkpoint write.
+        await checkpoints.close();
+        task.settled = true;
+      }
+    })();
+  };
+  /** Schedule audits for saved units with no verdict yet. Never called before a save completes. */
+  const scheduleUnitAudits = (draft: ScholarBook, target: ScholarSection | TutorSession, ctx: ExtensionContext): void => {
+    const sourceHash = draft.source.fingerprint.sha256;
+    const state = auditorFor(draft);
+    const receipts = recordReviews(target);
+    for (const unit of recordUnits(target, sourceHash)) {
+      const running = state.units.get(unit.key);
+      const sameWork = running?.unit.revision === unit.revision && running.sourceHash === sourceHash
+        && running.roles.length === unit.roles.length && running.roles.every(role => unit.roles.includes(role));
+      if (running && sameWork && !running.settled) continue;
+      if (unitAudited(receipts, unit, sourceHash)) {
+        // A stored verdict the author has not seen yet still rides the next result of this preparation.
+        const responses = "objectives" in target ? target.learnQuality?.responses : target.review?.responses;
+        if (unitBlockingFindings(receipts, { contentHash: unit.contentHash, sourceHash, roles: unit.roles, responses })
+          .some(item => !state.delivered.has(deliveryKey(unit.key, unit.revision, item.key)))) state.pendingFindings = true;
+        continue;
+      }
+      if (running && !sameWork) running.stop.abort(new Error("A newer revision of this unit replaced the audited one."));
+      startUnitAudit(state, draft, target, unit, sourceHash, ctx, "objectives" in target
+        ? { packets: planLessonUnitPackets(unit, target, sourceHash, ctx.model?.contextWindow), existing: receipts,
+            section: target, snapshots: currentReviewSnapshots(target, sourceHash) }
+        : { packets: [planTutorExplanationPacket({ id: unit.entryId, title: unit.title, markdown: unit.markdown, sourcePages: unit.sourcePages, keyPoints: unit.keyPoints })],
+            existing: receipts, snapshots: target.snapshots || [] });
+    }
+  };
+  /** The one audit unit of an exam preparation: the submitted form revision, keyed per exam.
+   * A revision whose receipts already cover every role is reused; a changed revision replaces
+   * the audited one and is checked exactly once. */
+  const scheduleExamAudit = (draft: ScholarBook, exam: ScholarExam, questions: ExamQuestion[], unit: AuditUnit, ctx: ExtensionContext): void => {
+    const sourceHash = draft.source.fingerprint.sha256;
+    const state = auditorFor(draft);
+    const receipts = exam.review?.receipts || [];
+    const running = state.units.get(unit.key);
+    const sameWork = running?.unit.revision === unit.revision && running.sourceHash === sourceHash;
+    if (running && sameWork && !running.settled) return;
+    if (unitAudited(receipts, unit, sourceHash)) return;
+    if (running && !sameWork) running.stop.abort(new Error("A newer revision of this unit replaced the audited one."));
+    startUnitAudit(state, draft, exam, unit, sourceHash, ctx,
+      { packets: planExamReviewPackets(exam, questions, draft), existing: receipts });
+  };
+  /** The per-unit gate of one submitted exam form revision: only receipts bound to that revision
+   * and the current source are evidence. */
+  const examFormVerdict = (state: ScholarBook, unit: AuditUnit, sourceHash: string): ExamFormReport => {
+    const exam = state.exams.find((item) => item.id === unit.entryId);
+    const receipts = exam?.review?.receipts || [];
+    const responses = exam?.review?.responses || [];
+    return {
+      findings: unitBlockingFindings(receipts, { contentHash: unit.contentHash, sourceHash, roles: unit.roles, responses }),
+      failures: unitReviewFailures(receipts, { contentHash: unit.contentHash, sourceHash, roles: unit.roles }),
+      issues: reviewUnitIssues(receipts, { contentHash: unit.contentHash, sourceHash, roles: unit.roles, responses }),
+      thrown: [...(auditor?.units.values() || [])].filter(task => task.failure
+        && task.unit.key === unit.key && task.unit.revision === unit.revision)
+        .map(task => ({ code: "tool" as const, message: task.failure! })),
+    };
+  };
+  const findingBlock = (role: ReviewRole, finding: ReviewFinding): string =>
+    `${role} / ${finding.severity} / [F-${computeFindingKey(role, finding)}] / ${finding.target} / PDF ${finding.sourcePages.join(", ")}: ${finding.issue}\nRepair: ${finding.repair}`;
+  /** A finding is delivered once per unit revision within one preparation. */
+  const deliveryKey = (unit: AuditUnit, finding: string): string => `${unit.key}\u0000${unit.revision}\u0000${finding}`;
+  /** Unresolved current-revision findings this preparation has not shown the author yet. */
+  const takePendingFindings = (draft: ScholarBook, target: ScholarSection | TutorSession): string => {
+    const state = auditor;
+    if (!state) return "";
+    const sourceHash = draft.source.fingerprint.sha256;
+    const units = recordUnits(target, sourceHash);
+    // Stored evidence plus the in-memory verdicts of revisions that are still current.
+    const receipts = [...recordReviews(target), ...[...state.units.values()].flatMap(task =>
+      units.some(unit => unit.key === task.unit.key && unit.revision === task.unit.revision) ? task.receipts || [] : [])];
+    const responses = "objectives" in target ? target.learnQuality?.responses : target.review?.responses;
+    return units.flatMap(unit => unitBlockingFindings(receipts, { contentHash: unit.contentHash, sourceHash, roles: unit.roles, responses })
+      .filter(item => {
+        const key = deliveryKey(unit, item.key);
+        if (state.delivered.has(key)) return false;
+        state.delivered.add(key);
+        return true;
+      })
+      .map(item => findingBlock(item.role, item.finding))).join("\n\n");
+  };
+  /** Findings ride the next Scholar result of this preparation; best-effort and never an approval.
+   * Only a finished audit that may carry an undelivered finding gates the delivery book load. */
+  const auditFindingsForNextResult = async (): Promise<string> => {
+    const state = auditor;
+    if (!state?.pendingFindings) return "";
+    const draft = await loadBook(state.bookId);
+    if (!draft || !ports.isActiveAuthority(draft)) return "";
+    state.pendingFindings = false;
+    const target = activeRecord(draft);
+    return target ? takePendingFindings(draft, target) : "";
   };
   const reviewQuestion: ScholarToolController["reviewQuestion"] = async (book, target, value, sourcePages, ctx, signal) => {
     if ("objectives" in target ? !target.learnQuality : !target.review) return () => {};
@@ -424,6 +700,25 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
     content: [{ type: "text", text: summary }],
     details: { action, summary, ...details } as ToolDetails,
   });
+
+  /** One review-tone result for an exam form the per-unit gate did not approve; the exam stays a draft. */
+  const examFormGateResult = (bookId: string, unit: AuditUnit, report: ExamFormReport) => {
+    const failures = [...report.failures, ...report.thrown];
+    const failedCodes = [...new Set(failures.map(failure => `${unit.key}: ${failure.code}`))];
+    const detail = [
+      ...failures.map(failure => `${unit.key} / execution incomplete: ${failure.message}`),
+      ...report.findings.map(item => findingBlock(item.role, item.finding)),
+      ...(!failures.length && !report.findings.length && report.issues.length ? report.issues : []),
+    ];
+    const summary = failures.length
+      ? `Exam form saved; review incomplete (${failedCodes.join(", ")}). The exam remains a draft and was not frozen; run exam_build again to audit this revision.`
+      : report.findings.length
+        ? "Exam form saved; specialist review found repairs. Address each blocking finding [F-<key>] and supply findingResponses: [{ key, action: 'fixed' | 'declined', note }] with exam_build before freezing."
+        : `Exam form saved; the submitted revision is not approved yet: ${report.issues.join("; ")}`;
+    const result = toolResult("exam_build", summary, { bookId, tone: "review" });
+    if (detail.length) result.content.push({ type: "text", text: detail.join("\n\n") });
+    return result;
+  };
 
   const requireActiveBook = async (): Promise<ScholarBook> => {
     if (!hasConfiguredLibrary()) throw new Error(librarySetupMessage);
@@ -672,6 +967,8 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
             const deferCommit = Boolean(active && (fresh || active.learnQuality || params.sourceCoverage));
             const saveNotes: MutateBook = async (bookId, update) => mutateBook(bookId, async (state) => {
               if (fresh) requireLearnSection(state).learnQuality ||= { version: 1, coverage: [], reviews: [] };
+              const evidenceBefore = session.mode === "learn"
+                ? evidenceIdentities(requireLearnSection(state), state.source.fingerprint.sha256) : undefined;
               if (session.mode === "learn" && params.figureReviews) {
                 const section = requireLearnSection(state);
                 const reviews = await validateFigureReviews(ports.getConfig(), state, section, params.figureReviews);
@@ -679,79 +976,28 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
               } else if (params.figureReviews) {
                 throw new Error("Source figure reviews belong only to the active Learn section.");
               }
-              const sectionBefore = session.mode === "learn" ? requireLearnSection(state) : undefined;
-              if (sectionBefore?.lessonCommit && (params.lesson || params.lessonPatch)) {
-                completedPasses.delete(`lesson:${sectionBefore.id}`);
-              }
               const result = await update(state);
               const section = session.mode === "learn" ? requireLearnSection(state) : undefined;
+              if (section && evidenceBefore) retireSupersededEvidence(section, state.source.fingerprint.sha256, evidenceBefore);
               if (section && (params.lessonComplete === true || (section.status === "complete" && section.figureCoverage))) await assertLearnFigureCoverage(ports.getConfig(), state, section);
               return result;
             });
             const saved = await handleNotes(book, session, params, requireLearnSection, saveNotes, toolResult, ports.getConfig(), deferCommit);
-            if (session.mode === "tutor" && params.lesson) {
-              const tutor = book.tutorSessions.find(item => item.id === session.recordId);
-              const existingUnit = tutor?.transcript.some(entry => entry.id === params.lesson!.id && entry.lesson);
-              if (tutor && !existingUnit) {
-                const targetKey = `tutor:explanation:${tutor.id}:${params.lesson.id}`;
-                const receipts = tutor.review?.receipts || [];
-                const responses = [...(tutor.review?.responses || []), ...(params.findingResponses || [])];
-                // The one gate every mode uses: a fresh pass approves, otherwise this source's
-                // newest teaching check stands and its blocking findings must be answered. An
-                // explanation edited after approval is stale and gets exactly one new pass.
-                const gaps = reviewPassIssues(receipts, { contentHash: lessonHash(params.lesson.markdown), sourceHash: book.source.fingerprint.sha256, roles: ["teaching"], responses });
-                if (passCompleted(targetKey)) {
-                  if (gaps.length) return toolResult("notes", `Draft saved; blocking findings require responses before commit: ${gaps.join("; ")}`, { bookId: book.id, tone: "review" });
-                  return saved;
-                }
-
-                markPassCompleted(targetKey);
-                const packet = planTutorExplanationPacket(params.lesson as any);
-                const runResults = await withReview(book, ctx, signal, (stop, onProgress) => runReviewPass({
-                  book,
-                  config: ports.getConfig(),
-                  ctx,
-                  signal: stop,
-                  onProgress,
-                  sourceHash: book.source.fingerprint.sha256,
-                  contentHash: lessonHash(params.lesson!.markdown),
-                  sourcePages: params.lesson!.sourcePages,
-                  prepared: true,
-                }, [packet]), 1);
-
-                const blockingFindings = runResults.filter(r => !r.failure).flatMap(r => r.findings.filter(f => f.severity === "blocking").map(f => ({ role: r.role, finding: f, key: computeFindingKey(r.role, f) })));
-                await mutateBook(book.id, state => {
-                  const current = state.tutorSessions.find(item => item.id === tutor.id);
-                  if (!current) return;
-                  if (!current.review) current.review = { version: 1, receipts: [], responses: [] };
-                  current.review.receipts = pruneReviewReceipts([...current.review.receipts, ...runResults],
-                    { sourceHash: book.source.fingerprint.sha256, model: reviewerModelName(ctx) });
-                  if (params.findingResponses?.length) {
-                    const existing = new Map((current.review.responses || []).map(r => [r.key, r]));
-                    for (const resp of params.findingResponses) existing.set(resp.key, resp);
-                    current.review.responses = [...existing.values()];
-                  }
-                });
-
-                if (blockingFindings.length > 0) {
-                  const result = toolResult("notes", "Saved Tutor explanation draft; specialist review found repairs. Address each blocking finding [F-<key>] by revising the explanation and supplying findingResponses: [{ key, action: 'fixed' | 'declined', note }] before saving again.", { bookId: book.id, tone: "review" });
-                  result.content.push({ type: "text", text: runResults.flatMap(review => [
-                    ...(review.failure ? [`${review.role} / execution incomplete: ${review.failure.message}`] : []),
-                    ...review.findings.filter(finding => !(review.failure && finding.target === "review evidence" && finding.issue === review.failure.message))
-                      .map(finding => {
-                        const key = computeFindingKey(review.role, finding);
-                        return `${review.role} / ${finding.severity} / [F-${key}] / ${finding.target} / PDF ${finding.sourcePages.join(", ")}: ${finding.issue}\nRepair: ${finding.repair}`;
-                      }),
-                  ]).join("\n\n") });
-                  return result;
-                }
-                return toolResult("notes", `Saved source-grounded Tutor notes for ${tutor.title}. Full explanation committed after teaching review.`, { bookId: book.id });
-              }
+            // Audit-as-you-go: only a completed save schedules audits, and only for the units it
+            // actually persisted. A rejected handleNotes call never reaches this point.
+            const savedDraft = modeCan(session.mode, "interactiveTeaching") ? await loadBook(book.id) : undefined;
+            const savedTarget = savedDraft ? activeRecord(savedDraft) : undefined;
+            // Learn units keep their receipts in the section's quality record; Tutor sessions
+            // create their review record on demand.
+            if (savedDraft && savedTarget && ports.isActiveAuthority(savedDraft)
+              && ("objectives" in savedTarget ? Boolean(savedTarget.learnQuality) : true)) {
+              scheduleUnitAudits(savedDraft, savedTarget, ctx);
             }
             if (!deferCommit || !params.lessonComplete) return saved;
             const draft = await loadBook(book.id);
             if (!draft || !ports.isActiveAuthority(draft)) throw new Error("The active Scholar book changed before review.");
-            const section = requireLearnSection(draft), hash = learnReviewHash(section), activation = session.state;
+            const section = requireLearnSection(draft);
+            const activation = session.state;
             const issues = lessonCoverageIssues(section, draft.source.fingerprint.sha256);
             if (issues.length) {
               const rejected = (prereviewRejections.get(section.id) || 0) + 1;
@@ -762,64 +1008,70 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
               stopDelivery(message, ctx);
               throw new Error(`${message}\n${gapMessage}`);
             }
-            const targetKey = `lesson:${section.id}`;
-            if (passCompleted(targetKey)) {
-              const final = await mutateBook(draft.id, async state => {
-                const current = requireLearnSection(state);
-                if (activation !== session.state || !ports.isActiveAuthority(state) || state.source.fingerprint.sha256 !== draft.source.fingerprint.sha256) throw new Error("The active Scholar record changed during commit.");
-                await assertLearnFigureCoverage(ports.getConfig(), state, current);
-                signal?.throwIfAborted(); ctx.signal?.throwIfAborted();
-                const gaps = learnReviewIssues(current, state.source.fingerprint.sha256);
-                if (!gaps.length) { commitLesson(current, state); recomputeProgress(state, current); }
-                return gaps;
-              });
-              if (final.result.length) {
-                const message = `Draft saved; blocking findings require responses before commit: ${final.result.join("; ")}`;
-                return toolResult("notes", message, { bookId: book.id, sectionId: section.id, tone: "review" });
-              }
-              try { ports.onReviewOutcome?.(); } catch { /* display only */ }
-              return toolResult("notes", "Full lesson committed after specialist review and author responses. Begin the planned learner checks; this does not award mastery.", { bookId: book.id, sectionId: section.id });
-            }
-
-            markPassCompleted(targetKey);
-            const reviewTimeoutMs = DEFAULT_REVIEWER_LIMITS.timeoutMs;
-            const checkpoints = saveReviewCheckpoints(draft, section, activation, ctx);
-            const reviews = await withReview(draft, ctx, signal, (stop, onProgress) => reviewLearnDraft({ book: draft, section, config: { ...ports.getConfig() }, ctx, signal: stop, onProgress, reviewTimeoutMs, onCheckpoint: checkpoints.save }))
-              .finally(() => checkpoints.close());
+            // Finalization waits only for the audits of the revisions this save wrote. It never
+            // launches review work of its own, so unchanged units are not re-audited.
+            const currentUnits = new Map(lessonReviewUnits(section, draft.source.fingerprint.sha256).map(unit => [unit.key, unit.revision]));
+            const outstanding = [...(auditor?.units.values() || [])].filter(task => !task.settled && !task.stop.signal.aborted
+              && task.sourceHash === draft.source.fingerprint.sha256 && currentUnits.get(task.unit.key) === task.unit.revision);
+            if (outstanding.length) await Promise.allSettled(outstanding.map(task => task.done));
             const final = await mutateBook(draft.id, async state => {
-              const current = requireLearnSection(state);
-              if (activation !== session.state || !ports.isActiveAuthority(state) || learnReviewHash(current) !== hash || state.source.fingerprint.sha256 !== draft.source.fingerprint.sha256) throw new Error("The lesson changed during review. The current note was preserved; review it again before committing.");
-              await assertLearnFigureCoverage(ports.getConfig(), state, current);
+              const owner = requireLearnSection(state);
+              if (activation !== session.state || !ports.isActiveAuthority(state) || state.source.fingerprint.sha256 !== draft.source.fingerprint.sha256) throw new Error("The active Scholar record changed during audit.");
+              await assertLearnFigureCoverage(ports.getConfig(), state, owner);
               signal?.throwIfAborted(); ctx.signal?.throwIfAborted();
-              if (activation !== session.state || !ports.isActiveAuthority(state)) throw new Error("Scholar changed while verifying reviewed figure assets; approval was discarded.");
-              current.learnQuality!.reviews = pruneReviewReceipts([...current.learnQuality!.reviews, ...reviews],
-                { sourceHash: state.source.fingerprint.sha256, model: reviewerModelName(ctx) });
-              const gaps = learnReviewIssues(current, state.source.fingerprint.sha256);
-              if (!gaps.length) { commitLesson(current, state); recomputeProgress(state, current); }
-              return gaps;
-            });
-            if (final.result.length) {
-              const incomplete = reviews.filter(review => review.failure);
-              const message = incomplete.length
-                ? `Draft saved; review incomplete (${incomplete.map(review => `${review.role}: ${review.failure!.code}`).join(", ")}). Generation stopped. ${continueHint(section)} After that command, retry the same draft before any optional edits. No automatic retry or rewrite after an execution failure.`
-                : "Draft saved; specialist review found repairs. Address each blocking finding [F-<key>] by revising passages in their existing lesson IDs and supplying findingResponses: [{ key, action: 'fixed' | 'declined', note }] before submitting lessonComplete again.";
-              try { ports.onReviewOutcome?.(incomplete.length ? `Draft saved · review incomplete: ${incomplete.map(review => review.failure!.code).join(", ")}` : "Draft saved · revisions needed"); } catch { /* display only */ }
-              const result = toolResult("notes", message, { bookId: book.id, sectionId: section.id, tone: "review" });
-              result.content.push({ type: "text", text: reviews.flatMap(review => [
-                ...(review.failure ? [`${review.role} / execution incomplete: ${review.failure.message}`] : []),
-                ...review.findings.filter(finding => !(review.failure && finding.target === "review evidence" && finding.issue === review.failure.message))
-                  .map(finding => {
-                    const key = computeFindingKey(review.role, finding);
-                    return `${review.role} / ${finding.severity} / [F-${key}] / ${finding.target} / PDF ${finding.sourcePages.join(", ")}: ${finding.issue}\nRepair: ${finding.repair}`;
-                  }),
-              ]).join("\n\n") });
-              if (incomplete.length) {
-                stopDelivery(message, ctx);
+              if (activation !== session.state || !ports.isActiveAuthority(state)) throw new Error("Scholar changed while verifying audited figure assets; approval was discarded.");
+              const commitSourceHash = state.source.fingerprint.sha256, quality = owner.learnQuality;
+              const units = lessonReviewUnits(owner, commitSourceHash);
+              const currentRevisions = new Map(units.map(unit => [unit.key, unit.revision]));
+              if (quality) {
+                // Every finished in-memory audit of a still-current revision lands with this
+                // approval write, atomically; a superseded audit's verdict is never stored.
+                const settled = [...(auditor?.units.values() || [])]
+                  .filter(task => currentRevisions.get(task.unit.key) === task.unit.revision).flatMap(task => task.receipts || []);
+                quality.reviews = pruneReviewReceipts([...quality.reviews, ...settled],
+                  { sourceHash: commitSourceHash, model: reviewerModelName(ctx) });
               }
-              return result;
+              const drifted = units.filter(unit => currentUnits.get(unit.key) !== unit.revision).map(unit => unit.key);
+              if (drifted.length) return { findings: [], failures: [], gaps: [], drifted, discarded: [] };
+              const receipts = quality?.reviews || [];
+              const findings = units.flatMap(unit => unitBlockingFindings(receipts, { contentHash: unit.contentHash, sourceHash: commitSourceHash, roles: unit.roles, responses: quality?.responses })
+                .map(item => ({ unit: unit.key, ...item })));
+              const failures = units.flatMap(unit => unitReviewFailures(receipts, { contentHash: unit.contentHash, sourceHash: commitSourceHash, roles: unit.roles })
+                .map(failure => ({ unit: unit.key, ...failure })));
+              // An audit that could not even finish its planned checks leaves no receipt; report
+              // its runner error instead of pretending the unit has an unfinished review.
+              const thrown = [...(auditor?.units.values() || [])].filter(task => task.failure && currentRevisions.get(task.unit.key) === task.unit.revision)
+                .map(task => ({ unit: task.unit.key, code: "tool" as const, message: task.failure! }));
+              // A preparation change discarded these audits before any verdict. Say so: the
+              // author needs a repair path, not a review result nobody produced.
+              const discarded = units.filter(unit => discardedAudits.get(`${state.id}\u0000${unit.key}`) === unit.revision
+                && !unitAudited(receipts, unit, commitSourceHash)).map(unit => unit.key);
+              const gaps = learnReviewIssues(owner, commitSourceHash);
+              if (!gaps.length && !failures.length && !thrown.length && !discarded.length) { commitLesson(owner, state); recomputeProgress(state, owner); }
+              return { findings, failures: [...failures, ...thrown], gaps, drifted, discarded };
+            });
+            const verdict = final.result;
+            if (!verdict.gaps.length && !verdict.failures.length && !verdict.drifted.length && !verdict.discarded.length) {
+              try { ports.onReviewOutcome?.(); } catch { /* display only */ }
+              return toolResult("notes", `Full lesson committed after source, teaching and visual review. Now ask ${QUICK_QUESTIONS} short questions, one at a time; this does not award mastery.`, { bookId: book.id, sectionId: section.id });
             }
-            try { ports.onReviewOutcome?.(); } catch { /* display only */ }
-            return toolResult("notes", `Full lesson committed after source, teaching and visual review. Now ask ${QUICK_QUESTIONS} short questions, one at a time; this does not award mastery.`, { bookId: book.id, sectionId: section.id });
+            const failedCodes = [...new Set(verdict.failures.map(item => `${item.unit}: ${item.code}`))];
+            const message = verdict.failures.length
+              ? `Draft saved; review incomplete (${failedCodes.join(", ")}). Generation stopped. ${continueHint(section)} After that command, retry the same draft before any optional edits. No automatic retry or rewrite after an execution failure.`
+              : verdict.drifted.length
+                ? `Draft saved; the saved explanation changed while its audit ran (${verdict.drifted.join(", ")}). Save the current revision again, then resubmit lessonComplete.`
+                : verdict.discarded.length
+                  ? `Draft saved; the audit of the saved explanations was discarded because the active preparation changed (${verdict.discarded.join(", ")}). Save the current revision again, then resubmit lessonComplete.`
+                  : verdict.findings.length
+                    ? "Draft saved; specialist review found repairs. Address each blocking finding [F-<key>] by revising passages in their existing lesson IDs and supplying findingResponses: [{ key, action: 'fixed' | 'declined', note }] before submitting lessonComplete again."
+                    : `Draft saved; the saved explanations are not approved yet: ${verdict.gaps.join("; ")}`;
+            try { ports.onReviewOutcome?.(verdict.failures.length ? `Draft saved · review incomplete: ${failedCodes.join(", ")}` : verdict.discarded.length ? "Draft saved · audits discarded" : verdict.findings.length ? "Draft saved · revisions needed" : "Draft saved · audit pending"); } catch { /* display only */ }
+            const result = toolResult("notes", message, { bookId: book.id, sectionId: section.id, tone: "review" });
+            if (verdict.failures.length) {
+              result.content.push({ type: "text", text: verdict.failures.map(failure => `${failure.unit} / execution incomplete: ${failure.message}`).join("\n\n") });
+              stopDelivery(message, ctx);
+            }
+            return result;
           }
 
           if (params.action === "assess") {
@@ -859,62 +1111,56 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
               throw new Error(`This exam form does not meet the question engine's standard. ${formIssues.join(" ")}`);
             }
 
-            const targetKey = `exam:form:${examId}`;
-            const formHash = examFormFingerprint({ ...current, questions });
-            const examReceipts = current.review?.receipts || [];
-            const examResponses = [...(current.review?.responses || []), ...(params.findingResponses || [])];
-            // Same one-pass gate as Learn and Tutor, bound to this frozen form's fingerprint and
-            // the current source: a re-frozen form is stale and gets exactly one new pass.
-            const examGaps = reviewPassIssues(examReceipts, { contentHash: formHash, sourceHash: book.source.fingerprint.sha256, roles: ["assessment", "teaching"], responses: examResponses });
-            if (passCompleted(targetKey)) {
-              if (examGaps.length) return toolResult("exam_build", `Exam form saved; blocking findings require responses before freeze: ${examGaps.join("; ")}`, { bookId: book.id, tone: "review" });
-              return await handleExamBuild(book, examId, params.questions || [], ctx, mutateBook, presentExam, toolResult, params.findingResponses);
-            }
+            const activation = session.state;
+            const sourceHash = book.source.fingerprint.sha256;
+            // One submitted form revision is one audit unit, exactly like a saved lesson entry.
+            const formFingerprint = examFormFingerprint({ ...current, questions });
+            const formUnit: AuditUnit = { key: `form:${examId}`, entryId: examId,
+              revision: formFingerprint, contentHash: formFingerprint, roles: ["assessment", "teaching"] };
 
-            markPassCompleted(targetKey);
-            const packets = planExamReviewPackets(current, questions, book);
-            const examPages = [...new Set(packets.flatMap(p => p.reads))].sort((a, b) => a - b);
-            const runResults = await withReview(book, ctx, signal, (stop, onProgress) => runReviewPass({
-              book,
-              config: ports.getConfig(),
-              ctx,
-              signal: stop,
-              onProgress,
-              sourceHash: book.source.fingerprint.sha256,
-              contentHash: examFormFingerprint({ ...current, questions }),
-              sourcePages: examPages,
-              prepared: true,
-            }, packets), packets.length);
-
-            const blockingFindings = runResults.filter(r => !r.failure).flatMap(r => r.findings.filter(f => f.severity === "blocking").map(f => ({ role: r.role, finding: f, key: computeFindingKey(r.role, f) })));
-            await mutateBook(book.id, (state) => {
-              const exam = state.exams.find((item) => item.id === examId);
-              if (!exam) return;
-              if (!exam.review) exam.review = { version: 1, receipts: [], responses: [] };
-              exam.review.receipts = pruneReviewReceipts([...exam.review.receipts, ...runResults],
-                { sourceHash: book.source.fingerprint.sha256, model: reviewerModelName(ctx) });
-              if (params.findingResponses?.length) {
-                const existing = new Map((exam.review.responses || []).map((r) => [r.key, r]));
-                for (const resp of params.findingResponses) existing.set(resp.key, resp);
+            // Author answers are saved data, not review evidence: a partially answered form keeps them.
+            if (params.findingResponses?.length) {
+              const responses = params.findingResponses;
+              await mutateBook(book.id, (state) => {
+                if (activation !== session.state || !ports.isActiveAuthority(state) || state.source.fingerprint.sha256 !== sourceHash) return;
+                const exam = state.exams.find((item) => item.id === examId);
+                if (!exam || exam.status !== "draft") return;
+                exam.review ||= { version: 1, receipts: [], responses: [] };
+                const existing = new Map(exam.review.responses.map((response) => [response.key, response]));
+                for (const response of responses) existing.set(response.key, response);
                 exam.review.responses = [...existing.values()];
-              }
-            });
-
-            if (blockingFindings.length > 0) {
-              const result = toolResult("exam_build", "Exam form built; specialist review found repairs. Address each blocking finding [F-<key>] and supply findingResponses: [{ key, action: 'fixed' | 'declined', note }] with exam_build before freezing.", { bookId: book.id, tone: "review" });
-              result.content.push({ type: "text", text: runResults.flatMap(review => [
-                ...(review.failure ? [`${review.role} / execution incomplete: ${review.failure.message}`] : []),
-                ...review.findings.filter(finding => !(review.failure && finding.target === "review evidence" && finding.issue === review.failure.message))
-                  .map(finding => {
-                    const key = computeFindingKey(review.role, finding);
-                    return `${review.role} / ${finding.severity} / [F-${key}] / ${finding.target} / PDF ${finding.sourcePages.join(", ")}: ${finding.issue}\nRepair: ${finding.repair}`;
-                  }),
-              ]).join("\n\n") });
-              return result;
+              });
             }
 
-            const freshBook = (await loadBook(book.id)) || book;
-            return await handleExamBuild(freshBook, examId, params.questions || [], ctx, mutateBook, presentExam, toolResult, params.findingResponses);
+            // Audit-as-you-go: this revision is audited once, beside the author's call; an
+            // unchanged revision reuses its receipts and a changed revision is never skipped.
+            scheduleExamAudit(book, current, questions, formUnit, ctx);
+            const outstanding = [...(auditor?.units.values() || [])].filter(task => !task.settled && !task.stop.signal.aborted
+              && task.sourceHash === sourceHash && task.unit.key === formUnit.key && task.unit.revision === formUnit.revision);
+            if (outstanding.length) await Promise.allSettled(outstanding.map(task => task.done));
+
+            try {
+              // The per-unit gate and the current fingerprint are revalidated inside the freeze
+              // mutation, so nothing can change between the approved revision and the activation.
+              return await handleExamBuild(book, examId, questions, ctx, async (bookId, mutate) => mutateBook(bookId, async (state) => {
+                if (activation !== session.state || !ports.isActiveAuthority(state) || state.source.fingerprint.sha256 !== sourceHash) {
+                  throw new Error("The active Scholar record changed while the exam form was being audited.");
+                }
+                const exam = state.exams.find((item) => item.id === examId);
+                if (!exam || exam.status !== "draft" || exam.questions.length) {
+                  throw new Error("The exam changed while its form was audited; nothing was frozen.");
+                }
+                if (examFormFingerprint({ ...exam, questions }) !== formUnit.revision) {
+                  throw new Error("The exam form changed while its audit ran; save the current revision again.");
+                }
+                const report = examFormVerdict(state, formUnit, sourceHash);
+                if (report.findings.length || report.failures.length || report.thrown.length || report.issues.length) throw new ExamFormGate(report);
+                return await mutate(state);
+              }), presentExam, toolResult, params.findingResponses);
+            } catch (error) {
+              if (!(error instanceof ExamFormGate)) throw error;
+              return examFormGateResult(book.id, formUnit, error.report);
+            }
           }
 
           if (params.action === "exam_present") {
@@ -982,7 +1228,14 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
         }
       };
 
-      return evaluateResult(await executeInner());
+      const result = evaluateResult(await executeInner());
+      // Audit findings ride the next Scholar result of this preparation, once per revision.
+      // Best-effort: a notification failure cannot approve or reject anything.
+      try {
+        const findings = await auditFindingsForNextResult();
+        if (findings) result.content.push({ type: "text", text: findings });
+      } catch { /* the commit gate remains authoritative */ }
+      return result;
     },
 
       renderCall(args, theme) {
@@ -1022,6 +1275,7 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
 
   const resetTransientState = (): void => {
     for (const stop of reviewStops) stop.abort(new Error("Scholar review cancelled because its active session changed."));
+    discardAudits("Scholar review cancelled because its active session changed.");
     completedPasses.clear();
     prereviewRejections.clear();
     stoppedDelivery = undefined;

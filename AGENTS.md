@@ -31,8 +31,7 @@ will bury real defects in noise.
 - **Approval is hash-bound.** The hash covers lesson, coverage, recap,
   assessment plan, and figure metadata. Any content change invalidates approval
   — that is intended, not a bug to route around.
-- **Review is single-pass.** Targets commit after one pass by recording finding
-  responses. Do **not** introduce re-review cycles or review-of-review.
+- Audit-as-you-go; one audit pass per saved unit revision; no re-review of unchanged work. Delivery remains controller-owned and hash-bound.
 - **Modes are isolated.** They share the PDF and its validated outline, never
   each other's learner history. A Tutor answer must not move Learn progress;
   Exam generation must not read Learn or Tutor performance.
@@ -46,11 +45,11 @@ will bury real defects in noise.
   reasoning level in one prepared request per packet (`REVIEWER_THINKING_LEVEL`,
   `DEFAULT_REVIEWER_LIMITS`), and the visual role judges saved crops and the
   figure inventory, never full page renders. Do not restore session-level
-  thinking, full-page images, or long tool loops to "improve" review quality:
-  that depth was traded away on purpose for latency and token cost.
-- **Review must actually look.** Source review reads every scoped page; visual
-  review inspects every current saved crop against its figure observation.
-  Never accept a summary of evidence in place of the evidence.
+  thinking, full-page images, or long tool loops to "improve" review quality.
+- **Review must actually look.** A unit's audit reads bounded windows over the
+  pages that unit cites and inspects only that unit's current saved crops. Never
+  accept a summary of evidence in place of the evidence, and never use a page
+  render for review.
 - **No fixed model or provider.** Do not hardcode a vendor anywhere in review
   or authoring paths.
 - **Stable entry IDs prevent duplicate retries.** IDs of deleted entries stay in

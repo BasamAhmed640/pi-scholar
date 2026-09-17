@@ -18,6 +18,8 @@ const extension = dirname(process.env.PI_SCHOLAR_EXTENSION || packagedExtensionP
 const { assessmentQuestionBlock, renderSection } = await jiti.import(join(extension, "render", "section.ts"));
 const { renderBook, renderChapter, renderScholarHome } = await jiti.import(join(extension, "render", "navigation.ts"));
 const { examAnswerNoteText, renderExam, renderExamAnswerKey, renderTutorSession } = await jiti.import(join(extension, "render", "assessment.ts"));
+const { details, readDetails, readQuestions, readStudyDocument, readTranscript, studyDocument } = await jiti.import(join(extension, "note-records.ts"));
+const { GENERATED_END, GENERATED_START } = await jiti.import(join(extension, "render", "common.ts"));
 const facade = await jiti.import(join(extension, "obsidian.ts"));
 const timestamp = "2026-09-04T12:00:00.000Z";
 const fixtureRoot = join(process.cwd(), "work", "scholar-note-design-fixture");
@@ -97,6 +99,54 @@ check("Learn puts the full visible lesson first, optional source references next
   assert.doesNotMatch(note, /What you established|Established|Teaching record|Assessment record|\[!question\]-/);
   assert.doesNotMatch(note.slice(note.indexOf("## Questions")), /^> \[!\w+\][-+]|\*\*Result:\*\*/m, "feedback is open and the outcome is not repeated");
 });
+check("generated section notes open with one status line and close with a collapsed appendix above the questions", () => {
+  const noted = (record) => studyDocument(renderSection(config, book, chapter, record), "section", record);
+  const note = noted(section);
+  const [statusLine, ...aboveLesson] = note.slice(note.indexOf(GENERATED_START) + GENERATED_START.length, note.indexOf("## Lesson")).trim().split("\n");
+  assert.deepEqual(aboveLesson, [], "only the status callout may sit between the generated marker and the lesson");
+  assert.match(statusLine, /^> \[!scholar-status\] In progress · Current section · Pages 4–12 · \d+ short questions? remaining$/);
+  assert.equal((note.match(/<!-- scholar:generated:start -->/g) || []).length, 1);
+  assert.equal((note.match(/<!-- scholar:generated:end -->/g) || []).length, 1);
+  const learningRecord = note.indexOf("> [!note]- Learning record");
+  const chapterLink = note.indexOf("|Chapter 1: Signals, models and physical reasoning]]");
+  const appendix = note.indexOf("> [!info]- Scholar section details");
+  const questions = note.indexOf("## Questions");
+  assert.ok(learningRecord >= 0 && learningRecord < chapterLink && chapterLink < appendix, "the chapter link travels with the appendix");
+  assert.ok(appendix > note.indexOf(longExplanation) && appendix < questions && questions < note.indexOf(GENERATED_END), "the record is a collapsed appendix above the questions");
+  assert.ok(appendix < note.indexOf("> [!question] Question 1") && note.indexOf("> [!question] Question 1") < note.indexOf("> [!question] Question 2"));
+  assert.match(note.slice(questions), /^> > \[!info\]- Scholar question details$/m, "every question keeps its own record inside its block");
+  assert.ok(note.indexOf("> [!info]- Scholar entry details") < note.indexOf(longExplanation) && note.includes("<!-- scholar:entry:end -->"), "entry records stay immediately before their teaching");
+  const bare = noted({ ...section, attempts: [] });
+  assert.ok(bare.indexOf("> [!info]- Scholar section details") > bare.indexOf("> [!note]- Learning record") && bare.indexOf("> [!info]- Scholar section details") < bare.indexOf(GENERATED_END));
+  assert.doesNotMatch(bare, /^## Questions$/m, "a section without questions gains no empty heading");
+});
+check("relocating the section appendix leaves parsed entries, questions, and metadata identical", () => {
+  const { attempts, transcript, ...metadata } = section;
+  const appendix = details("section", metadata);
+  const shipped = studyDocument(renderSection(config, book, chapter, section), "section", section);
+  assert.ok(shipped.indexOf(appendix) > shipped.indexOf("> [!note]- Learning record"));
+  const withoutAppendix = shipped.replace(`${appendix}\n\n`, "");
+  const variants = {
+    "appendix first": withoutAppendix.replace(GENERATED_START, () => `${GENERATED_START}\n${appendix}`),
+    "appendix above the questions": shipped,
+    "appendix at the note bottom": withoutAppendix.replace(GENERATED_END, () => `${appendix}\n\n${GENERATED_END}`),
+  };
+  const reference = readStudyDocument(shipped, "section");
+  for (const [name, text] of Object.entries(variants)) {
+    assert.deepEqual(readDetails(text, "section"), readDetails(shipped, "section"), `${name}: the section metadata JSON`);
+    assert.deepEqual(readTranscript(text), readTranscript(shipped), `${name}: the lesson entries`);
+    assert.deepEqual(readQuestions(text), readQuestions(shipped), `${name}: the questions`);
+    assert.deepEqual(readStudyDocument(text, "section"), reference, `${name}: the whole record`);
+  }
+  // A rewrite rebuilds the generated region and carries a handwritten tail verbatim.
+  const tail = "\nMy handwritten note about this section.\n";
+  const onDisk = shipped.trimEnd() + tail;
+  const stored = readStudyDocument(onDisk, "section");
+  const rewritten = studyDocument(renderSection(config, book, chapter, stored), "section", stored).trimEnd()
+    + onDisk.slice(onDisk.indexOf(GENERATED_END) + GENERATED_END.length);
+  assert.equal(rewritten, onDisk, "the section rewrite is byte-identical and keeps the handwritten tail");
+  assert.equal(rewritten.split("My handwritten note about this section.").length - 1, 1);
+});
 check("empty sections have a single fresh-note message and no empty headings or records", () => {
   assert.doesNotMatch(samples["fresh-section"], /^## |\[!\w+\]-/m);
   assert.equal(samples["fresh-section"].split("This section is ready.").length - 1, 1);
@@ -150,6 +200,9 @@ check("Tutor keeps assisted practice distinct and preserves teaching and active 
   const order = ["## Lesson", longExplanation, "> [!note]- Source references", "> [!note]- Recap", "> ### Key points", "> [!note]- Practice scope", "## Questions", "### Question 1", section.attempts[0].feedback, "### Question 2", section.attempts[1].feedback, "### Question 3", "*Awaiting response*"];
   assert.ok(order.every((text, index) => samples.tutor.includes(text) && (index === 0 || samples.tutor.indexOf(text) > samples.tutor.indexOf(order[index - 1]))));
   assert.ok(samples.tutor.includes("p0007-snapshot-bbbbbbbbbbbbbbbb.png|640]]"));
+  const tutorNote = studyDocument(renderTutorSession(config, book, tutor), "tutor", tutor);
+  assert.ok(tutorNote.indexOf("> [!info]- Scholar tutor details") > tutorNote.indexOf("> [!note]- Practice scope")
+    && tutorNote.indexOf("> [!info]- Scholar tutor details") < tutorNote.indexOf("## Questions"), "the Tutor record is an appendix above its questions too");
   assert.doesNotMatch(samples.tutor, /Teaching record|Practice record|## The model|\[!question\]-/);
   assert.ok(samples.tutor.includes("frequency-dependent form is required"));
 });

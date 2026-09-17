@@ -138,6 +138,13 @@ try {
     assert((await readFile(chapterPaths[index], "utf8")).includes(basename(sectionPaths[index], ".md")));
     if (index !== 1) assert.equal(count(await readFile(sectionPaths[index], "utf8"), `OWNER ${index}`), 1);
   }
+  const rewritten = await readFile(sectionPaths[0], "utf8");
+  const appendix = rewritten.indexOf("> [!info]- Scholar section details");
+  assert.equal(count(rewritten, start), 1);
+  assert.equal(count(rewritten, end), 1);
+  assert.match(rewritten, new RegExp(`^${start}\\n> \\[!scholar-status\\] [^\\n]+$`, "m"), "the saved section note opens with its status line");
+  assert.ok(appendix > rewritten.indexOf("> [!note]- Learning record") && appendix < rewritten.indexOf(end), "the saved section record is a collapsed appendix, not a note header");
+  assert.equal(count(rewritten, "OWNER 0"), 1);
   const collisionSnapshot = await notesSnapshot(projection.scholarWorkspaceRoot(collision.config));
   await projection.renderScholarWorkspace(collision.config, [collidingBook]);
   assert.deepEqual(await notesSnapshot(projection.scholarWorkspaceRoot(collision.config)), collisionSnapshot);
