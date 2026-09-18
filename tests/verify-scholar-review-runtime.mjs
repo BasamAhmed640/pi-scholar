@@ -191,6 +191,35 @@ await check("A verdict truncated by the output cap is retried once with the mode
   // With no allowance left, the same truncation fails closed instead of looping or approving.
   const exhausted = async () => { caps.length = 0; await rejectCode(runReviewer(options(async () => truncating(8_000), { limits: { maxTotalOutputTokens: 8_000 } })), "limit"); };
   await exhausted();
+  // A retry that is also cut off must fail closed after exactly one retry, never loop.
+  const twiceTruncated = [];
+  await rejectCode(runReviewer(options(async (_selected, _context, request) => {
+    twiceTruncated.push(request.maxTokens);
+    return truncating(4_000);
+  })), "limit");
+  assert.equal(twiceTruncated.length, 2, "a second truncation fails closed instead of starting another review");
+  assert.ok(twiceTruncated[1] > twiceTruncated[0], "the single retry still widened the cap before failing closed");
+});
+
+await check("A truncated audit measured at ~12.5k thinking tokens is retried under the production default budget", async () => {
+  // Reproduces the reported receipts: the first attempt is cut off at 12,461 output tokens
+  // while still thinking. Under the old 8k/16k default budget only 3,539 remained, below the
+  // 12,096 cap, so escalation could not fire and the section latched; the default budget in
+  // force must retry. This check reads DEFAULT_REVIEWER_LIMITS, so it fails if the defaults
+  // regress to the old values.
+  const measured = message(JSON.stringify(pass).slice(0, 40), "length", { usage: { ...usage, output: 12_461 } });
+  const caps = [];
+  const complete = async (_s, _c, request) => { caps.push(request.maxTokens); return caps.length === 1 ? measured : message(); };
+  assert.deepEqual(await runReviewer(options(complete)), pass);
+  assert.equal(caps.length, 2, "the measured truncation is retried once under the widened budget");
+  assert.ok(caps[1] > caps[0], "the retry carries more output allowance than the truncated attempt");
+  // The same measured truncation under the old 8k/16k budget latched instead of escalating.
+  const oldCaps = [];
+  await rejectCode(runReviewer(options(async (_s, _c, request) => {
+    oldCaps.push(request.maxTokens);
+    return measured;
+  }, { limits: { maxOutputTokens: 8_000, maxTotalOutputTokens: 16_000 } })), "limit");
+  assert.equal(oldCaps.length, 1, "the old 8k/16k budget could not escalate and latched instead");
 });
 
 await check("Malformed and incomplete model verdicts fail closed", async () => {
