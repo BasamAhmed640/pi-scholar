@@ -16,7 +16,7 @@ import { normalizeObsidianMath } from "../math-formatting.ts";
 import { isSourceCoverageItem, isSourceCoverageLedger, isFindingResponse, sourceCoverageIssues, updateCoverageEvidence, type CoverageUpdate, type FindingResponse, type SourceCoverageItem } from "../learn-quality.ts";
 import type { ScholarRuntimeSession } from "../runtime-session.ts";
 import type { ToolDetails } from "../tool-contract.ts";
-import { saveLesson, patchLesson, commitLesson, lessonReady, validLessonEntries, isObjectiveChecks, type LessonInput, type LessonPatch, type ObjectiveCheck } from "../lesson.ts";
+import { saveLesson, patchLesson, commitLesson, lessonReady, lessonPreparationPending, validLessonEntries, isObjectiveChecks, type LessonInput, type LessonPatch, type ObjectiveCheck } from "../lesson.ts";
 import type { ScholarConfig } from "../types.ts";
 import {
   findSection,
@@ -251,7 +251,7 @@ export async function handleAssess(
     } else {
       const section = requireLearnSection(book);
       // New questions wait for the saved lesson; resolving, grading and feedback stay open.
-      if (!lessonReady(section, book.source.fingerprint.sha256)) throw new Error(LEARN_PREPARATION_MESSAGE);
+      if (lessonPreparationPending(section, book.source.fingerprint.sha256)) throw new Error(LEARN_PREPARATION_MESSAGE);
       grounding = learnQuestionGrounding(section, grounding);
       sectionId = params.sectionId || section.id;
       if (sectionId !== section.id) throw new Error("Scholar Learn assessment must target the frozen Learn section.");

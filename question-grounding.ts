@@ -1,5 +1,5 @@
 import { MODE_CAPABILITIES } from "./modes.ts";
-import { taughtLessonBasis, lessonReady } from "./lesson.ts";
+import { taughtLessonBasis, lessonPreparationPending } from "./lesson.ts";
 import { pageInRanges, scopedPageRanges, type PageRange } from "./page-scope.ts";
 import {
   allSections,
@@ -222,7 +222,7 @@ export function questionGroundingIssues(
   const objectives = options.resume ? new Set(target.mode === "learn" ? target.section.coveredObjectives : []) : saved.objectives;
   const keyPoints = options.resume ? new Set(record.keyPoints) : saved.keyPoints;
   if (!options.resume && value.purpose !== "diagnostic" && target.mode === "learn"
-    && target.section.status !== "complete" && !lessonReady(target.section, book.source.fingerprint.sha256)) {
+    && lessonPreparationPending(target.section, book.source.fingerprint.sha256)) {
     issues.push("save and commit the complete Learn explanation before confirmation questions (notes.lesson, then lessonComplete=true)");
   }
   if (!options.resume && target.mode === "learn" && value.purpose === "mastery" && !value.basis.some(basis => basis.kind === "objective")) {

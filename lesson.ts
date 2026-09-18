@@ -342,6 +342,12 @@ export function commitLesson(section: ScholarSection, book: ScholarBook): void {
   section.lessonCommit = { entryIds: entries.map(entry => entry.id), contentHash: commitHash(section, entries), sourceHash: book.source.fingerprint.sha256 };
 }
 
+/** Preparation is the window before a not-yet-complete section's lesson is saved. A
+ * completed section is never "being prepared": it is reopened for practice only. */
+export function lessonPreparationPending(section: ScholarSection, sourceHash?: string): boolean {
+  return section.status !== "complete" && !lessonReady(section, sourceHash);
+}
+
 export function lessonReady(section: ScholarSection, sourceHash?: string): boolean {
   const earned = section.learnQuality?.earnedDelivery;
   if (earned && earned.sourceHash === (sourceHash || section.lessonCommit?.sourceHash) && earned.objectiveHash === lessonObjectiveHash(section)) return true;

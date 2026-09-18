@@ -34,7 +34,7 @@ import {
 import { createScholarInputLockController } from "./input-lock.ts";
 import { createScholarToolController } from "./tool-controller.ts";
 import { isProvisionalOutline } from "./outline-validation.ts";
-import { lessonReady } from "./lesson.ts";
+import { lessonPreparationPending } from "./lesson.ts";
 import { LEARN_PREPARATION_MESSAGE } from "./tool-actions/learning.ts";
 import {
   ScholarRuntimeCoordinator,
@@ -308,7 +308,7 @@ export default function scholarExtension(pi: ExtensionAPI) {
     const tutor = coordinator.runtimeSession.mode === "tutor" ? book.tutorSessions.find((item) => item.id === coordinator.runtimeSession.recordId) : undefined;
     // A section whose lesson is still being prepared never asks the learner anything,
     // including resuming an older question; preparation finishes on its own first.
-    if (section && !lessonReady(section, book.source.fingerprint.sha256)) {
+    if (section && lessonPreparationPending(section, book.source.fingerprint.sha256)) {
       return { block: true, reason: LEARN_PREPARATION_MESSAGE };
     }
     if (input.resumeAttemptId) {

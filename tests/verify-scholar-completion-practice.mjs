@@ -144,6 +144,14 @@ try {
   assert.match(kickoffMessage(saved, "learn", section(saved)), /practice only/);
   pass("real Pi quiz events finish the section and update durable chapter progress and Obsidian");
 
+  const legacy = structuredClone(saved);
+  section(legacy).lessonCommit = undefined;
+  section(legacy).legacyLessonCompletion = true;
+  await storage.saveBookState(config, legacy, saved.revision);
+  saved = await read();
+  assert.equal(section(saved).status, "complete");
+  assert.equal(lesson.lessonReady(section(saved), saved.source.fingerprint.sha256), false);
+
   const earned = structuredClone(section(saved).attempts);
   await quiz("reopened-wrong", "conceptual", false);
   saved = await read();
