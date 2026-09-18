@@ -62,15 +62,24 @@ export const DEFAULT_REVIEWER_LIMITS: Readonly<ReviewerLimits> = Object.freeze({
   maxImages: 8,
   maxImageBytes: 8 * 1024 * 1024,
   maxTotalImageBytes: 64 * 1024 * 1024,
-  // A completed verdict runs to ~3.5k tokens on real sections, and a provider that bills
-  // its reasoning against the same cap needs room for both. Capping at 4k truncated the
-  // verdict mid-JSON and failed the audit as "limit"; 8k (plus REVIEWER_REASONING_HEADROOM
-  // when a thinking level is active) fits the measured worst case with a bounded ceiling.
-  maxOutputTokens: 8_000,
-  maxTotalOutputTokens: 16_000,
+  // Measured on real sections where the provider bills its thinking inside the response
+  // cap: completed audits run 8.5-11.5k output tokens while the verdict text itself is only
+  // 0.4-3k, and two receipts were cut off at ~12.1-12.5k mid-thought before any verdict
+  // existed. The previous 8k (+ REVIEWER_REASONING_HEADROOM) ceiling therefore stopped an
+  // audit that was merely still thinking. 16k keeps a bounded ceiling with room for the
+  // measured thinking share, and the total covers one truncated attempt plus its single
+  // wider retry without permitting a loop.
+  maxOutputTokens: 16_000,
+  maxTotalOutputTokens: 48_000,
   maxResponseChars: 360_000,
   timeoutMs: REVIEW_BACKSTOP_MS,
 });
+
+/** The only follow-up user turn after a provider cut the verdict off at its output limit.
+ * Pushed with the truncated response so the single wider retry finishes the verdict instead
+ * of repeating its reasoning; the reviewer still runs one prepared request per packet.
+ */
+export const REVIEW_TRUNCATION_RETRY_MESSAGE = "Your previous response was cut off by the output limit before any complete verdict existed. Do not repeat or continue your analysis. Reply now with ONLY the complete JSON verdict object: at most six blocking findings, each issue and its repair at most two sentences, and no text outside the JSON.";
 
 export type ReviewerRunOptions = {
   role: ReviewRole;
@@ -397,8 +406,12 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
         if (response.stopReason === "length" && !escalatedOutput && turn < limits.maxTurns
           && Math.min(modelOutput, Math.min(limits.maxTotalOutputTokens, maxTotalOutputTokens) - outputTokens) > maxTokens) {
           // The verdict was cut off mid-JSON. Retry the same turn once with the model's whole
-          // remaining allowance so a merely-too-tight cap cannot block the learner's delivery.
+          // remaining allowance, carrying the truncated response and an explicit instruction to
+          // finish, so a merely-too-tight cap cannot block the learner's delivery and the retry
+          // cannot burn its wider allowance re-reasoning from scratch.
           escalatedOutput = true;
+          context.messages.push(response);
+          context.messages.push({ role: "user", content: REVIEW_TRUNCATION_RETRY_MESSAGE, timestamp: Date.now() });
           progress("starting");
           continue;
         }

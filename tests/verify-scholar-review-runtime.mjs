@@ -9,7 +9,7 @@ const jiti = createJiti(import.meta.url, {
   moduleCache: false,
   alias: sdkAliases,
 });
-const { runReviewer, ReviewerRunError, DEFAULT_REVIEWER_LIMITS, REVIEWER_REASONING_HEADROOM } = await jiti.import(join(dirname(extensionPath), "review-runtime.ts"));
+const { runReviewer, ReviewerRunError, DEFAULT_REVIEWER_LIMITS, REVIEWER_REASONING_HEADROOM, REVIEW_TRUNCATION_RETRY_MESSAGE } = await jiti.import(join(dirname(extensionPath), "review-runtime.ts"));
 const { Type } = await import(pathToFileURL(resolvePiDependency("typebox")).href);
 // Use the actual SDK facade: its complete() delegates to the active runtime.
 // The injected runtime below avoids any account/model request or auth file.
@@ -49,7 +49,7 @@ await check("Actual SDK registry receives the selected custom model and isolated
     assert.equal(selected, model);
     captures.push(structuredClone(context));
     requestSignal = request.signal;
-    assert.equal(request.maxTokens, 8_000);
+    assert.equal(request.maxTokens, 16_000);
     assert.equal(request.maxRetries, 0);
     assert.equal(request.transport, "sse");
     assert.equal(request.signal.aborted, false);
@@ -110,9 +110,10 @@ await check("Selected reasoning uses the active custom provider with registry au
     assert.deepEqual(await runReviewer(options(undefined, { model: reasoningModel, modelRegistry: registry, thinkingLevel: "high" })), pass);
     assert.equal(requests.length, 1);
     assert.equal(requests[0].request.reasoning, "high");
-    // A reasoning reviewer must not spend its whole cap thinking: the verdict size measured on
-    // real sections is ~3.5k output tokens, so the request carries the verdict budget plus an
-    // explicit reasoning allowance (regression: 4k total truncated verdicts into "limit").
+    // A reasoning reviewer must not spend its whole cap thinking: real audits that finish run
+    // 8.5-11.5k output tokens because ~70-90% of the response is thinking, so the request
+    // carries the verdict budget plus an explicit reasoning allowance (regression: 4k total
+    // truncated verdicts into "limit").
     assert.equal(requests[0].request.maxTokens, DEFAULT_REVIEWER_LIMITS.maxOutputTokens + REVIEWER_REASONING_HEADROOM);
     assert.equal(requests[0].request.transport, "sse");
     assert.equal(requests[0].selected.provider, model.provider);
@@ -168,16 +169,29 @@ await check("Reasoning is clamped by Pi and cancellation cannot start a late aut
   assert.equal(streams, 0, "Late registry auth must never start a cancelled review's request");
 });
 
-await check("A verdict truncated by the output cap is retried once with the model's full allowance", async () => {
+await check("A verdict truncated by the output cap is retried once with the model's full allowance and an instruction to finish", async () => {
   const caps = [];
+  const contexts = [];
   const truncating = (output) => message(JSON.stringify(pass).slice(0, 40), "length", { usage: { ...usage, output } });
-  const complete = async (_selected, _context, request) => {
+  const complete = async (_selected, context, request) => {
     caps.push(request.maxTokens);
+    contexts.push(structuredClone(context));
     return caps.length === 1 ? truncating(4_000) : message();
   };
   assert.deepEqual(await runReviewer(options(complete)), pass);
   assert.equal(caps.length, 2, "a truncated verdict is re-issued once");
+  assert.equal(caps[0], DEFAULT_REVIEWER_LIMITS.maxOutputTokens, "the first attempt carries the verdict budget");
   assert.ok(caps[1] > caps[0], `the retry widens the output cap (${caps[0]} -> ${caps[1]})`);
+  assert.equal(caps[1], model.maxTokens, "the retry spends the model's whole output allowance");
+  assert.equal(contexts[0].messages.length, 1, "the first request carries only the prepared prompt");
+  assert.equal(contexts[1].messages.length, 3, "the retry carries the truncated verdict and the finish instruction");
+  assert.equal(contexts[1].messages[1].stopReason, "length");
+  assert.equal(contexts[1].messages[2].role, "user");
+  assert.equal(contexts[1].messages[2].content, REVIEW_TRUNCATION_RETRY_MESSAGE);
+  assert.match(REVIEW_TRUNCATION_RETRY_MESSAGE, /cut off by the output limit/);
+  assert.match(REVIEW_TRUNCATION_RETRY_MESSAGE, /ONLY the complete JSON verdict object/);
+  assert.match(REVIEW_TRUNCATION_RETRY_MESSAGE, /at most six blocking findings/);
+  assert.match(REVIEW_TRUNCATION_RETRY_MESSAGE, /at most two sentences/);
   // With no allowance left, the same truncation fails closed instead of looping or approving.
   const exhausted = async () => { caps.length = 0; await rejectCode(runReviewer(options(async () => truncating(8_000), { limits: { maxTotalOutputTokens: 8_000 } })), "limit"); };
   await exhausted();
@@ -212,7 +226,7 @@ await check("Unavailable tools, invalid arguments, and failed readers cannot app
   assert.deepEqual(
     { turns: DEFAULT_REVIEWER_LIMITS.maxTurns, tools: DEFAULT_REVIEWER_LIMITS.maxToolCalls, images: DEFAULT_REVIEWER_LIMITS.maxImages,
       output: DEFAULT_REVIEWER_LIMITS.maxOutputTokens, total: DEFAULT_REVIEWER_LIMITS.maxTotalOutputTokens, text: DEFAULT_REVIEWER_LIMITS.maxToolTextChars },
-    { turns: 2, tools: 8, images: 8, output: 8_000, total: 16_000, text: 40_000 },
+    { turns: 2, tools: 8, images: 8, output: 16_000, total: 48_000, text: 40_000 },
     "the default reviewer budget is one bounded prepared request");
 });
 
