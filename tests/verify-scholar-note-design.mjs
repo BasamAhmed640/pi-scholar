@@ -95,7 +95,7 @@ check("Learn puts the full visible lesson first, optional source references next
     ...section.attempts[1], format: "open", options: undefined, correctAnswer: undefined,
     grounding: { purpose: "mastery", competency: "Choose the model using relevant timescales.", requiredEvidence: ["Compare propagation delay with rise time."], sourcePages: [7], basis: [{ kind: "objective", value: section.objectives[0], supports: [1] }] },
   }] });
-  assert.ok(resolved.includes("Short questions answered: 1 of 3"));
+  assert.ok(resolved.includes("Short questions answered: 1 of 5"));
   assert.doesNotMatch(note, /What you established|Established|Teaching record|Assessment record|\[!question\]-/);
   assert.doesNotMatch(note.slice(note.indexOf("## Questions")), /^> \[!\w+\][-+]|\*\*Result:\*\*/m, "feedback is open and the outcome is not repeated");
 });

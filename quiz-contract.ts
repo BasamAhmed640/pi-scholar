@@ -23,6 +23,28 @@ export const MIXED_FORM_THRESHOLD = 4;
 export const MAX_RECOGNITION_SHARE = 0.7;
 export const CATCH_ALL_OPTION = /\b(all|none|both|any|either|neither)\s+of\s+(the\s+)?(above|these|them|the\s+others)\b/i;
 
+/** One short response is the contract; these are its two mechanical limits. */
+const MAX_SHORT_ANSWER_LENGTH = 600;
+/** The single definition of a lettered multi-part marker, e.g. "(a) ... (b) ...". */
+const MULTI_PART_MARKER = /(?:^|\s)\((?:[a-h]|i{1,3}|iv|v)\)\s/gi;
+
+/**
+ * Answer-shape contract shared by the interactive quiz gate (domain.ts) and
+ * the frozen exam form (exam.ts). A question is answered in one short terminal
+ * input, so a proof-shaped prompt with lettered sub-parts or an essay-length
+ * one asks for a derivation instead of a comprehension check. Returns one
+ * user-facing message per violation — each says what to do instead — and
+ * nothing when the prompt is answerable as a single short response.
+ */
+export function answerShapeIssues(text: unknown): string[] {
+  const prompt = typeof text === "string" ? text : "";
+  const parts = prompt.match(MULTI_PART_MARKER) || [];
+  return [
+    ...(parts.length >= 2 ? ["Ask one part at a time. A question must be single-part and answerable in one short response (a choice, a number, or one short sentence). Put multi-step derivations in the lesson as worked examples."] : []),
+    ...(prompt.length > MAX_SHORT_ANSWER_LENGTH ? [`This question is too long to answer in one short response. Keep it under ${MAX_SHORT_ANSWER_LENGTH} characters with one short expected answer; put multi-step derivations in the lesson as worked examples.`] : []),
+  ];
+}
+
 export type ScholarQuizMode = "single-select" | "multi-select";
 export type ScholarQuizStatus = "answered" | "cancelled" | "unavailable";
 

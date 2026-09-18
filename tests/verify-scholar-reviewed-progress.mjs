@@ -39,7 +39,7 @@ function fixture({ completed = false } = {}) {
   section.learnQuality.reviews = ["source", "teaching"].map(role => ({ role, status: "pass", findings: [], model: "any-provider/reviewer",
     sourceHash, contentHash: section.transcript[0].lesson.contentHash, createdAt: now }));
   lesson.commitLesson(section, book);
-  if (completed) section.attempts.push(attempt("mastery-1"), attempt("mastery-2"), attempt("mastery-3"));
+  if (completed) section.attempts.push(attempt("mastery-1"), attempt("mastery-2"), attempt("mastery-3"), attempt("mastery-4"), attempt("mastery-5"));
   domain.recomputeProgress(book, section);
   return book;
 }
@@ -68,7 +68,11 @@ await check("Independent lesson approval alone cannot manufacture earned complet
   domain.recomputeProgress(book, section);
   assert.notEqual(section.status, "complete", "one resolved question is not enough");
   assert.equal(section.learnQuality.earnedDelivery, undefined);
-  section.attempts.push(attempt("mastery-2"), attempt("mastery-3"));
+  section.attempts.push(attempt("mastery-2"), attempt("mastery-3"), attempt("mastery-4"));
+  domain.recomputeProgress(book, section);
+  assert.notEqual(section.status, "complete", "four resolved questions are not enough");
+  assert.equal(section.learnQuality.earnedDelivery, undefined);
+  section.attempts.push(attempt("mastery-5"));
   domain.recomputeProgress(book, section);
   assert.equal(section.status, "complete");
   assert.deepEqual(section.learnQuality.earnedDelivery, { sourceHash, objectiveHash: lesson.lessonObjectiveHash(section) });

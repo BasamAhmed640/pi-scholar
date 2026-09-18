@@ -29,6 +29,10 @@ import {
   type TutorSession,
 } from "../types.ts";
 
+/** Shared refusal for every Learn question surface while the lesson is not saved yet.
+ * Section preparation runs on its own; no question may be asked before it finishes. */
+export const LEARN_PREPARATION_MESSAGE = "Scholar cannot present a question yet: this section's lesson is still being prepared. Preparation runs to completion on its own; questions begin after the lesson is saved.";
+
 /** The stored schema's own vocabularies, checked here so a rejection names the field. */
 const ASSESSMENT_KINDS: AssessmentKind[] = ["conceptual", "application", "computation", "discrimination", "quiz"];
 const RESOLUTION_OUTCOMES: AssessmentOutcome[] = ["pass", "review", "unsure", "cancelled"];
@@ -246,6 +250,8 @@ export async function handleAssess(
       assertQuestionGrounding(grounding, book, { mode: "tutor", tutor });
     } else {
       const section = requireLearnSection(book);
+      // New questions wait for the saved lesson; resolving, grading and feedback stay open.
+      if (!lessonReady(section, book.source.fingerprint.sha256)) throw new Error(LEARN_PREPARATION_MESSAGE);
       grounding = learnQuestionGrounding(section, grounding);
       sectionId = params.sectionId || section.id;
       if (sectionId !== section.id) throw new Error("Scholar Learn assessment must target the frozen Learn section.");

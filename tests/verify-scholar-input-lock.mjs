@@ -270,6 +270,13 @@ try {
     const extension = loaded.extensions[0];
     const ctx = {
       cwd: tempRoot,
+      // Exercise the real lesson-review preflight without a network/model account.
+      model: { id: "input-lock-fixture", provider: "fixture", api: "openai-responses", name: "Input-lock fixture", input: ["text", "image"], reasoning: false, contextWindow: 262144, maxTokens: 16384 },
+      modelRegistry: { complete: async (model) => ({
+        role: "assistant", content: [{ type: "text", text: JSON.stringify({ status: "pass", findings: [] }) }],
+        stopReason: "stop", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),
+        usage: { input: 100, output: 100, cacheRead: 0, cacheWrite: 0 },
+      }) },
       hasUI: true,
       isIdle: () => true,
       abort: () => { aborts += 1; },
@@ -458,6 +465,12 @@ try {
 
   const bookFiles = await findBookNotes(vault);
   assert.equal(bookFiles.length, 1, "the disposable vault should contain one authoritative book.json");
+  const readSectionNote = async () => {
+    const directory = join(dirname(bookFiles[0]), "Sections");
+    const name = (await readdir(directory)).find((entry) => entry.endsWith(".md"));
+    assert.ok(name, "the active Learn section note should be materialized in the vault");
+    return readFile(join(directory, name), "utf8");
+  };
   const readyBook = (await readFixtureBook(bookFiles[0]));
   const readyAt = new Date().toISOString();
   readyBook.revision += 1;
@@ -586,22 +599,24 @@ try {
     message: secondAssistant,
   });
   await readySelected.command.handler("close", readySelected.ctx);
-  const transcriptBook = (await readFixtureBook(bookFiles[0]));
-  const repeatedEntries = transcriptBook.chapters[0].sections[0].transcript
-    .filter((entry) => entry.kind === "assistant" && entry.markdown === repeatedMarkdown);
+  const freshSection = (await readFixtureBook(bookFiles[0])).chapters[0].sections[0];
+  const freshNote = await readSectionNote();
   await prove(
-    "message_end captures repeated assistant text without crashing or navigation duplication",
+    "a Learn section load never journals ambient narration",
     () => {
-      assert.equal(repeatedEntries.length, 2, JSON.stringify(transcriptBook.chapters[0].sections[0].transcript));
-      assert.equal(new Set(repeatedEntries.map((entry) => entry.id)).size, 2);
+      assert.equal(freshSection.transcript.length, 0, JSON.stringify(freshSection.transcript));
+      assert.ok(!freshNote.includes(repeatedMarkdown), "the rendered note must not contain the ambient narration");
+      assert.ok(!freshNote.includes("Scholar entry details"), "no narration-only entry block may be rendered");
       assert.ok(readySelected.ui.notifications.some((item) => /navigation is locked/i.test(item.message)));
       assert.equal(readySelected.ui.currentFactory, learnFactory, "rejected navigation must leave the Learn turn lock active");
     },
-    "two identical responses produced two stable entries, while a direct command could not navigate during the active turn",
+    "two identical ambient responses left the fresh Learn section with no entries and no rendered entry block, while a direct command could not navigate during the active turn",
   );
 
   const quiz = readySelected.extension.tools.get("scholar_quiz")?.definition;
   assert.ok(quiz, "Learn mode should register the Scholar quiz modal");
+  const scholarTool = readySelected.extension.tools.get("scholar")?.definition;
+  assert.ok(scholarTool, "Learn mode should register the Scholar tool");
   const quizInput = {
     question: "Which component owns chat input during this Scholar response?",
     options: [
@@ -618,6 +633,90 @@ try {
         prerequisiteBasis: "source-declared", sourcePage: 1, supports: [1] }],
     },
   };
+  const openQuestion = {
+    action: "assess",
+    outcome: "pending",
+    kind: "conceptual",
+    question: "Which editor keeps chat input until a Scholar turn settles?",
+    expectedAnswer: "The locked Scholar editor.",
+    criteria: ["Names the locked editor that owns chat input until the turn settles."],
+    grounding: {
+      purpose: "diagnostic", competency: "Identify editor ownership", sourcePages: [1],
+      requiredEvidence: ["Identify which editor owns chat input"],
+      basis: [{ kind: "prerequisite", value: "The source introduces editor ownership.",
+        prerequisiteBasis: "source-declared", sourcePage: 1, supports: [1] }],
+    },
+  };
+  await prove(
+    "a section load refuses both question surfaces until the lesson is saved",
+    async () => {
+      const refusedQuiz = await fire(readySelected.extension, "tool_call", {
+        toolName: "scholar_quiz", toolCallId: "input-lock-refused", input: quizInput,
+      }, readySelected.ctx);
+      assert.equal(refusedQuiz.length, 1, JSON.stringify(refusedQuiz));
+      assert.equal(refusedQuiz[0]?.block, true, JSON.stringify(refusedQuiz));
+      assert.match(refusedQuiz[0].reason, /Preparation runs to completion on its own/);
+      assert.match(refusedQuiz[0].reason, /questions begin after the lesson is saved/);
+
+      const refusedAssess = await scholarTool.execute("input-lock-refused-assess", openQuestion, undefined, undefined, readySelected.ctx);
+      const refusedAssessText = refusedAssess.content.map((item) => item.text).join("\n");
+      assert.match(refusedAssessText, /Preparation runs to completion on its own/);
+      assert.match(refusedAssessText, /questions begin after the lesson is saved/);
+
+      const refusedBook = (await readFixtureBook(bookFiles[0])).chapters[0].sections[0];
+      assert.equal(refusedBook.attempts.length, 0, "a refused question must never be recorded");
+      assert.equal(refusedBook.transcript.length, 0, JSON.stringify(refusedBook.transcript));
+    },
+    "the unprepared Learn section refused the quiz modal and a prepared open question with the same message and stored nothing",
+  );
+
+  // Source preparation comes first, exactly as the Learn contract requires: the
+  // lesson commit is held until every section page is read, viewed and reviewed.
+  const sourceRead = await scholarTool.execute("input-lock-source-read", { action: "read", startPage: 1, endPage: 1 }, undefined, undefined, readySelected.ctx);
+  assert.equal(sourceRead.details?.action, "read", JSON.stringify(sourceRead.content));
+  const sourceView = await scholarTool.execute("input-lock-source-view", { action: "view", page: 1 }, undefined, undefined, readySelected.ctx);
+  assert.equal(sourceView.details?.action, "view", JSON.stringify(sourceView.content));
+
+  const lessonMarkdown = "### Editor ownership during a Scholar turn\n\nScholar owns the editor while its response is running. Typed input waits in the locked editor until the turn settles, then returns to the ordinary editor.";
+  const notesResult = await scholarTool.execute("input-lock-lesson", {
+    action: "notes",
+    sectionId: "chapter-001-section-001",
+    objectives: ["Explain editor ownership during a Scholar turn"],
+    coveredObjectives: ["Explain editor ownership during a Scholar turn"],
+    requiredChecks: ["conceptual"],
+    synthesis: "Scholar owns the editor while its response is running; typing waits until the turn settles.",
+    keyPoints: ["The locked editor keeps typed input from interrupting a Scholar response."],
+    misconceptions: [],
+    figureReviews: [{ page: 1, observation: "Visual inspection confirms this page contains only the verifier's source text and no figures.", figures: [] }],
+    objectiveChecks: [{ objective: "Explain editor ownership during a Scholar turn", checks: ["conceptual"] }],
+    sourceCoverage: [{ id: "editor-ownership", kind: "concept", description: "Who owns chat input while a Scholar response is running",
+      objective: "Explain editor ownership during a Scholar turn", sourcePages: [1], lessonId: "editor-ownership-explanation",
+      evidence: "Scholar owns the editor while its response is running." }],
+    lesson: { id: "editor-ownership-explanation", title: "Editor ownership during a Scholar turn",
+      objectives: ["Explain editor ownership during a Scholar turn"],
+      keyPoints: ["The locked editor keeps typed input from interrupting a Scholar response."], sourcePages: [1],
+      markdown: lessonMarkdown },
+    lessonComplete: true,
+  }, undefined, undefined, readySelected.ctx);
+  const notesText = notesResult.content.map((item) => item.text).join("\n");
+  await prove(
+    "the saved lesson is the section's only teaching record",
+    async () => {
+      assert.match(notesText, /Full lesson committed after source, teaching and visual review/);
+      const savedSection = (await readFixtureBook(bookFiles[0])).chapters[0].sections[0];
+      const lessonEntry = savedSection.transcript.find((entry) => entry.lesson);
+      assert.ok(lessonEntry, "the explicit lesson write is the section's assistant record");
+      assert.ok(lessonEntry.markdown.includes("Scholar owns the editor while its response is running."));
+      assert.equal(savedSection.transcript.filter((entry) => entry.kind === "assistant").length, 1, JSON.stringify(savedSection.transcript));
+      const savedNote = await readSectionNote();
+      assert.ok(savedNote.includes("## Lesson"), "the lesson entry must render under the note's Lesson heading");
+      assert.ok(savedNote.includes("Scholar owns the editor while its response is running."), "the lesson body must render");
+      assert.ok(!savedNote.includes(repeatedMarkdown), "ambient narration must stay out of the note after the lesson is saved");
+    },
+    "the committed lesson became the section's only assistant record and rendered under its own heading",
+  );
+
+  // The lesson is saved: the same call refused above now passes the gate.
   const quizPreflight = await fire(readySelected.extension, "tool_call", {
     toolName: "scholar_quiz", toolCallId: "input-lock-modal", input: quizInput,
   }, readySelected.ctx);
@@ -684,8 +783,29 @@ try {
       assert.equal(after.attempts.filter((item) => item.toolCallId === "input-lock-modal").length, 1);
       assert.equal(after.transcript.filter((item) => item.id === "quiz-result-input-lock-modal").length, 0);
       assert.equal(readySelected.ui.currentFactory, learnFactory);
+      const rendered = await readSectionNote();
+      assert.ok(rendered.includes("owns chat input during this Scholar response"), "the answered question must stay journaled in the note");
+      assert.ok(rendered.includes(quizInput.explanation), "the graded feedback must stay journaled in the note");
     },
-    "the persisted answer, options, explanation, and transcript stayed exact after repeated and conflicting late events",
+    "the persisted answer, options, explanation, and transcript stayed exact after repeated and conflicting late events, with the question and feedback journaled",
+  );
+
+  await prove(
+    "a prepared open question is accepted once the lesson is saved",
+    async () => {
+      const approved = await scholarTool.execute("input-lock-approved-assess", openQuestion, undefined, undefined, readySelected.ctx);
+      const approvedText = approved.content.map((item) => item.text).join("\n");
+      assert.doesNotMatch(approvedText, /Preparation runs to completion/);
+      assert.match(approvedText, /Present this approved question exactly/);
+      assert.match(approved.details?.summary || "", /Question approved/);
+      const approvedBook = (await readFixtureBook(bookFiles[0])).chapters[0].sections[0];
+      assert.ok(approvedBook.attempts.some((item) => item.toolCallId === "input-lock-approved-assess" && item.outcome === "pending"));
+      const approvedNote = await readSectionNote();
+      assert.ok(approvedNote.includes(openQuestion.question), "the created question must be journaled as a visible block");
+      assert.ok(approvedNote.includes("*Awaiting response*"), "the created question must stay visible as pending");
+      assert.equal(readySelected.ui.currentFactory, learnFactory);
+    },
+    "with the lesson saved the open-question surface accepted and journaled a new pending question",
   );
 
   await fire(readySelected.extension, "agent_settled", { type: "agent_settled" }, readySelected.ctx);

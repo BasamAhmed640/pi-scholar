@@ -226,11 +226,29 @@ progressSection.attempts.push({
   outcome: "pass",
   createdAt: now,
 });
+progressSection.attempts.push({
+  id: "mastery-003",
+  kind: "conceptual",
+  format: "open",
+  question: "Third short question",
+  grounding: grounding(),
+  outcome: "pass",
+  createdAt: now,
+});
+progressSection.attempts.push({
+  id: "mastery-004",
+  kind: "conceptual",
+  format: "open",
+  question: "Fourth short question",
+  grounding: grounding(),
+  outcome: "pass",
+  createdAt: now,
+});
 recomputeProgress(progressBook, progressSection);
 check("mastery can certify completion", progressSection.status === "complete", `status=${progressSection.status}`);
 
 progressSection.attempts.push({
-  id: "mastery-003",
+  id: "mastery-005",
   kind: "conceptual",
   format: "open",
   question: "Fresh mastery retry",

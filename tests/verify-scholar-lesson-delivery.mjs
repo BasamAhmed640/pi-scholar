@@ -56,9 +56,11 @@ console.log("[PASS] explicit partial saves, commit, visible-note round trip, ide
 
 section.attempts=[pass("Interpret direction","conceptual","a"),pass("Compute components","computation","b")];
 domain.recomputeProgress(book,section);assert.notEqual(section.status,"complete");
-section.attempts.push(pass("Compute components","conceptual","c"));
+section.attempts.push(pass("Compute components","conceptual","c"),pass("Interpret direction","application","d"));
+domain.recomputeProgress(book,section);assert.notEqual(section.status,"complete","four resolved questions do not complete the section");
+section.attempts.push(pass("Interpret direction","conceptual","e"));
 domain.recomputeProgress(book,section);assert.equal(section.status,"complete");
-console.log("[PASS] three resolved questions complete the section; two do not");
+console.log("[PASS] five resolved questions complete the section; four do not");
 
 section.transcript[0].markdown += "\n\nA learner's own clarification.";
 assert(!lesson.lessonReady(section));

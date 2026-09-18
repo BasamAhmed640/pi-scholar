@@ -1,7 +1,7 @@
 // The restored Learn flow: audits run per saved explanation revision as it is saved, so
 // lessonComplete waits only for outstanding audits and commits after every unit passes;
 // blocking findings come back as [F-<key>] repair requests the author answers with
-// findingResponses without re-running the audits; three resolved short questions complete
+// findingResponses without re-running the audits; five resolved short questions complete
 // the section; multi-part questions are refused; and the consecutive-rejection loop guard
 // still stops delivery. Synthetic in-memory records plus one real single-page PDF fixture;
 // no vault or network access.
@@ -161,7 +161,7 @@ await check("lessonComplete commits after every saved unit's source and teaching
   assert.deepEqual(section.lessonCommit.entryIds, [section.transcript[0].id]);
   domain.recomputeProgress(h.book, section);
   assert.notEqual(section.status, "complete", "the lesson alone does not complete the section");
-  assert.deepEqual(domain.quickQuestionBlockers(section), ["3 more short questions"]);
+  assert.deepEqual(domain.quickQuestionBlockers(section), ["5 more short questions"]);
 });
 
 await check("a blocking finding pauses the commit until the author answers, then commits without a second audit", async () => {
@@ -185,14 +185,14 @@ await check("a blocking finding pauses the commit until the author answers, then
   assert.ok(keys.every(key => (h.section.learnQuality.responses || []).some(response => response.key === key)), "every author response is stored");
 });
 
-await check("three resolved short questions, including a cancelled one, complete the section", async () => {
+await check("five resolved short questions, including a cancelled one, complete the section", async () => {
   const h = harness("questions"), section = h.section;
   const committed = await h.execute({ action: "notes", lessonComplete: true });
   assert.ok(!["review", "error", "retry"].includes(committed.details.tone), committed.content[0].text);
   assert.ok(lesson.lessonReady(section, h.book.source.fingerprint.sha256), "the reviewed lesson is delivered before questions");
   section.attempts.push({ id: "diagnostic", kind: "conceptual", format: "open", question: "Warm-up", outcome: "pass", grounding: grounding("diagnostic"), createdAt: now });
   domain.recomputeProgress(h.book, section);
-  assert.equal(domain.answeredQuickQuestions(section), 0, "a diagnostic question does not count toward the three");
+  assert.equal(domain.answeredQuickQuestions(section), 0, "a diagnostic question does not count toward the five");
   assert.notEqual(section.status, "complete");
   section.attempts.push(
     { id: "q-pass", kind: "conceptual", format: "open", question: "What does doubling the length do?", outcome: "pass", grounding: grounding("mastery"), createdAt: now },
@@ -200,6 +200,15 @@ await check("three resolved short questions, including a cancelled one, complete
     { id: "q-missed", kind: "application", format: "open", question: "Apply the relation to a new case.", outcome: "review", grounding: grounding("mastery"), createdAt: now },
   );
   assert.equal(domain.answeredQuickQuestions(section), 3);
+  assert.deepEqual(domain.quickQuestionBlockers(section), ["2 more short questions"]);
+  domain.recomputeProgress(h.book, section);
+  assert.notEqual(section.status, "complete", "three of five questions do not complete the section");
+  section.attempts.push({ id: "q-fourth", kind: "application", format: "open", question: "Which quantity must stay fixed?", outcome: "pass", grounding: grounding("mastery"), createdAt: now });
+  assert.equal(domain.answeredQuickQuestions(section), 4);
+  assert.deepEqual(domain.quickQuestionBlockers(section), ["1 more short question"]);
+  domain.recomputeProgress(h.book, section);
+  assert.notEqual(section.status, "complete", "four of five questions do not complete the section");
+  section.attempts.push({ id: "q-fifth", kind: "discrimination", format: "open", question: "Which relation applies to this case?", outcome: "pass", grounding: grounding("mastery"), createdAt: now });
   assert.deepEqual(domain.quickQuestionBlockers(section), []);
   domain.recomputeProgress(h.book, section);
   assert.equal(section.status, "complete");

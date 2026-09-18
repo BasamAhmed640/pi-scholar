@@ -34,6 +34,8 @@ import {
 import { createScholarInputLockController } from "./input-lock.ts";
 import { createScholarToolController } from "./tool-controller.ts";
 import { isProvisionalOutline } from "./outline-validation.ts";
+import { lessonReady } from "./lesson.ts";
+import { LEARN_PREPARATION_MESSAGE } from "./tool-actions/learning.ts";
 import {
   ScholarRuntimeCoordinator,
   setupInstructions,
@@ -276,17 +278,14 @@ export default function scholarExtension(pi: ExtensionAPI) {
       if (!entry) return;
       await coordinator.mutateBook(coordinator.runtimeSession.bookId, (book) => {
         if (!coordinator.ownsActiveAuthority(book)) throw new Error("The active book authority changed before this response could be saved.");
-        if (coordinator.runtimeSession.mode === "learn") {
-          const section = findSection(book, coordinator.runtimeSession.recordId);
-          // Explicit lesson writes own the note once adopted. Ambient progress
-          // and transport echoes must not become extra instructional content.
-          if (section?.lessonEntryIds?.length || section?.transcript.some(item => item.lesson)) return;
-          if (section && appendTranscript(section.transcript, entry)) section.updatedAt = new Date().toISOString();
-        } else if (coordinator.runtimeSession.mode === "tutor") {
+        // A Learn section's durable record comes only from explicit lesson writes and
+        // shown questions. Ambient narration during a section load must never be
+        // journaled into the lesson; Tutor and Exam keep their existing recording.
+        if (coordinator.runtimeSession.mode === "tutor") {
           const tutor = book.tutorSessions.find((item) => item.id === coordinator.runtimeSession.recordId);
           if (tutor?.lessonEntryIds?.length || tutor?.transcript.some(item => item.lesson)) return;
           if (tutor && appendTranscript(tutor.transcript, entry)) tutor.updatedAt = new Date().toISOString();
-        } else {
+        } else if (coordinator.runtimeSession.mode === "exam") {
           const exam = book.exams.find((item) => item.id === coordinator.runtimeSession.recordId);
           if (exam?.status === "graded" && appendTranscript(exam.transcript, entry)) exam.updatedAt = new Date().toISOString();
         }
@@ -307,6 +306,11 @@ export default function scholarExtension(pi: ExtensionAPI) {
     }
     const section = coordinator.runtimeSession.mode === "learn" ? findSection(book, coordinator.runtimeSession.recordId) : undefined;
     const tutor = coordinator.runtimeSession.mode === "tutor" ? book.tutorSessions.find((item) => item.id === coordinator.runtimeSession.recordId) : undefined;
+    // A section whose lesson is still being prepared never asks the learner anything,
+    // including resuming an older question; preparation finishes on its own first.
+    if (section && !lessonReady(section, book.source.fingerprint.sha256)) {
+      return { block: true, reason: LEARN_PREPARATION_MESSAGE };
+    }
     if (input.resumeAttemptId) {
       try {
         await coordinator.mutateBook(book.id, (state) => {

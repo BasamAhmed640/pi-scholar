@@ -70,7 +70,7 @@ try {
   const before = structuredClone(book);
   domain.migrateLearnAssessmentKinds(book);
   assert.equal(section(book).attempts[0].kind, "conceptual");
-  assert.deepEqual(domain.sectionCompletionBlockers(section(book)), []);
+  assert.deepEqual(domain.sectionCompletionBlockers(section(book)), ["1 more short question"]);
   assert.deepEqual(book.exams, before.exams);
   assert.deepEqual(section(book).attempts.map(({ kind, ...rest }) => rest), section(before).attempts.map(({ kind, ...rest }) => rest));
   assert.equal(section(book).updatedAt, now);

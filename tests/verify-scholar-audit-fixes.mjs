@@ -194,6 +194,8 @@ const completed = sec("c1s1", "1.1", 31, 33, {
   attempts: [...flooded,
     attempt(200, { id: "conceptual-pass-2", kind: "conceptual", format: "open", outcome: "pass", grounding: { purpose: "mastery", competency: "Demonstrates the section competency", requiredEvidence: ["shows the reasoning"], sourcePages: [31], basis: [{ kind: "objective", value: "Alpha", supports: [1] }] } }),
     attempt(201, { id: "conceptual-pass-3", kind: "conceptual", format: "open", outcome: "pass", grounding: { purpose: "mastery", competency: "Demonstrates the section competency", requiredEvidence: ["shows the reasoning"], sourcePages: [31], basis: [{ kind: "objective", value: "Alpha", supports: [1] }] } }),
+    attempt(202, { id: "conceptual-pass-4", kind: "conceptual", format: "open", outcome: "pass", grounding: { purpose: "mastery", competency: "Demonstrates the section competency", requiredEvidence: ["shows the reasoning"], sourcePages: [31], basis: [{ kind: "objective", value: "Alpha", supports: [1] }] } }),
+    attempt(203, { id: "conceptual-pass-5", kind: "conceptual", format: "open", outcome: "pass", grounding: { purpose: "mastery", competency: "Demonstrates the section competency", requiredEvidence: ["shows the reasoning"], sourcePages: [31], basis: [{ kind: "objective", value: "Alpha", supports: [1] }] } }),
   ],
   figureCoverage: {
     pages: [31, 32, 33].map((page) => ({ page, read: true, viewed: { width: 600, height: 800 }, candidates: [],

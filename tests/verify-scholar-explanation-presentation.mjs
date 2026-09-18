@@ -104,8 +104,8 @@ const planned = { ...section, objectives: [objectiveA, objectiveB], coveredObjec
   attempts: [{ id: "mastery-a", kind: "conceptual", format: "open", outcome: "pass", question: "What changes when the input order swaps?", createdAt: now,
     grounding: { purpose: "mastery", competency: objectiveA, requiredEvidence: ["The direction reverses"], sourcePages: [1], basis: [{ kind: "objective", value: objectiveA, supports: [1] }] } }] };
 const plannedNote = renderSection(config, book, chapter, planned);
-assert.match(plannedNote, /Short questions answered: 1 of 3/);
-assert.match(plannedNote, /2 short questions remaining/);
+assert.match(plannedNote, /Short questions answered: 1 of 5/);
+assert.match(plannedNote, /4 short questions remaining/);
 console.log("[PASS] short-question progress cannot present one objective's pass as another objective's mastery");
 
 const longObjectives = Array.from({ length: 6 }, (_, i) => `Objective ${i + 1}: explain the entire relationship between input orientation, magnitude, coordinate conventions, assumptions, intermediate calculations, interpretation, and the limits of each operation in detail.`);
@@ -113,8 +113,8 @@ const longPlan = { ...section, objectives: longObjectives, coveredObjectives: []
   objectiveChecks: longObjectives.map(objective => ({ objective, checks: ["conceptual", "computation"] })), attempts: [] };
 const longNote = renderSection(config, book, chapter, longPlan);
 const preLesson = longNote.slice(0, longNote.indexOf("## Lesson"));
-assert.match(preLesson, /^> \[!scholar-status\] In progress · Current section · Pages 1–16 · 3 short questions remaining$/m);
-assert.match(preLesson, /Current section · Pages 1–16 · 3 short questions remaining/);
+assert.match(preLesson, /^> \[!scholar-status\] In progress · Current section · Pages 1–16 · 5 short questions remaining$/m);
+assert.match(preLesson, /Current section · Pages 1–16 · 5 short questions remaining/);
 assert.doesNotMatch(preLesson, /Objective \d+:|evidence for:|Remaining to complete/);
 const statusHeader = preLesson.split("\n").find(line => line.startsWith("> [!scholar-status]"));
 assert.ok(statusHeader.length < 150, "the status header above the lesson stays one short line regardless of objective length");

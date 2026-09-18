@@ -85,7 +85,7 @@ check("form explains how to answer", /Click the checkboxes/.test(form) && /Choos
   && /Write open responses in \*\*Live Preview\*\*/.test(form), "checkbox and written-response instructions present");
 check("each question shows its points and format",
   /> \[!question\] Question 1 · 2 points[\s\S]*?> \*Select one answer\.\*/.test(form)
-    && /> \[!question\] Question 2 · 5 points[\s\S]*?> \*Written response · Show your reasoning\.\*/.test(form), "labelled");
+    && /> \[!question\] Question 2 · 5 points[\s\S]*?> \*Written response · Answer briefly — one line or two sentences, not an extended derivation\.\*/.test(form), "labelled");
 check("multiple-choice options are native unchecked tasks with frozen indices",
   /^> - \[ \] \*\*b\*\* — Transmission line <!-- scholar:choice:1 -->$/m.test(form)
     && (form.match(/^> - \[ \] .*<!-- scholar:choice:\d+ -->$/gm) || []).length === 3

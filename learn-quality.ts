@@ -90,7 +90,9 @@ function hasBodyEvidence(evidence: string, item: SourceCoverageItem): boolean {
   return !!normalized && ![item.id, item.description, item.objective, item.kind].some(label => normalizedLabel(label) === normalized);
 }
 
-/** Derivation mastery needs applied reasoning or calculation, not recall alone. */
+/** Derivation mastery needs applied reasoning or calculation, not recall alone. The delivery
+ * gate consults this for every objective a derivation item names, so a label-only plan cannot
+ * deliver a lesson whose derivations are never asked for at the level they require. */
 export function sourceAssessmentIssues(ledger: readonly SourceCoverageItem[], objectiveChecks: readonly SourceObjectiveCheck[] | undefined): string[] {
   const issues: string[] = [];
   for (const objective of new Set(ledger.filter(item => item.kind === "derivation").map(item => item.objective))) {
@@ -104,8 +106,10 @@ export function sourceAssessmentIssues(ledger: readonly SourceCoverageItem[], ob
 
 /**
  * Plan mode validates source scope. Delivery mode additionally links each item
- * to a verbatim, non-label excerpt in the actual saved lesson and verifies the
- * relevant saved equation/figure ID. This is evidence integrity, not a word quota.
+ * to a verbatim, non-label excerpt in the actual saved lesson, verifies the
+ * relevant saved equation/figure ID, and requires every derivation item's
+ * objective to carry an applied-reasoning check. This is evidence integrity,
+ * not a word quota.
  */
 export function sourceCoverageIssues(value: unknown, context: SourceCoverageContext, options: { delivered?: boolean } = {}): string[] {
   if (!isSourceCoverageLedger(value)) return ["Provide a valid source-coverage ledger with unique IDs and supported fields."];
@@ -141,6 +145,10 @@ export function sourceCoverageIssues(value: unknown, context: SourceCoverageCont
       issues.push(`${prefix} needs a saved snapshot ID actually embedded in this lesson unit.`);
     }
   }
+  // A derivation item is verified, not merely requested, once its objective must be applied
+  // or computed. Plan mode keeps its exact earlier behavior: the plan legitimately precedes
+  // the lesson and its check plan, so delivery — where approval is earned — is the gate.
+  if (delivered) issues.push(...sourceAssessmentIssues(value, context.objectiveChecks));
   return [...new Set(issues)];
 }
 

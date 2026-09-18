@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { compactStrings, sectionLabel } from "./domain.ts";
-import { CATCH_ALL_OPTION, MAX_RECOGNITION_SHARE, MIN_MCQ_OPTIONS, MIN_RUBRIC_CRITERIA, MIXED_FORM_THRESHOLD, optionIssues } from "./quiz-contract.ts";
+import { answerShapeIssues, CATCH_ALL_OPTION, MAX_RECOGNITION_SHARE, MIN_MCQ_OPTIONS, MIN_RUBRIC_CRITERIA, MIXED_FORM_THRESHOLD, optionIssues } from "./quiz-contract.ts";
 import { markdownText } from "./render/common.ts";
 import { isExamQuestion } from "./state-schema.ts";
 import { findSection, type ExamBreakdown, type ExamItemResult, type ExamQuestion, type ScholarBook, type ScholarExam } from "./types.ts";
@@ -137,6 +137,11 @@ export function validateExamQuestions(exam: ScholarExam, questions: ExamQuestion
     }
     if (!explanation) throw new Error(`Exam question ${id} needs a post-submission explanation.`);
     if (!(question.maxPoints > 0)) throw new Error(`Exam question ${id} needs positive points.`);
+    // Question engine: each item is answered with one short response, so a
+    // proof-shaped or essay-length prompt cannot be frozen as a single item.
+    // Name the item so the author can split or shorten it.
+    const answerIssues = answerShapeIssues(prompt);
+    if (answerIssues.length) throw new Error(`Exam question ${id} prompt: ${answerIssues[0]}`);
     assertNoAnswerMarker(prompt, `Exam question ${id} prompt`);
     assertNoAnswerMarker(claim, `Exam question ${id} claim`);
     assertNoAnswerMarker(explanation, `Exam question ${id} explanation`);

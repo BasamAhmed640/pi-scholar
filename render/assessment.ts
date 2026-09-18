@@ -128,7 +128,7 @@ export function examAnswerNoteText(config: ScholarConfig, book: ScholarBook, exa
       ">",
       ...markdownText(question.prompt).split("\n").map((line) => `> ${line}`), ">",
       ...referencedFigureLines(config, book, notePath, question.prompt, recordSourceFigures(exam.snapshots, snapshots)).split("\n").map(line => `> ${line}`), ">",
-      `> *${question.format === "open" ? "Written response · Show your reasoning."
+      `> *${question.format === "open" ? "Written response · Answer briefly — one line or two sentences, not an extended derivation."
         : Array.isArray(question.correctAnswer) && question.correctAnswer.length > 1 ? "Select all that apply." : "Select one answer."}*`,
       ...examAnswerRegionLines(question).map(line => line ? `> ${line}` : ">"), "",
     ]), "", "---", "", "## Submit", "",

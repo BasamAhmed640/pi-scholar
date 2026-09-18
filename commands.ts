@@ -134,7 +134,7 @@ export function scholarGuide(book?: ScholarBook, unreadable = false): string {
     "  Open or switch textbooks from your configured PDF library. Run bare to browse all available books in a selector, or specify a partial title to jump directly.",
     "",
     "• /scholar learn <chapter/section>",
-    '  Guided study with source-grounded explanations and 3 short questions. Reopening a section continues where it stopped. Pending unanswered questions resume unchanged.',
+    '  Guided study with source-grounded explanations and 5 short questions. Reopening a section continues where it stopped. Pending unanswered questions resume unchanged.',
     "",
     "• /scholar exam <scope>",
     '  Answer an exam in Obsidian. Specify chapters (e.g. "1-3", "1, 2", or "all"), or reopen an exam by ID. Bare /scholar exam resumes the most recently touched unfinished exam and names any others; it never prompts.',

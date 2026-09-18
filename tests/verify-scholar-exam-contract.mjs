@@ -166,6 +166,25 @@ for (const [name, raw, pattern] of engineRules) {
   check(`engine rule enforced: ${name}`, pattern.test(message), message || "accepted, but should not be");
 }
 
+// ------------------------------------ 2b-2. one short answer per exam item --
+// The same answer-shape rule as an interactive question: an item is answered
+// with one short response, so a proof-shaped or essay-length prompt must be
+// refused at the freeze gate with the item named, not discovered after grading.
+const shapeCases = [
+  ["multi-part proof prompt", "Prove the reflection coefficient formula. (a) Start from the load boundary condition. (b) Show the sign of the reflected wave.", /one part at a time/i],
+  ["essay-length derivation prompt", "Derive the reflection coefficient at a mismatched load. " + "Show every algebraic step, justify each substitution, and check the limiting cases. ".repeat(9), /too long/i],
+];
+for (const [name, prompt, pattern] of shapeCases) {
+  let message = "";
+  try { validateExamQuestions(exam, [{ ...open(), prompt }]); } catch (error) { message = error.message; }
+  check(`answer-shape rule enforced: ${name}`,
+    /Exam question q2/.test(message) && pattern.test(message), message || "accepted, but should not be");
+}
+const shortItem = [{ ...open(), prompt: "Why does a short circuit invert the reflected voltage?" }];
+let shortOutcome = "";
+try { shortOutcome = `${validateExamQuestions(exam, shortItem).length} question(s)`; } catch (error) { shortOutcome = error.message; }
+check("a single-part comprehension item still freezes", shortOutcome === "1 question(s)", shortOutcome);
+
 // ---------------------------------------------- 2c. form-level thoroughness --
 const q = (id, format) => format === "open"
   ? { ...open(), id }

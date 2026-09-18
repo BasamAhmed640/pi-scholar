@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { scopedPageRanges, type PageRange } from "./page-scope.ts";
 import { isProvisionalOutline } from "./outline-validation.ts";
 import { questionCountsTowardCompletion } from "./question-grounding.ts";
+import { answerShapeIssues } from "./quiz-contract.ts";
 import { lessonReady, isObjectiveChecks, lessonObjectiveHash } from "./lesson.ts";
 import {
   allSections,
@@ -121,8 +122,8 @@ export function sectionCompletionBlockers(section: ScholarSection, sourceHash?: 
   ];
 }
 
-/** Learn ends with a few short questions. Answered, missed or skipped all count. */
-export const QUICK_QUESTIONS = 3;
+/** Learn ends with five short questions. Answered, missed or skipped all count. */
+export const QUICK_QUESTIONS = 5;
 
 export function answeredQuickQuestions(section: ScholarSection): number {
   return (section.attempts || []).filter(attempt => attempt.grounding?.purpose !== "diagnostic" && attempt.outcome !== "pending").length;
@@ -135,10 +136,8 @@ export function quickQuestionBlockers(section: ScholarSection): string[] {
 
 /** Learn and Tutor questions are answered in a terminal: one part, short answer. */
 export function assertShortQuestion(text: unknown): void {
-  const question = typeof text === "string" ? text : "";
-  const parts = question.match(/(?:^|\s)\((?:[a-h]|i{1,3}|iv|v)\)\s/gi) || [];
-  if (parts.length >= 2) throw new Error("Ask one part at a time. Learn and Tutor questions must be single-part and answerable in a terminal (a choice, a number, or one short sentence). Put multi-part derivations in the lesson as worked examples.");
-  if (question.length > 600) throw new Error("This question is too long for a terminal. Keep it under 600 characters with one short expected answer.");
+  const [issue] = answerShapeIssues(text);
+  if (issue) throw new Error(issue);
 }
 
 /** A pass for one objective never replaces a miss or missing evidence for another. */

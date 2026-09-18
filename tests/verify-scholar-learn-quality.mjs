@@ -62,6 +62,31 @@ assert(check([{ ...equation, equationId: undefined }]).length);
 assert(check([equation], { lessons: [{ ...context.lessons[0], keyEquationIds: [] }] }).some(issue => /Key equation ID/.test(issue)));
 assert(check([figure], { lessons: [{ ...context.lessons[0], embeddedSnapshotIds: [] }] }).some(issue => /snapshot ID/.test(issue)));
 console.log("[PASS] equations and figures require actual rendered IDs in their own saved lesson unit");
+
+const derivationObjective = "Derive the wave equation from Maxwell's equations";
+const derivation = { ...delivered[0], id: "wave-derivation", objective: derivationObjective };
+const derivationPlan = { objectives: [derivationObjective], objectiveChecks: [] };
+const recallOnly = { ...derivationPlan, objectiveChecks: [{ objective: derivationObjective, checks: ["conceptual"] }] };
+const appliedCheck = { ...derivationPlan, objectiveChecks: [{ objective: derivationObjective, checks: ["computation"] }] };
+// Naming a derivation in the coverage plan is a request, not proof of teaching: plan mode
+// still accepts it, exactly as it does before the lesson and its check plan exist.
+assert.deepEqual(quality.sourceCoverageIssues([derivation], derivationPlan), []);
+// A lesson that never teaches the derivation cannot certify its coverage by echoing the objective.
+const untaught = check([{ ...derivation, evidence: derivationObjective }],
+  { ...appliedCheck, lessons: [{ ...context.lessons[0], markdown: `### Boundary conditions\n\n${derivationObjective}` }] });
+assert.equal(untaught.length, 1);
+assert.ok(/body evidence/.test(untaught[0]), untaught[0]);
+// The taught derivation passes: its explanation is an exact excerpt of the saved lesson and
+// its objective demands the applied reasoning a derivation needs.
+assert.deepEqual(check([derivation], appliedCheck), []);
+// The same taught lesson is still unfinished when the derivation objective is only recalled,
+// and the rejection names the objective the author has to repair.
+const recalled = check([derivation], recallOnly);
+assert.equal(recalled.length, 1);
+assert.ok(/Derivation objective/.test(recalled[0]) && recalled[0].includes(derivationObjective), recalled[0]);
+assert.equal(check([derivation], derivationPlan).length, 1);
+console.log("[PASS] an untaught or recall-only derivation blocks delivery; the taught, applied one passes");
+
 const updatedEvidence=quality.updateCoverageEvidence(delivered,[{id:delivered[0].id,evidence:explanation, equationId:'normal-jump'}]);
 assert.equal(updatedEvidence[0].equationId,'normal-jump');
 assert.equal(delivered[0].equationId,undefined);

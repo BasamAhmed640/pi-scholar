@@ -56,7 +56,12 @@ try {
     console.log(`[${passed ? "PASS" : "FAIL"}] ${file}`);
   }
 } finally {
-  await rm(temporary, { recursive: true, force: true });
+  // Windows can hold a transient lock on a directory a child just used, and a scratch
+  // directory that will not delete must never mask the verifier result above.
+  await rm(temporary, { recursive: true, force: true }).catch(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await rm(temporary, { recursive: true, force: true }).catch(() => {});
+  });
 }
 console.log(`\nScholar: ${files.length - failures} verifier(s) passed, ${failures} failed.`);
 process.exitCode = failures ? 1 : 0;

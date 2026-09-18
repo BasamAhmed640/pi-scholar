@@ -18,7 +18,7 @@ const jiti = createJiti(import.meta.url, { moduleCache: false, alias: { ...sdkAl
   typebox: piRequire.resolve('typebox'),
 } });
 const mod = (name) => jiti.import(join(extension, name));
-const { appendTranscript } = await mod('domain.ts');
+const { appendTranscript, QUICK_QUESTIONS } = await mod('domain.ts');
 const { createBookService } = await mod('book-service.ts');
 const storage = await mod('storage.ts');
 const { renderScholarWorkspace } = await mod('obsidian.ts');
@@ -95,7 +95,7 @@ try {
 
   const compact = structuredClone(saved);
   sectionOf(compact).transcript = [sectionOf(compact).transcript.at(-1)];
-  sectionOf(compact).attempts = sectionOf(compact).attempts.slice(-3);
+  sectionOf(compact).attempts = sectionOf(compact).attempts.slice(-QUICK_QUESTIONS);
   compact.tutorSessions[0].transcript = [compact.tutorSessions[0].transcript.at(-1)];
   compact.tutorSessions[0].attempts = [];
   assert.equal(learnInstructions(saved, sectionOf(saved)), learnInstructions(compact, sectionOf(compact)));
