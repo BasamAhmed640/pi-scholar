@@ -236,6 +236,67 @@ await assert.rejects(evaluate(), /no learner response/);
 }
 console.log("[PASS] a saved Tutor explanation is reviewed once, preparing a question runs exactly one assessment review, and a changes verdict refuses it");
 
+// While a Learn section's lesson is still being prepared, a brand-new question is
+// refused with the shared preparation message, but the learner is not trapped: an
+// already-shown question can still be graded, cancelled, and have a legacy grading
+// contract upgraded. This is the boundary the section-load guard must not overreach.
+{
+  const learnObjective = "Explain the travel-time relation";
+  const learnSection = { id: "ls1", order: 1, number: "1.1", title: "Travel", startPage: 1, endPage: 3,
+    objectives: [learnObjective], coveredObjectives: [learnObjective], requiredChecks: ["conceptual"], status: "learning",
+    synthesis: "At fixed speed, delay grows with path length.", keyPoints: ["Delay grows with path length at fixed speed."],
+    misconceptions: [], attempts: [], transcript: [], createdAt: now, updatedAt: now };
+  const learnBook = { ...seed(), id: "learn-book", instanceId: "learn-instance", tutorSessions: [],
+    chapters: [{ id: "c1", title: "Travel", sections: [learnSection] }] };
+  const learnSession = new ScholarRuntimeSession();
+  learnSession.activate(learnBook.id, "learn", learnSection.id);
+  let current = learnBook;
+  const learnMutate = async (id, operation) => {
+    assert.equal(id, current.id);
+    const copy = structuredClone(current);
+    const outcome = await operation(copy);
+    current = copy;
+    return { book: current, result: outcome };
+  };
+  const requireLearn = (value) => value.chapters[0].sections[0];
+  const learnResult = (action, summary, details) => ({ content: [{ type: "text", text: summary }], details: { action, summary, ...details } });
+  const callLearn = (id, params, bound) => handleAssess(current, learnSession, id, params, requireLearn, learnMutate, learnResult, bound);
+  const learnGrounding = () => ({ purpose: "practice", competency: learnObjective, requiredEvidence: ["State the relation"], sourcePages: [1],
+    basis: [{ kind: "objective", value: learnObjective, supports: [1] }] });
+  const learnContract = prepareOpenAssessment("Delay doubles with length at fixed speed.", ["States that delay doubles when length doubles."]);
+  const pending = (id) => ({ id, toolCallId: `tool-${id}`, kind: "conceptual", format: "open", question: "What happens to delay when length doubles?",
+    grounding: learnGrounding(), openAssessment: { ...learnContract, criteria: [...learnContract.criteria] }, outcome: "pending", createdAt: now });
+
+  await assert.rejects(callLearn("learn-new", { outcome: "pending", kind: "conceptual", question, grounding: learnGrounding(), ...learnContract }),
+    /lesson is still being prepared[\s\S]*questions begin after the lesson is saved/);
+  assert.equal(current.chapters[0].sections[0].attempts.length, 0, "a refused question is never recorded");
+
+  current.chapters[0].sections[0].attempts.push(pending("assessment-shown"));
+  const shown = current.chapters[0].sections[0].attempts.at(-1);
+  const gradeGate = new OpenResponseGate();
+  gradeGate.capture(current, learnSession, "It doubles.", "interactive");
+  gradeGate.beginTurn(current, learnSession, "It doubles.");
+  await callLearn("learn-grade", { attemptId: shown.id, outcome: "pass", feedback: "Delay doubles at fixed speed.",
+    evaluation: { criteria: [{ criterionIndex: 1, met: true, evidence: "It doubles." }] } }, gradeGate);
+  assert.equal(current.chapters[0].sections[0].attempts.find((item) => item.id === shown.id).outcome, "pass");
+
+  current.chapters[0].sections[0].attempts.push(pending("assessment-cancel"));
+  const cancelTarget = current.chapters[0].sections[0].attempts.at(-1);
+  const cancelGate = new OpenResponseGate();
+  cancelGate.capture(current, learnSession, "Please cancel this question.", "interactive");
+  cancelGate.beginTurn(current, learnSession, "Please cancel this question.");
+  await callLearn("learn-cancel", { attemptId: cancelTarget.id, outcome: "cancelled" }, cancelGate);
+  assert.equal(current.chapters[0].sections[0].attempts.find((item) => item.id === cancelTarget.id).outcome, "cancelled");
+
+  const legacy = pending("assessment-legacy");
+  delete legacy.openAssessment;
+  current.chapters[0].sections[0].attempts.push(legacy);
+  await callLearn("learn-upgrade", { attemptId: legacy.id, outcome: "pending", ...learnContract });
+  assert.deepEqual(current.chapters[0].sections[0].attempts.find((item) => item.id === legacy.id).openAssessment, learnContract);
+  assert.equal(current.chapters[0].sections[0].attempts.length, 3, "grading, cancellation and upgrade never create a new question");
+  console.log("[PASS] a lesson in preparation refuses a new question but still grades, cancels and upgrades an already-shown one");
+}
+
 const validQuiz = { question, options: [{ label: "Doubles", value: "double" },
   { label: "Stays fixed", value: "fixed", misconception: "Confuses constant speed with constant time" },
   { label: "Halves", value: "half", misconception: "Reverses proportionality" }], correctAnswer: "double", explanation: contract.expectedAnswer, shuffle: false };
