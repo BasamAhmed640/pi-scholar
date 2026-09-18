@@ -469,7 +469,9 @@ figure needs an explicit reason, such as decoration or genuine duplication. The
 page reviews live beside the other progress in the vault; no extra image database
 or service is used.
 It uses a short diagnostic quiz or open response only when that evidence is
-useful. Every item must first link its required evidence to in-scope PDF pages
+useful, and only after the lesson is saved. Loading a new section asks you
+nothing: preparation runs to completion on its own, then questions begin. Every
+item must first link its required evidence to in-scope PDF pages
 and exact already-taught objectives/key points (or an explicit prerequisite).
 A section completes only when its declared objectives are covered, source-page
 and figure reviews are saved, substantive notes exist, and every required mastery
@@ -534,8 +536,10 @@ Question-engine standards are enforced mechanically when a form is frozen, so a
 weak exam cannot be saved: at least three genuinely plausible options per
 multiple-choice item, no all/none-of-the-above, every distractor carrying its own
 distinct declared misconception, at least two rubric criteria on every
-constructed response, and—once a form reaches four questions—at least one
-constructed response with multiple choice held to at most 70% of the score. The
+constructed response, every prompt answerable as one short response (no lettered
+sub-parts and no essay-length prompt), and—once a form reaches four
+questions—at least one constructed response with multiple choice held to at most
+70% of the score. The
 frozen form also reports its blueprint: question count, points, recognition
 share, how many scoped subsections it sampled, and how many competency
 dimensions it covers.
@@ -595,6 +599,10 @@ Every question is designed in this order:
 ```text
 competency claim → required evidence → task/format → scoring interpretation
 ```
+
+The engine prefers several short items that each confirm one piece of
+understanding. A derivation or proof is decomposed into its decisive steps asked
+as separate short items, never demanded as one long answer.
 
 Multiple-choice distractors represent distinct plausible misconceptions.
 Open-response rubrics score model selection, representation, reasoning,

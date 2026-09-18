@@ -83,7 +83,10 @@ current `expectedContentHash`. User edits cannot be overwritten by a stale save.
 
 Learn's `lessonComplete` commit fingerprints the saved explanation and objective
 check plan. Editing or deleting its explanation invalidates readiness for new
-confirmation questions. Both question formats use this gate. Source inspection
+confirmation questions. Both question formats use this gate. A section that is
+not yet complete and whose lesson is not ready refuses both question surfaces,
+including a resume, so a section load never interrupts preparation; a completed
+section is practice-only and stays answerable. Source inspection
 and source-figure files are checked on commitment; this step does not award mastery.
 The per-objective checks require evidence for that objective and kind, rather than
 borrowing a passing conceptual answer from another topic. One mastery MCQ targets
@@ -99,8 +102,8 @@ are retained. On restart, unanswered questions resume; an ungraded answer must b
 submitted again. Exam continues to use its own explicit submission and frozen form.
 
 Prompt policies are authoring guidance. Code verifies state, source scope, saved
-content, references and response binding; a real generated lesson still needs
-review for accuracy, understandable terminology and connected reasoning.
+content, references, answer shape and response binding; a real generated lesson
+still needs review for accuracy, understandable terminology and connected reasoning.
 
 ```mermaid
 flowchart TB
