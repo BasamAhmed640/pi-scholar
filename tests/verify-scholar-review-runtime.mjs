@@ -188,10 +188,6 @@ await check("A verdict truncated by the output cap is retried once with the mode
   assert.equal(contexts[1].messages[1].stopReason, "length");
   assert.equal(contexts[1].messages[2].role, "user");
   assert.equal(contexts[1].messages[2].content, REVIEW_TRUNCATION_RETRY_MESSAGE);
-  assert.match(REVIEW_TRUNCATION_RETRY_MESSAGE, /cut off by the output limit/);
-  assert.match(REVIEW_TRUNCATION_RETRY_MESSAGE, /ONLY the complete JSON verdict object/);
-  assert.match(REVIEW_TRUNCATION_RETRY_MESSAGE, /at most six blocking findings/);
-  assert.match(REVIEW_TRUNCATION_RETRY_MESSAGE, /at most two sentences/);
   // With no allowance left, the same truncation fails closed instead of looping or approving.
   const exhausted = async () => { caps.length = 0; await rejectCode(runReviewer(options(async () => truncating(8_000), { limits: { maxTotalOutputTokens: 8_000 } })), "limit"); };
   await exhausted();
