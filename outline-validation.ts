@@ -183,17 +183,25 @@ type SourceChapterSignal = { number: string; title?: string; line: string };
 
 function normalizedChapterTitle(value: string): string {
   return normalizedSourceExcerpt(value)
-    .replace(/^chapter\s+[a-z0-9]+\s*(?:[:.\-]\s*)?/, "")
+    .replace(/^chapter\s+[a-z0-9]+\s*(?:[:.\-\u2013\u2014\u00b7]\s*)?/, "")
     .trim();
 }
 
 export function sourceChapterSignals(value: string): SourceChapterSignal[] {
   const signals: SourceChapterSignal[] = [];
   const leadingLines = value.replace(/\r\n?/g, "\n").split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 8);
-  for (const line of leadingLines) {
-    const chapter = /^(?:\d+\s+)?chapter\s+([a-z0-9]+)\b(?:\s*[:.\-\u2013\u2014]\s*|\s+)?(.*)$/i.exec(line);
+  for (const [index, line] of leadingLines.entries()) {
+    const chapter = /^(?:\d+\s+)?chapter\s+([a-z0-9]+)\b(?:\s*[:.\-\u2013\u2014\u00b7]\s*|\s+)?(.*)$/i.exec(line);
     if (chapter) {
-      const title = normalizedChapterTitle(chapter[2] || "");
+      let title = normalizedChapterTitle(chapter[2] || "");
+      if (!title) {
+        // PDF extraction often puts a chapter number and its title on separate
+        // lines. Only join a short heading-like next line, never a numbered
+        // subsection or a sentence of body text.
+        const next = leadingLines[index + 1] || "";
+        if (next.length <= 100 && /^[\p{L}]/u.test(next) && !/^\d+(?:\.\d+)*\b/.test(next)
+          && !/[.!?]$/.test(next)) title = normalizedChapterTitle(next);
+      }
       signals.push({
         number: normalizedOutlineNumber(chapter[1]!),
         ...(title ? { title } : {}),
