@@ -79,6 +79,35 @@ book.exams = [exam];
 
 // =============================================== 1. the form to answer in ==
 const form = examAnswerNoteText(config, book, exam);
+const figure = (id, page, caption, createdAt) => ({
+  id: `snapshot-${id}`, page, caption, createdAt,
+  crop: { x: 0, y: 0, width: 600, height: 300, canvasWidth: 1000, canvasHeight: 1400 },
+  assetFile: `p${String(page).padStart(4, "0")}-snapshot-${id}.png`, sha256: id.repeat(4),
+});
+const olderFigure = figure("aaaaaaaaaaaaaaaa", 1, "Figure 1.1   Closed-loop diagram.", "2026-01-01T00:00:00.000Z");
+const newerFigure = figure("bbbbbbbbbbbbbbbb", 1, "figure 1.1 Closed-loop diagram.", "2026-01-02T00:00:00.000Z");
+const distinctFigure = figure("cccccccccccccccc", 1, "Figure 1.2 Separate diagram.", "2026-01-03T00:00:00.000Z");
+const otherPageFigure = figure("dddddddddddddddd", 2, "Figure 1.1 Closed-loop diagram.", "2026-01-04T00:00:00.000Z");
+const unlabelledA = figure("eeeeeeeeeeeeeeee", 1, "Uncaptioned source diagram", "2026-01-01T00:00:00.000Z");
+const unlabelledB = figure("ffffffffffffffff", 1, "Uncaptioned source diagram", "2026-01-02T00:00:00.000Z");
+const figureBook = structuredClone(book);
+figureBook.source = { fileName: "source.pdf" };
+figureBook.chapters[0].sections[0].snapshots = [newerFigure, distinctFigure, otherPageFigure, unlabelledA, unlabelledB];
+const figureExam = { ...exam, snapshots: [olderFigure], questions: [{ ...questions[0], prompt: "Using Figure 1.1, which model applies?" }, questions[1]] };
+const figurePaper = examAnswerNoteText(config, figureBook, figureExam);
+const sourceFigures = figurePaper.slice(figurePaper.indexOf("## Source figures"), figurePaper.indexOf("> [!question] Question 1"));
+const firstQuestion = figurePaper.slice(figurePaper.indexOf("> [!question] Question 1"), figurePaper.indexOf("> [!question] Question 2"));
+check("paper keeps the latest capture of a repeated labelled figure in source figures and question references",
+  !figurePaper.includes(olderFigure.assetFile)
+    && sourceFigures.includes(newerFigure.assetFile) && firstQuestion.includes(newerFigure.assetFile)
+    && figurePaper.split(newerFigure.assetFile).length - 1 === 2,
+  "one selected image appears in both places");
+check("paper preserves different source figures on the same page and matching captions on other pages",
+  (sourceFigures.match(/> \[!scholar-figure\]/g) || []).length === 5
+    && sourceFigures.includes(distinctFigure.assetFile) && sourceFigures.includes(otherPageFigure.assetFile)
+    && firstQuestion.includes(otherPageFigure.assetFile) && !firstQuestion.includes(distinctFigure.assetFile)
+    && sourceFigures.includes(unlabelledA.assetFile) && sourceFigures.includes(unlabelledB.assetFile),
+  "distinct figures and ambiguous unlabelled captures remain available");
 // One multiple-choice item (about 1 minute) and one written item (about 3 minutes).
 check("form opens with a header callout stating questions, points and time, plus the scope",
   /^> \[!info\] 2 questions · 7 points · about 4 minutes$/m.test(form)

@@ -45,6 +45,24 @@ function recordSourceFigures(owned: ScholarSnapshot[] | undefined, legacy: Schol
   return [...byId.values()];
 }
 
+/** Later recaptures of one labelled source figure replace older paper embeds. */
+function examPaperSourceFigures(owned: ScholarSnapshot[] | undefined, legacy: ScholarSnapshot[]): ScholarSnapshot[] {
+  const figures = recordSourceFigures(owned, legacy);
+  const bySource = new Map<string, ScholarSnapshot>();
+  for (const snapshot of figures) {
+    // Unlabelled captions can describe separate figures on the same page.
+    const labelled = /\b(?:figure|fig\.|table)\s+\d+(?:[.\-–]\d+)*[a-z]?\b/i.test(snapshot.caption);
+    const caption = snapshot.caption.replace(/\s+/g, " ").trim().toLowerCase();
+    const key = labelled ? `${snapshot.page}\u0000${caption}` : snapshot.id;
+    const previous = bySource.get(key);
+    const area = snapshot.crop.width * snapshot.crop.height;
+    const previousArea = previous ? previous.crop.width * previous.crop.height : 0;
+    if (!previous || snapshot.createdAt > previous.createdAt
+      || (snapshot.createdAt === previous.createdAt && area > previousArea)) bySource.set(key, snapshot);
+  }
+  return [...bySource.values()];
+}
+
 export function tutorSourceFigures(book: ScholarBook, session: TutorSession): ScholarSnapshot[] {
   return recordSourceFigures(session.snapshots, book.chapters.flatMap(chapter => chapter.sections.flatMap(section => {
     const selected = session.scope.sectionIds.length ? session.scope.sectionIds.includes(section.id)
@@ -141,7 +159,7 @@ export function examAnswerNoteText(config: ScholarConfig, book: ScholarBook, exa
   const choiceCount = exam.questions.length - openCount;
   const snapshots = book.chapters.flatMap((chapter) => chapter.sections.flatMap((section) =>
     exam.scope.sectionIds.includes(section.id) ? section.snapshots || [] : []));
-  const figures = recordSourceFigures(exam.snapshots, snapshots);
+  const figures = examPaperSourceFigures(exam.snapshots, snapshots);
   const steps = [
     ...(choiceCount ? [`**Choose** — tick one box${exam.questions.some(isSelectAll) ? ", or every box that applies when a question says *select all that apply*" : ""}.`] : []),
     ...(openCount ? ["**Write** — answer in a line or two under **Your response**, in Live Preview. Leave the hidden answer markers in place."] : []),
