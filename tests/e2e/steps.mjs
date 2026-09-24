@@ -360,7 +360,10 @@ export async function stepTutor(h, scope = "1.2") {
     h.check(stage, "tutor note written", Boolean(tutor), tutor ? basename(tutor.path) : "none");
     const quizCount = h.quizDialogsSince(since).length;
     h.check(stage, "tutor asked questions (probe/lock-in)", quizCount >= 1, `${quizCount} quiz dialogs`);
-    const flowcharts = (tutor?.text.match(/```mermaid\s*\n\s*(?:flowchart|graph)\s/g) || []).length;
+    // Obsidian renders Scholar diagrams inside callouts, prefixing both fence
+    // and Mermaid lines with ">". Count the rendered note form as well as a
+    // plain fence; the original matcher missed every real Tutor diagram.
+    const flowcharts = (tutor?.text.match(/^[ \t]*(?:>[ \t]*)*```mermaid[ \t]*\r?\n[ \t]*(?:>[ \t]*)*(?:flowchart|graph)\b/gm) || []).length;
     h.check(stage, "learning-path Mermaid flowchart saved (C5)", flowcharts >= 1, `${flowcharts} flowcharts`, { soft: !h.strict });
     const after = h.sectionState(scope);
     const snapshot = (state) => JSON.stringify(state.questions.map((question) => [question.id, question.status]));
