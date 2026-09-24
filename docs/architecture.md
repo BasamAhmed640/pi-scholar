@@ -102,6 +102,16 @@ and source-figure files are checked on commitment; this step does not award mast
 The per-objective checks require evidence for that objective and kind, rather than
 borrowing a passing conceptual answer from another topic. One mastery MCQ targets
 one objective; integrated open questions may assess several with explicit evidence.
+`quiz-host.ts` saves each answer synchronously with the interactive picker or RPC
+fallback before the next item opens. Set IDs and stable attempt IDs let an
+interrupted Learn or Tutor set resume only pending items. The `tool_result` hook
+remains an idempotent backstop, not the authority for an answer.
+
+Exam freezes a complete paper in Obsidian. Submission snapshots its answers.
+The frozen option key scores multiple choice in code; only written responses
+are sent to the grader. `tutor-web.ts` registers a Tutor-only, bounded HTTPS
+search/read tool that validates every DNS result and redirect. Its output is
+untrusted external text and cannot support a graded Tutor answer.
 
 `open-assessment.ts` binds a response to the current book, mode, question, scoring
 contract and input turn. Typed evidence must occur in the actual response; image

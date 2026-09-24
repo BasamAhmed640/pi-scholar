@@ -85,9 +85,10 @@ Architecture narrative: `docs/architecture.md`. Note hierarchy: `docs/hierarchy.
 
 - Poppler (`pdfinfo`, `pdftotext`, `pdftoppm`) must be on `PATH`. Windows may
   also fall back to Calibre's bundled copies.
-- Interactive hosts must implement `getEditorComponent` / `setEditorComponent`.
-  Scholar **refuses to start a protected operation** if it cannot install its
-  chat lock rather than continuing unlocked. Only `hasUI: false` bypasses it.
+- TUI hosts must implement `getEditorComponent` / `setEditorComponent`.
+  Scholar **refuses to start a protected TUI operation** if it cannot install
+  its chat lock rather than continuing unlocked. Explicit headless and Pi RPC
+  contexts bypass the TUI editor lock while retaining Scholar's save gates.
 - For unusual installs, point at the SDK with `PI_SCHOLAR_PI_PACKAGE`, and pick
   a specific extension with `PI_SCHOLAR_EXTENSION`.
 - **Keep the global TypeScript on 5.x.** The language server is

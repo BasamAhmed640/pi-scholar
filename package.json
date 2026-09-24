@@ -1,6 +1,6 @@
 {
   "name": "pi-scholar",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "private": true,
   "description": "Local PDF study workflows for Pi and Obsidian",
   "type": "module",
@@ -63,6 +63,7 @@
     "tool-contract.ts",
     "tool-controller.ts",
     "transcript-recovery.ts",
+    "tutor-web.ts",
     "types.ts",
     "scholar.css",
     "README.md",

@@ -523,6 +523,9 @@ The collapsed question details include the grading key, so leave them closed whi
 answering. This is an inspectable local study record, not an exam security boundary.
 The terminal picker withholds feedback until submission. Editing a frozen quiz's
 prompt or choices stops automatic grading; delete its whole block to replace it.
+For a new Learn mastery set, one model turn can prepare the remaining questions
+together. Scholar saves each answer before showing the next question and resumes
+only unanswered items after a restart.
 
 ### Exam
 
@@ -575,6 +578,8 @@ gives the correct answer, why that reasoning holds, the first decisive error, th
 correct reasoning, and a transferable lesson. Correct answers get a brief note on
 why the reasoning holds, so a lucky guess is not mistaken for competence. The
 learner's submitted responses stay in the visible exam record for grading.
+Multiple-choice outcomes are computed from the frozen key, including select-all
+items; model grading applies only to written answers.
 The learner's handwritten answers remain in
 their separate Obsidian answer paper, which is never overwritten by Scholar.
 
@@ -595,6 +600,10 @@ Tutor receives only its selected source scope and the current request—not Lear
 completion or Exam evidence. It diagnoses a specific gap, teaches the governing
 model, fades support, and uses fresh practice when helpful. Tutor success never
 changes an Exam score or counts as independent Learn evidence.
+Its default flow is a short source-grounded probe, a Mermaid learning path, one
+node of explanation, and a short lock-in check before advancing. Tutor alone can
+look up a material fact on public HTTPS pages. The note labels any resulting
+external quote and its URL; web text does not become a graded answer basis.
 
 During any active Scholar generation turn—book setup, Learn, Exam, or Tutor—the
 normal Pi chat editor is paused. New chat messages, steering, and queued
@@ -812,8 +821,9 @@ Interactive Pi hosts must implement and honor `getEditorComponent` and
 `setEditorComponent`. Scholar refuses to start a protected operation if it cannot
 install the chat lock, instead of silently continuing unlocked. Escape still
 interrupts, quiz dialogs stay interactive, and releasing the lock preserves the
-previous editor and draft. Only an explicitly headless context (`hasUI: false`)
-bypasses the editor lock. This protects Scholar's workflows; it is not a global
+previous editor and draft. An explicitly headless context (`hasUI: false`) and
+Pi's RPC mode bypass the TUI editor lock; RPC still uses Scholar's own pending
+question and save gates. This protects Scholar's workflows; it is not a global
 security boundary against unrelated Pi tools or other extensions.
 
 ## Verification and release contents
