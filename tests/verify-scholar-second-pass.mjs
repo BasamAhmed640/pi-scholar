@@ -197,9 +197,11 @@ check("DEFECT-05 an unknown resolution outcome is refused by name",
 // ============================ DEFECT-06: missing feedback must not be a crash =
 const question = {
   id: "q1", sectionIds: ["c1s1"], claim: "c", requiredEvidence: ["e"], dimensions: ["d"],
-  format: "multiple-choice", prompt: "p", options: [], explanation: "x", maxPoints: 2,
+  format: "open", prompt: "Explain the model.",
+  rubric: [{ id: "r1", criterion: "Explains the model", requiredEvidence: ["e"], points: 2 }],
+  explanation: "x", maxPoints: 2,
 };
-const submitted = { ...book, exams: [{ ...book.exams[0], status: "submitted", questions: [question], maxPoints: 2, rawResponses: [{ questionId: "q1", response: "a" }] }] };
+const submitted = { ...book, exams: [{ ...book.exams[0], status: "submitted", questions: [question], maxPoints: 2, rawResponses: [{ questionId: "q1", response: "A written explanation" }] }] };
 for (const [label, feedback] of [["omitted", undefined], ["null", null], ["blank", "   "]]) {
   const message = await threw(() => handleExamGrade(submitted, "exam-001",
     [{ questionId: "q1", outcome: "correct", earnedPoints: 2, maxPoints: 2, feedback }],

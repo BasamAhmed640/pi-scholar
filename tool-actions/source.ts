@@ -89,45 +89,69 @@ export async function handleSourceRead(
 export async function handleSourceView(
   book: ScholarBook,
   session: ScholarRuntimeSession,
-  params: { page?: number },
+  params: { page?: number; startPage?: number; endPage?: number },
   recordOutlineValidationView: (book: ScholarBook, page: number) => void,
   mutateBook?: MutateBook,
-  recordSourceFigureView?: (page: number, width: number, height: number) => Promise<void>,
+  recordSourceFigureViews?: (views: Array<{ page: number; width: number; height: number }>) => Promise<void>,
 ): Promise<{ content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: "image/png" }>; details: ToolDetails }> {
-  const page = params.page;
-  if (!page) throw new Error("Scholar view requires page.");
-  assertPagesInModeScope(book, session.mode, session.recordId, page, page);
-  const rendered = await renderPdfPage(book, page);
-  await recordSourceFigureView?.(page, rendered.width, rendered.height);
-  recordOutlineValidationView(book, page);
+  const range = params.startPage !== undefined || params.endPage !== undefined;
+  if (range && (params.page !== undefined || !params.startPage || !params.endPage)) {
+    throw new Error("Scholar view requires either page or startPage and endPage.");
+  }
+  const start = range ? params.startPage! : params.page;
+  const end = range ? params.endPage! : params.page;
+  if (!start || !end || end < start || end - start >= 4) {
+    throw new Error("Scholar view requires one page or a consecutive range of at most four pages.");
+  }
+  assertPagesInModeScope(book, session.mode, session.recordId, start, end);
+  const pages = Array.from({ length: end - start + 1 }, (_, index) => start + index);
+  const renders = await Promise.all(pages.map((page) => renderPdfPage(book, page)));
+  await recordSourceFigureViews?.(pages.map((page, index) => ({ page, width: renders[index]!.width, height: renders[index]!.height })));
+  for (let index = 0; index < pages.length; index++) {
+    recordOutlineValidationView(book, pages[index]!);
+  }
   if (session.mode === "learn" && mutateBook) {
     const target = findSection(book, session.recordId);
     // Chapter lead-in/context pages remain readable; only section pages belong
     // in this section's durable visual-coverage receipt.
-    const previousView = target?.figureCoverage?.pages.find((item) => item.page === page)?.viewed;
-    if (target && page >= target.startPage && page <= target.endPage
-      && (previousView?.width !== rendered.width || previousView.height !== rendered.height)) {
+    const changed = pages.some((page, index) => {
+      if (!target || page < target.startPage || page > target.endPage) return false;
+      const previous = target.figureCoverage?.pages.find((item) => item.page === page)?.viewed;
+      return previous?.width !== renders[index]!.width || previous.height !== renders[index]!.height;
+    });
+    if (changed) {
       await mutateBook(book.id, (state) => {
         const section = findSection(state, session.recordId);
-        if (!section || page < section.startPage || page > section.endPage) throw new Error("The active Learn section changed while viewing its source.");
-        recordLearnView(section, page, rendered.width, rendered.height);
+        if (!section || section.startPage !== target!.startPage || section.endPage !== target!.endPage) {
+          throw new Error("The active Learn section changed while viewing its source.");
+        }
+        pages.forEach((page, index) => {
+          if (page >= section.startPage && page <= section.endPage) {
+            const rendered = renders[index]!;
+            recordLearnView(section, page, rendered.width, rendered.height);
+          }
+        });
       });
     }
   }
-  const summary = `Rendered PDF page ${page} at ${rendered.width}x${rendered.height}. Snapshot coordinates use these intrinsic pixels from the top-left.${session.mode === "learn" ? " Inspect every source figure, including vector diagrams without extracted captions. On a shared boundary page, keep only visuals belonging before/after the active section's heading boundaries. Save crops, then account for this page in notes.figureReviews." : ""}`;
+  const guidance = session.mode === "learn" ? " Inspect every source figure, including vector diagrams without extracted captions. On a shared boundary page, keep only visuals belonging before/after the active section's heading boundaries. Save crops, then account for this page in notes.figureReviews." : "";
+  const summary = pages.length === 1
+    ? `Rendered PDF page ${start} at ${renders[0]!.width}x${renders[0]!.height}. Snapshot coordinates use these intrinsic pixels from the top-left.${guidance}`
+    : `Rendered PDF pages ${start}-${end} concurrently. Each page below gives its own intrinsic canvas dimensions for snapshot coordinates.${guidance}`;
   return {
     content: [
       { type: "text" as const, text: summary },
-      { type: "image" as const, data: rendered.data, mimeType: rendered.mimeType },
+      ...pages.flatMap((page, index) => [
+        ...(pages.length > 1 ? [{ type: "text" as const, text: `PDF page ${page}: ${renders[index]!.width}x${renders[index]!.height} intrinsic pixels.` }] : []),
+        { type: "image" as const, data: renders[index]!.data, mimeType: renders[index]!.mimeType },
+      ]),
     ],
     details: {
       action: "view",
       summary,
       bookId: book.id,
-      page,
-      bytes: rendered.bytes,
-      width: rendered.width,
-      height: rendered.height,
+      ...(pages.length === 1 ? { page: start, bytes: renders[0]!.bytes, width: renders[0]!.width, height: renders[0]!.height }
+        : { startPage: start, endPage: end, bytes: renders.reduce((sum, item) => sum + item.bytes, 0) }),
     } satisfies ToolDetails,
   };
 }

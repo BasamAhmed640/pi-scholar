@@ -14,6 +14,7 @@ type InputLockRequest = {
 
 export type InputLockContext = Pick<ExtensionContext, "ui"> & {
   hasUI?: boolean;
+  mode?: string;
   abort?: () => void | Promise<void>;
 };
 
@@ -82,6 +83,7 @@ export function createScholarInputLockController(): ScholarInputLockController {
 
   const acquireInputLock = (ctx: InputLockContext | ExtensionContext, label = "loading"): (() => void) => {
     if (ctx?.hasUI === false) return () => undefined;
+    if (typeof ctx?.mode === "string" && ctx.mode !== "tui") return () => undefined;
     const ui = ctx?.ui;
     if (
       typeof ui?.setEditorComponent !== "function"

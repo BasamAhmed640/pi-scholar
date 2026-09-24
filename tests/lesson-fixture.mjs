@@ -11,6 +11,7 @@ export function saveFixtureLesson(lesson, book, record, options = {}) {
     title: options.title || "Interpreting the source model",
     markdown: options.markdown || "### Interpreting the source model\n\nA model connects an input to an observable result. Start by identifying what changes, then use the relation stated on the cited source page to predict which output changes.\n\nThe input represents the cause and the output represents the measured effect. To justify a prediction, state the relation and explain how the changed input affects that relation; a result without that connection does not show the reasoning.",
     objectives, keyPoints, sourcePages,
+    ...(options.diagrams ? { diagrams: options.diagrams } : {}),
   });
   if (learn) {
     record.coveredObjectives = [...objectives];

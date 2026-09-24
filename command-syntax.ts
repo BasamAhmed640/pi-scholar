@@ -44,9 +44,9 @@ export function parseScholarCommand(input: string): ParsedScholarCommand {
 
 export const SCHOLAR_COMMAND_ACTIONS = [
   { value: "open ", label: "open", description: "Choose or open a book" },
-  { value: "learn ", label: "learn", description: "Choose a chapter/section, or resume an active one" },
-  { value: "exam ", label: "exam", description: 'Create an Obsidian exam (e.g. "1-3", "1, 2", or "all")' },
-  { value: "tutor ", label: "tutor", description: "Tutor a selected chapter, section, or topic" },
+  { value: "learn ", label: "learn", description: "Continue the active section or begin the first unfinished one" },
+  { value: "exam ", label: "exam", description: 'Resume a form or examine the current chapter (scope may be "1-3", "1, 2", or "all")' },
+  { value: "tutor ", label: "tutor", description: "Resume Tutor or start at the current section" },
   { value: "library ", label: "library", description: "Set the local books folder" },
   { value: "obsidian ", label: "obsidian", description: "Set the existing Obsidian vault" },
   { value: "close", label: "close", description: "Leave Scholar mode in this Pi session" },
@@ -97,7 +97,7 @@ export async function getScholarArgumentCompletions(
       const book = bookId ? await loadBookState(completionConfig, bookId).catch(() => undefined) : undefined;
       const rawQuery = examMatch[1] || "";
       const query = cleanArgument(rawQuery).toLowerCase();
-      const submitItem = { value: "exam submit", label: "submit", description: "Select an active exam and confirm submission" };
+      const submitItem = { value: "exam submit", label: "submit", description: "Confirm the sole active exam, or choose among several" };
       const namedSubmit = /^([\s\S]+?)\s+(?:s|su|sub|subm|submi|submit)$/i.exec(rawQuery);
       if (namedSubmit) {
         const target = cleanArgument(namedSubmit[1]).toLowerCase();

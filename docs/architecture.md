@@ -7,8 +7,9 @@ You do not have to finish Learn before taking an Exam or opening Tutor.
 New Learn delivery uses the selected Pi model as lead author and four independent
 review responsibilities. Source, teaching and math/visual reviewers audit each
 saved explanation revision as it is saved, while the author continues working;
-the assessment reviewer checks a new proposed question before the interactive
-form is persisted. Each check is one prepared request: the runner loads exactly
+the assessment reviewer checks one Learn mastery set or open assessment at a
+time. Tutor probes and practice use deterministic grounding gates. Each check is
+one prepared request: the runner loads exactly
 that packet's page text, saved crops and lesson passages, so a reviewer never
 fetches its own evidence. Reviewers run at a fixed low reasoning level and
 inspect saved crops rather than full rendered pages — a deliberate trade of
@@ -43,12 +44,20 @@ does not use Learn or Tutor performance to alter the test.
 
 Shared review work lives in `review-layer.ts` and `review-runtime.ts`: they plan each audit unit's packets and run its bounded reviewer pass across Learn, Tutor, and Exam targets.
 `tool-controller.ts` owns the per-preparation audit scheduler, delivers unresolved findings into later tool results, and finalizes delivery; the per-unit gate helpers live in `learn-quality.ts` and `lesson.ts`.
-Count-based action budgets, the reviewer's single bounded run, and tool isolation prevent runaway execution while ensuring model independence. There is no wall-clock stop on preparation; the only clock is that bounded reviewer run.
-Audit-as-you-go; one audit pass per saved unit revision; no re-review of unchanged work; delivery stays controller-owned and hash-bound.
+Count-based action budgets, bounded review waits, and tool isolation prevent
+runaway execution while ensuring model independence. Review of a lesson may
+delay delivery by at most 45 seconds once; the corresponding exam wait is 60
+seconds and Learn question-set review is 30 seconds. Failed review is advisory
+after the single repair opportunity. Deterministic source and coverage gates
+still decide whether delivery is complete. Audit-as-you-go keeps one pass per
+saved revision and no re-review of unchanged work; delivery stays controller-owned
+and hash-bound.
 
 `learn-quality.ts` defines coverage and per-unit review contracts, and
 `lesson.ts` binds them to saved explanation revisions. `equation-presentation.ts`
-builds equation callouts from validated fields and explicit placement markers.
+and `diagram-presentation.ts` build callouts from validated records and explicit
+placement markers. New Learn delivery requires a diagram, and source systems,
+workflows, and sequences each require a diagram linked to their explanatory unit.
 `learn-review.ts` plans each unit's packets against the saved revision and its
 source evidence; `review-runtime.ts` bounds their tool loops and uses Pi's active
 model registry, authentication and supported reasoning interface. Source review
@@ -65,6 +74,8 @@ outstanding audits of the current revisions, then reloads and checks the active
 vault/section, source identity, actual figure bytes and the exact draft hash
 before saving approval. The hash includes the lesson, coverage, recap,
 assessment plan and figure metadata. Changed content invalidates approval.
+Old completed sections remain readable and are not subjected to the new diagram
+quota when they load.
 Reviewer findings live in the same section note's collapsible details; model
 conversations and credentials are never written there. New Learn authoring
 activates this contract automatically; legacy delivered lessons remain usable.
@@ -91,6 +102,16 @@ and source-figure files are checked on commitment; this step does not award mast
 The per-objective checks require evidence for that objective and kind, rather than
 borrowing a passing conceptual answer from another topic. One mastery MCQ targets
 one objective; integrated open questions may assess several with explicit evidence.
+`quiz-host.ts` saves each answer synchronously with the interactive picker or RPC
+fallback before the next item opens. Set IDs and stable attempt IDs let an
+interrupted Learn or Tutor set resume only pending items. The `tool_result` hook
+remains an idempotent backstop, not the authority for an answer.
+
+Exam freezes a complete paper in Obsidian. Submission snapshots its answers.
+The frozen option key scores multiple choice in code; only written responses
+are sent to the grader. `tutor-web.ts` registers a Tutor-only, bounded HTTPS
+search/read tool that validates every DNS result and redirect. Its output is
+untrusted external text and cannot support a graded Tutor answer.
 
 `open-assessment.ts` binds a response to the current book, mode, question, scoring
 contract and input turn. Typed evidence must occur in the actual response; image

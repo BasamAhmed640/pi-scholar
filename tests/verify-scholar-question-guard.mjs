@@ -169,6 +169,44 @@ const tutorValid = questionGroundingIssues(grounding({
 }), tutorBook, { mode: "tutor", tutor: tutorSession });
 check("Tutor-owned teaching receipt is admitted", tutorValid.length === 0, tutorValid.join("; ") || "Tutor isolation preserved");
 
+const tutorKeyPointDiagnostic = grounding({
+  purpose: "diagnostic",
+  requiredEvidence: ["Recall the governing equation."],
+  basis: [{ kind: "key-point", value: tutorSession.keyPoints[0], supports: [1] }],
+});
+const tutorDiagnosticIssues = questionGroundingIssues(tutorKeyPointDiagnostic, tutorBook, { mode: "tutor", tutor: tutorSession });
+check("a new Tutor diagnostic needs an in-scope source-declared prerequisite even after teaching",
+  tutorDiagnosticIssues.some((issue) => /Tutor diagnostic.*source-declared prerequisite.*in-scope PDF page/.test(issue)),
+  tutorDiagnosticIssues.join("; "));
+const legacyTutorIssues = questionGroundingIssues(tutorKeyPointDiagnostic, tutorBook, { mode: "tutor", tutor: tutorSession }, { resume: true });
+check("an already-frozen Tutor diagnostic keeps its legacy pending resume",
+  legacyTutorIssues.length === 0, legacyTutorIssues.join("; ") || "saved question remains playable");
+const learnKeyPointDiagnostic = questionGroundingIssues(grounding({
+  purpose: "diagnostic",
+  requiredEvidence: ["Recall the governing equation."],
+  basis: [{ kind: "key-point", value: learnSection.keyPoints[0], supports: [1] }],
+}), testBook, { mode: "learn", section: learnSection });
+check("Learn diagnostics may still use already-taught material",
+  learnKeyPointDiagnostic.length === 0, learnKeyPointDiagnostic.join("; ") || "Learn behavior preserved");
+const inScopeTutorDiagnostic = questionGroundingIssues(grounding({
+  purpose: "diagnostic",
+  requiredEvidence: ["Distinguish source from circulation."],
+  basis: [{ kind: "prerequisite", value: "The source distinguishes these mechanisms.",
+    prerequisiteBasis: "source-declared", sourcePage: 12, supports: [1] }],
+}), tutorBook, { mode: "tutor", tutor: tutorSession });
+check("a new Tutor diagnostic accepts an in-scope source-declared prerequisite",
+  inScopeTutorDiagnostic.length === 0, inScopeTutorDiagnostic.join("; ") || "source page accepted");
+const outOfScopeTutorDiagnostic = questionGroundingIssues(grounding({
+  purpose: "diagnostic", sourcePages: [21],
+  requiredEvidence: ["Distinguish source from circulation."],
+  basis: [{ kind: "prerequisite", value: "A later source page discusses the mechanisms.",
+    prerequisiteBasis: "source-declared", sourcePage: 21, supports: [1] }],
+}), tutorBook, { mode: "tutor", tutor: tutorSession });
+check("an out-of-scope page cannot satisfy the Tutor diagnostic requirement",
+  outOfScopeTutorDiagnostic.some((issue) => /Tutor diagnostic.*source-declared prerequisite.*in-scope PDF page/.test(issue))
+    && outOfScopeTutorDiagnostic.some((issue) => /outside the active tutor scope/.test(issue)),
+  outOfScopeTutorDiagnostic.join("; "));
+
 const freeTutor = tutor([]);
 const freeTutorBook = book(section(), [freeTutor]);
 const freeDiagnostic = questionGroundingIssues(grounding({

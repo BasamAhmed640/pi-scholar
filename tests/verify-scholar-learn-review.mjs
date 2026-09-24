@@ -282,7 +282,8 @@ await check("Question review reads its source and blocks a unique correct-option
   assert.deepEqual(options.observations.crops, [], "a text question needs no crop image");
   const unreadable = fixture();
   unreadable.evidence.read = async () => "the returned text never names the page it came from";
-  await assert.rejects(reviewLearnQuestion(unreadable, proposed, [1]), /Question review incomplete \(evidence\)/);
+  const advisory = await reviewLearnQuestion(unreadable, proposed, [1]);
+  assert.doesNotThrow(() => advisory(unreadable.section), "an execution failure does not block deterministic question checks");
 });
 
 await check("Question approval prepares its figure evidence, and a text question stays text only", async () => {
@@ -297,7 +298,20 @@ await check("Question approval prepares its figure evidence, and a text question
   assert.deepEqual(text.observations, { reads: [[1, 1]], views: [], crops: [] }, "a text question review carries the page text and no images");
   const broken = fixture();
   broken.evidence.crop = async () => { throw new Error("Saved figure bytes changed; the review is invalid."); };
-  await assert.rejects(reviewLearnQuestion(broken, figureQuestion, [1]), /Question review incomplete \(evidence\)/);
+  const advisory = await reviewLearnQuestion(broken, figureQuestion, [1]);
+  assert.doesNotThrow(() => advisory(broken.section));
+});
+
+await check("one prepared review inspects a complete Learn question set", async () => {
+  const requests = [];
+  const options = fixture(async (_selected, context) => { requests.push(structuredClone(context)); return message({ status: "pass", findings: [] }); });
+  const questions = [{ question: "Which relation follows?", grounding: { sourcePages: [1] } },
+    { question: "What changes at fixed speed?", grounding: { sourcePages: [2] } }];
+  const guard = await reviewLearnQuestion(options, questions, [1, 2]);
+  assert.doesNotThrow(() => guard(options.section));
+  assert.equal(requests.length, 1, "one model request reviews the whole set");
+  assert.match(requests[0].messages[0].content, /proposedQuestions/);
+  assert.deepEqual(options.observations.reads, [[1, 2]], "both declared source pages were supplied to the one reviewer");
 });
 
 await check("Question approval rejects lesson, source-plan and figure changes before display", async () => {

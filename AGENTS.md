@@ -8,16 +8,22 @@ none requires another to be completed first.
 
 ```bash
 npm ci --ignore-scripts     # uses the committed npm-shrinkwrap.json
-npm test                    # 58 verifiers; currently all pass
+npm test                    # run every packaged verifier
 npm run test:list           # list checks without loading Pi
 npm run test:preflight      # confirm Pi SDK + test deps import
 npm run pack:check          # preview the npm archive file list
 ```
 
-`npm test` is the only evidence that counts. It generates synthetic PDFs and
+`npm test` is the required deterministic gate. It generates synthetic PDFs and
 disposable vaults, so it needs no real book or vault — but it does need
 **Poppler on PATH**: `pdfinfo`, `pdftotext`, `pdftoppm`. A run reporting
 "blocked" prerequisites is not a pass.
+
+For a release, also run the real Pi RPC workflow in an isolated library and
+vault: `node tests/e2e/run.mjs --scenario full --extension . --keep`. The
+`plumbing` scenario makes no model calls. Run the owner-vault regression on a
+copy with `node tests/e2e/real-vault-check.mjs --vault <vault-path> --extension .`.
+The full workflow costs model calls and is intentionally outside `npm test`.
 
 There is **no `tsconfig.json` and no typecheck step.** The language server
 (`tsc --lsp`) still reports type errors per file. If you add a config, do not
@@ -31,6 +37,14 @@ will bury real defects in noise.
 - **Approval is hash-bound.** The hash covers lesson, coverage, recap,
   assessment plan, and figure metadata. Any content change invalidates approval
   — that is intended, not a bug to route around.
+- **Legacy notes keep their status.** Apply the new diagram quota only when the
+  controller commits a new Learn lesson. Never put it in readiness, replay,
+  migration, or completion calculations for old sections.
+- **Quiz sets persist each answer before advancing.** An answer is recorded by
+  the awaited quiz host; event hooks are only idempotent backstops. Every item
+  in a set has its own stable attempt ID and shares a set ID.
+- **Exam multiple choice grades are deterministic.** Compare the frozen key to
+  the submitted options in code; the model judges written responses only.
 - Audit-as-you-go; one audit pass per saved unit revision; no re-review of unchanged work. Delivery remains controller-owned and hash-bound.
 - **Modes are isolated.** They share the PDF and its validated outline, never
   each other's learner history. A Tutor answer must not move Learn progress;
@@ -63,8 +77,8 @@ will bury real defects in noise.
 |---|---|
 | Entry / commands | `index.ts`, `commands.ts`, `command-syntax.ts`, `modes.ts` |
 | Teach | `policies.ts` (engine contracts), `lesson.ts`, `lesson-figures.ts` |
-| Question | `quiz.ts`, `quiz-contract.ts`, `exam.ts`, `exam-paper.ts` |
-| Presentation | `render/`, `scholar.css`, `equation-presentation.ts` |
+| Question | `quiz.ts`, `quiz-host.ts`, `quiz-contract.ts`, `exam.ts`, `exam-paper.ts` |
+| Presentation | `render/`, `scholar.css`, `equation-presentation.ts`, `diagram-presentation.ts` |
 | Review | `review-layer.ts`, `review-runtime.ts`, `learn-review.ts`, `learn-quality.ts` |
 | Contract / state | `tool-controller.ts`, `tool-contract.ts`, `state-schema.ts`, `runtime-coordinator.ts` |
 | Obsidian | `obsidian.ts`, `obsidian-paths.ts`, `note-records.ts`, `note-storage.ts` |
@@ -77,9 +91,10 @@ Architecture narrative: `docs/architecture.md`. Note hierarchy: `docs/hierarchy.
 
 - Poppler (`pdfinfo`, `pdftotext`, `pdftoppm`) must be on `PATH`. Windows may
   also fall back to Calibre's bundled copies.
-- Interactive hosts must implement `getEditorComponent` / `setEditorComponent`.
-  Scholar **refuses to start a protected operation** if it cannot install its
-  chat lock rather than continuing unlocked. Only `hasUI: false` bypasses it.
+- TUI hosts must implement `getEditorComponent` / `setEditorComponent`.
+  Scholar **refuses to start a protected TUI operation** if it cannot install
+  its chat lock rather than continuing unlocked. Explicit headless and Pi RPC
+  contexts bypass the TUI editor lock while retaining Scholar's save gates.
 - For unusual installs, point at the SDK with `PI_SCHOLAR_PI_PACKAGE`, and pick
   a specific extension with `PI_SCHOLAR_EXTENSION`.
 - **Keep the global TypeScript on 5.x.** The language server is

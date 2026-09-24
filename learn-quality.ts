@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
  * current review receipts; they cannot themselves certify scientific accuracy.
  * The coordinator, never the lesson author, records completed reviewer results.
  */
-export const SOURCE_COVERAGE_KINDS = ["concept", "definition", "derivation", "equation", "assumption", "example", "counterexample", "figure"] as const;
+export const SOURCE_COVERAGE_KINDS = ["concept", "definition", "derivation", "equation", "assumption", "example", "counterexample", "figure", "system", "workflow", "sequence"] as const;
 export type SourceCoverageKind = typeof SOURCE_COVERAGE_KINDS[number];
 export type SourceCoverageItem = {
   id: string;
@@ -19,15 +19,16 @@ export type SourceCoverageItem = {
   evidence?: string;
   equationId?: string;
   snapshotId?: string;
+  diagramId?: string;
 };
-export type CoverageUpdate = Pick<SourceCoverageItem, "id"> & Partial<Pick<SourceCoverageItem, "lessonId" | "evidence" | "equationId" | "snapshotId">>;
+export type CoverageUpdate = Pick<SourceCoverageItem, "id"> & Partial<Pick<SourceCoverageItem, "lessonId" | "evidence" | "equationId" | "snapshotId" | "diagramId">>;
 
 /** Change delivery pointers without retransmitting or shrinking the source plan. */
 export function updateCoverageEvidence(ledger: SourceCoverageItem[], updates: CoverageUpdate[]): SourceCoverageItem[] {
   if (!Array.isArray(updates) || !updates.length || updates.length > 200
-    || !updates.every(update => object(update) && keys(update, ["id", "lessonId", "evidence", "equationId", "snapshotId"]) && id(update.id)
+    || !updates.every(update => object(update) && keys(update, ["id", "lessonId", "evidence", "equationId", "snapshotId", "diagramId"]) && id(update.id)
       && Object.keys(update).length > 1) || new Set(updates.map(update => update.id)).size !== updates.length) {
-    throw new Error("coverageUpdates needs unique existing item IDs and only lessonId/evidence/equationId/snapshotId fields.");
+    throw new Error("coverageUpdates needs unique existing item IDs and only lessonId/evidence/equationId/snapshotId/diagramId fields.");
   }
   const result = ledger.map(item => ({ ...item }));
   for (const update of updates) {
@@ -44,6 +45,8 @@ export type SourceCoverageLesson = {
   markdown: string;
   /** IDs extracted from the renderer's saved equation receipts. */
   keyEquationIds?: readonly string[];
+  /** IDs expanded from diagram markers in this saved lesson. */
+  diagramIds?: readonly string[];
   /** IDs resolved from actual embeds in this saved lesson, not author claims. */
   embeddedSnapshotIds?: readonly string[];
 };
@@ -65,11 +68,11 @@ const sha256 = (value: unknown): value is string => typeof value === "string" &&
 const optional = (value: Record<string, unknown>, key: string, check: (value: unknown) => boolean) => !(key in value) || check(value[key]);
 
 export function isSourceCoverageItem(value: unknown): value is SourceCoverageItem {
-  return object(value) && keys(value, ["id", "kind", "description", "sourcePages", "objective", "lessonId", "evidence", "equationId", "snapshotId"])
+  return object(value) && keys(value, ["id", "kind", "description", "sourcePages", "objective", "lessonId", "evidence", "equationId", "snapshotId", "diagramId"])
     && id(value.id) && SOURCE_COVERAGE_KINDS.includes(value.kind as SourceCoverageKind)
     && text(value.description) && pages(value.sourcePages) && value.sourcePages.length > 0 && text(value.objective)
     && optional(value, "lessonId", id) && optional(value, "evidence", item => text(item, 24000))
-    && optional(value, "equationId", id) && optional(value, "snapshotId", id);
+    && optional(value, "equationId", id) && optional(value, "snapshotId", id) && optional(value, "diagramId", id);
 }
 
 export function isSourceCoverageLedger(value: unknown): value is SourceCoverageItem[] {
@@ -79,14 +82,30 @@ export function isSourceCoverageLedger(value: unknown): value is SourceCoverageI
 export const matchesLessonId = (saved: string, input: string) => saved === input || saved === `lesson-${input}`
   || (!saved.startsWith("lesson-") && `lesson-${saved}` === input);
 const normalizedLabel = (value: string) => value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-const comparableMarkdown = (value: string) => value.replace(/\r\n/g, "\n").trim();
+/** Extract explanatory prose without admitting fenced Mermaid/code as evidence. */
+function explanatoryLines(value: string): string[] {
+  let fence = "";
+  const lines: string[] = [];
+  for (const raw of value.replace(/\r\n?/g, "\n").split("\n")) {
+    const line = raw.replace(/^(?: {0,3}> ?)+/, "").trim();
+    const marker = /^(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      if (marker && marker[1]![0] === fence[0] && marker[1]!.length >= fence.length) fence = "";
+      continue;
+    }
+    if (marker) { fence = marker[1]!; continue; }
+    if (!line || /^#{1,6}\s|^\[!|^<!--|^\*?Source:\s*PDF\b|^!?(?:\[\[[^\]]+\]\]|\[[^\]]*\]\([^)]*\))$/.test(line)) continue;
+    lines.push(line);
+  }
+  return lines;
+}
+const comparableEvidence = (value: string) => explanatoryLines(value).join(" ")
+  .replace(/\*{1,3}([^*\n]+)\*{1,3}|(?<!\w)_{1,3}([^_\n]+)_{1,3}(?!\w)/g, (_match, stars, underscores) => stars || underscores)
+  .replace(/\s+/g, " ").trim().replace(/[\s.,;:!?。！？]+$/u, "");
 
 /** Reject metadata labels posing as lesson evidence; the reviewer checks meaning. */
 function hasBodyEvidence(evidence: string, item: SourceCoverageItem): boolean {
-  const visible = evidence.split(/\r?\n/).map(line => line.replace(/^(?:\s*>\s?)+/, "").trim())
-    .filter(line => line && !/^#{1,6}\s/.test(line) && !/^\[!/.test(line) && !/^<!--.*-->$/.test(line)
-      && !/^!?(?:\[\[[^\]]+\]\]|\[[^\]]*\]\([^)]*\))$/.test(line) && !/^[-*_`~\s]+$/.test(line)).join(" ");
-  const normalized = normalizedLabel(visible);
+  const normalized = normalizedLabel(comparableEvidence(evidence));
   return !!normalized && ![item.id, item.description, item.objective, item.kind].some(label => normalizedLabel(label) === normalized);
 }
 
@@ -115,6 +134,7 @@ export function sourceCoverageIssues(value: unknown, context: SourceCoverageCont
   if (!isSourceCoverageLedger(value)) return ["Provide a valid source-coverage ledger with unique IDs and supported fields."];
   const issues: string[] = [];
   const delivered = options.delivered === true;
+  const diagramOwners = new Map<string, string>();
   if (!value.length) issues.push("Build a source-based coverage plan before completing Learn.");
   for (const objective of context.objectives) {
     if (!value.some(item => item.objective === objective)) issues.push(`Add source coverage for objective: ${objective}`);
@@ -136,13 +156,23 @@ export function sourceCoverageIssues(value: unknown, context: SourceCoverageCont
       continue;
     }
     const lesson = matches[0]!;
-    if (!comparableMarkdown(lesson.markdown).includes(comparableMarkdown(item.evidence))) issues.push(`${prefix} evidence is not an exact excerpt of its saved lesson.`);
+    if (!comparableEvidence(lesson.markdown).includes(comparableEvidence(item.evidence))) issues.push(`${prefix} evidence is not an exact excerpt of explanatory body text in its saved lesson.`);
     if (!hasBodyEvidence(item.evidence, item)) issues.push(`${prefix} needs explanatory body evidence, not just a heading, label, or figure embed.`);
     if ((item.kind === "equation" || item.equationId) && (!item.equationId || !lesson.keyEquationIds?.includes(item.equationId))) {
       issues.push(`${prefix} needs a designated Key equation ID actually rendered in this lesson unit.`);
     }
     if ((item.kind === "figure" || item.snapshotId) && (!item.snapshotId || !lesson.embeddedSnapshotIds?.includes(item.snapshotId))) {
       issues.push(`${prefix} needs a saved snapshot ID actually embedded in this lesson unit.`);
+    }
+    if ((["system", "workflow", "sequence"].includes(item.kind) || item.diagramId)
+      && (!item.diagramId || !lesson.diagramIds?.includes(item.diagramId))) {
+      issues.push(`${prefix} needs a diagram ID actually rendered in this lesson unit.`);
+    }
+    if (["system", "workflow", "sequence"].includes(item.kind) && item.diagramId && lesson.diagramIds?.includes(item.diagramId)) {
+      const diagramKey = `${lesson.id}:${item.diagramId}`;
+      const owner = diagramOwners.get(diagramKey);
+      if (owner) issues.push(`${prefix} needs its own diagram; ${item.diagramId} already covers source item ${owner}.`);
+      else diagramOwners.set(diagramKey, item.id);
     }
   }
   // A derivation item is verified, not merely requested, once its objective must be applied

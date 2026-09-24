@@ -45,6 +45,24 @@ function recordSourceFigures(owned: ScholarSnapshot[] | undefined, legacy: Schol
   return [...byId.values()];
 }
 
+/** Later recaptures of one labelled source figure replace older paper embeds. */
+function examPaperSourceFigures(owned: ScholarSnapshot[] | undefined, legacy: ScholarSnapshot[]): ScholarSnapshot[] {
+  const figures = recordSourceFigures(owned, legacy);
+  const bySource = new Map<string, ScholarSnapshot>();
+  for (const snapshot of figures) {
+    // Unlabelled captions can describe separate figures on the same page.
+    const labelled = /\b(?:figure|fig\.|table)\s+\d+(?:[.\-–]\d+)*[a-z]?\b/i.test(snapshot.caption);
+    const caption = snapshot.caption.replace(/\s+/g, " ").trim().toLowerCase();
+    const key = labelled ? `${snapshot.page}\u0000${caption}` : snapshot.id;
+    const previous = bySource.get(key);
+    const area = snapshot.crop.width * snapshot.crop.height;
+    const previousArea = previous ? previous.crop.width * previous.crop.height : 0;
+    if (!previous || snapshot.createdAt > previous.createdAt
+      || (snapshot.createdAt === previous.createdAt && area > previousArea)) bySource.set(key, snapshot);
+  }
+  return [...bySource.values()];
+}
+
 export function tutorSourceFigures(book: ScholarBook, session: TutorSession): ScholarSnapshot[] {
   return recordSourceFigures(session.snapshots, book.chapters.flatMap(chapter => chapter.sections.flatMap(section => {
     const selected = session.scope.sectionIds.length ? session.scope.sectionIds.includes(section.id)
@@ -56,6 +74,33 @@ export function tutorSourceFigures(book: ScholarBook, session: TutorSession): Sc
 /** Keep weighted fractions readable without rounding tiny nonzero credit to zero. */
 function breakdownPoints(points: number): string {
   return String(Number(points.toPrecision(6)));
+}
+
+function counted(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function pointsLabel(points: number): string {
+  return `${breakdownPoints(points)} ${points === 1 ? "point" : "points"}`;
+}
+
+function isSelectAll(question: ExamQuestion): boolean {
+  return Array.isArray(question.correctAnswer) && question.correctAnswer.length > 1;
+}
+
+/** A planning estimate for the paper's header: about a minute per choice, three per short written answer. */
+export function examMinutes(questions: ExamQuestion[]): number {
+  return Math.max(1, questions.reduce((sum, question) => sum + (question.format === "open" ? 3 : 1), 0));
+}
+
+/** Every line of a callout body carries the single-level frame the answer parser expects. */
+function framed(lines: string[]): string[] {
+  return lines.map((line) => line ? `> ${line}` : ">");
+}
+
+/** Adjacent blocks each bring a spacer; keep one, since Live Preview shows every blank line. */
+function singleSpaced(lines: string[]): string[] {
+  return lines.filter((line, index) => line !== "" || lines[index - 1] !== "");
 }
 
 export function calloutLines(prefix: string, value: string): string[] {
@@ -101,14 +146,26 @@ export function scopeLines(
   return lines;
 }
 
-/** The complete editable paper is learner-owned; generatedDocument must not wrap it. */
+/**
+ * The complete editable paper is learner-owned; generatedDocument must not wrap it.
+ * Layout is presentation only: the identity header, `checkboxes-v1` rows, answer
+ * markers, single-level `> ` frames and the completion marker are the submission
+ * contract, and papers already in a vault are never rewritten to match this layout.
+ */
 export function examAnswerNoteText(config: ScholarConfig, book: ScholarBook, exam: ScholarExam): string {
   const notePath = examAnswerNotePath(config, book, exam);
   const totalPoints = exam.questions.reduce((sum, question) => sum + question.maxPoints, 0);
   const openCount = exam.questions.filter((question) => question.format === "open").length;
+  const choiceCount = exam.questions.length - openCount;
   const snapshots = book.chapters.flatMap((chapter) => chapter.sections.flatMap((section) =>
     exam.scope.sectionIds.includes(section.id) ? section.snapshots || [] : []));
-  return [
+  const figures = examPaperSourceFigures(exam.snapshots, snapshots);
+  const steps = [
+    ...(choiceCount ? [`**Choose** — tick one box${exam.questions.some(isSelectAll) ? ", or every box that applies when a question says *select all that apply*" : ""}.`] : []),
+    ...(openCount ? ["**Write** — answer in a line or two under **Your response**, in Live Preview. Leave the hidden answer markers in place."] : []),
+    "**Submit** — save this note, then run the command at the end of the paper in Pi.",
+  ];
+  return singleSpaced([
     frontmatter([
       "type: scholar-exam-paper", `book_id: ${yaml(book.id)}`, `book_instance_id: ${yaml(book.instanceId)}`,
       `exam_id: ${yaml(exam.id)}`, `form_fingerprint: ${yaml(examFormFingerprint(exam))}`,
@@ -116,28 +173,31 @@ export function examAnswerNoteText(config: ScholarConfig, book: ScholarBook, exa
     ]), "",
     `# ${markdownText(exam.title)}`, "",
     wikiLink(notePath, bookHomePath(config, book), book.metadata.title), "",
-    `**${exam.questions.length} questions · ${breakdownPoints(totalPoints)} points** · ${exam.questions.length - openCount} multiple choice · ${openCount} written response`, "",
-    "> [!info] Before you begin",
-    "> Click the checkboxes to select answers. Choose one unless a question says **select all that apply**.",
-    "> Write open responses in **Live Preview**. Save, then submit in Pi when finished. Blank answers receive 0 points; grading and the answer key come after submission.", "",
+    `> [!info] ${counted(exam.questions.length, "question")} · ${pointsLabel(totalPoints)} · about ${counted(examMinutes(exam.questions), "minute")}`,
+    `> ${[choiceCount ? `${choiceCount} multiple choice` : "", openCount ? `${openCount} written` : ""].filter(Boolean).join(" · ")} · blank answers score 0`,
+    ">", "> **How to answer**", ">",
+    ...steps.map((step, index) => `> ${index + 1}. ${step}`), "",
     ...collapsedRecord("Exam scope", scopeLines(config, book, notePath, exam.scope)),
-    ...block("## Source figures", sourceFigureLines(config, book, notePath, recordSourceFigures(exam.snapshots, snapshots))),
+    ...block("## Source figures", sourceFigureLines(config, book, notePath, figures)),
     ...block("## Visual references", referenceImageLines(config, book, notePath, exam.images)),
-    ...exam.questions.flatMap((question, index) => [
-      "", `> [!question] Question ${index + 1} · ${breakdownPoints(question.maxPoints)} ${question.maxPoints === 1 ? "point" : "points"}`,
-      ">",
-      ...markdownText(question.prompt).split("\n").map((line) => `> ${line}`), ">",
-      ...referencedFigureLines(config, book, notePath, question.prompt, recordSourceFigures(exam.snapshots, snapshots)).split("\n").map(line => `> ${line}`), ">",
-      `> *${question.format === "open" ? "Written response · Answer briefly — one line or two sentences, not an extended derivation."
-        : Array.isArray(question.correctAnswer) && question.correctAnswer.length > 1 ? "Select all that apply." : "Select one answer."}*`,
-      ...examAnswerRegionLines(question).map(line => line ? `> ${line}` : ">"), "",
-    ]), "", "---", "", "## Submit", "",
-    "Save your changes in Obsidian, then run this exact command in Pi:", "",
-    "```text", `/scholar exam ${JSON.stringify(exam.id)} submit`, "```", "",
-    "Pi will confirm your answered/blank count. Submission is final; later edits do not change your score.", "",
-    wikiLink(notePath, examNotePath(config, book, exam), "Exam status and results"), "",
+    ...exam.questions.flatMap((question, index) => {
+      const questionFigures = referencedFigureLines(config, book, notePath, question.prompt, figures);
+      return [
+        "", `> [!question] Question ${index + 1} · ${pointsLabel(question.maxPoints)}`, ">",
+        ...framed(markdownText(question.prompt).split("\n")),
+        ...(questionFigures.trim() ? [">", ...framed(questionFigures.split("\n"))] : []), ">",
+        `> *${question.format === "open" ? "Written response · Answer briefly — one line or two sentences, not an extended derivation."
+          : isSelectAll(question) ? "Select all that apply." : "Select one answer."}*`,
+        ...framed(examAnswerRegionLines(question)), "",
+      ];
+    }), "",
+    "> [!tip] Submit when you're done",
+    "> Save this note, then run this exact command in Pi:", ">",
+    "> ```text", `> /scholar exam ${JSON.stringify(exam.id)} submit`, "> ```", ">",
+    "> Pi shows how many questions you answered and asks you to confirm. Submission is final; later edits do not change your score.", ">",
+    `> ${wikiLink(notePath, examNotePath(config, book, exam), "Exam status and results")}`, "",
     EXAM_PAPER_COMPLETE, "",
-  ].join("\n");
+  ]).join("\n");
 }
 
 export function displayedCorrectAnswer(question: ExamQuestion): string {
@@ -145,12 +205,26 @@ export function displayedCorrectAnswer(question: ExamQuestion): string {
   return values.map((value) => question.options?.find((option) => option.value === value)?.label ?? value).map(markdownText).filter(Boolean).join(", ");
 }
 
+const flattened = (text: string) => text.replace(/\s+/g, " ").trim();
+
 export function gradedQuestionLines(question: ExamQuestion, result: ExamItemResult | undefined, index: number, figures = ""): string[] {
   const correctAnswer = displayedCorrectAnswer(question);
+  // Scholar's own multiple-choice feedback already ends with the frozen explanation.
+  const explanation = question.explanation?.trim() && !(result?.feedback && flattened(result.feedback).includes(flattened(question.explanation)))
+    ? question.explanation : "";
+  // What the learner reads first: score, key, why, and the diagnosis. The grading
+  // contract (claim, dimensions, evidence, rubric) closes the item.
   const lines = [
     ...(result ? [`**Score:** <span class="scholar-score">${breakdownPoints(result.earnedPoints)}/${breakdownPoints(result.maxPoints)}</span> · ${markdownText(result.outcome)}`, ""] : []),
     ...(correctAnswer ? [`**Correct answer:** ${correctAnswer}`, ""] : []),
-    ...(question.explanation ? [`**Explanation:** ${markdownText(question.explanation)}`, ""] : []),
+    ...(explanation ? [`**Explanation:** ${markdownText(explanation)}`, ""] : []),
+  ];
+  if (result?.diagnosticSummary) lines.push(`**Diagnosis:** ${markdownText(result.diagnosticSummary)}`, "");
+  if (result?.feedback) lines.push(`**Feedback:** ${markdownText(result.feedback)}`, "");
+  if (result?.firstDecisiveError) lines.push(`**First decisive error:** ${markdownText(result.firstDecisiveError)}`, "");
+  if (result?.correctReasoning) lines.push(`**Correct reasoning:** ${markdownText(result.correctReasoning)}`, "");
+  if (result?.transferableLesson) lines.push(`**Transferable lesson:** ${markdownText(result.transferableLesson)}`, "");
+  lines.push(
     ...(question.claim.trim() ? [`**Claim:** ${markdownText(question.claim)}`] : []),
     ...(question.dimensions.length ? [`**Dimensions:** ${question.dimensions.map(markdownText).join(", ")}`] : []),
     ...(question.requiredEvidence.length ? ["", "**Required evidence:**", "", ...question.requiredEvidence.map((item) => `- ${markdownText(item)}`)] : []),
@@ -158,17 +232,23 @@ export function gradedQuestionLines(question: ExamQuestion, result: ExamItemResu
       const evidence = unknownMarkdown(atom.requiredEvidence);
       return `- ${markdownText(atom.criterion)} — ${breakdownPoints(atom.points)} point${atom.points === 1 ? "" : "s"}${evidence ? `; ${evidence}` : ""}`;
     })] : []),
-  ];
-  if (result?.diagnosticSummary) lines.push("", `**Diagnosis:** ${markdownText(result.diagnosticSummary)}`);
-  if (result?.feedback) lines.push("", `**Feedback:** ${markdownText(result.feedback)}`);
-  if (result?.firstDecisiveError) lines.push("", `**First decisive error:** ${markdownText(result.firstDecisiveError)}`);
-  if (result?.correctReasoning) lines.push("", `**Correct reasoning:** ${markdownText(result.correctReasoning)}`);
-  if (result?.transferableLesson) lines.push("", `**Transferable lesson:** ${markdownText(result.transferableLesson)}`);
+  );
+  while (lines.at(-1) === "") lines.pop();
   const title = result?.outcome === "correct" ? "Correct" : result?.outcome === "partial" ? "Partial credit" : result?.outcome === "unanswered" ? "Unanswered" : "Needs review";
+  // Drop the heading and its spacer: the callout title already names the question.
   return [callout("question", `Question ${index + 1}`, [
-    ...examQuestionLines(question, index).slice(1), "", figures, "",
-    callout(result?.outcome === "correct" ? "success" : "warning", title, lines.join("\n")),
+    ...examQuestionLines(question, index).slice(2), ...(figures.trim() ? ["", figures] : []), "",
+    callout(result?.outcome === "correct" ? "success" : "warning", title, lines.join("\n")).trimEnd(),
   ].join("\n"))];
+}
+
+/** Outcome counts as a Mermaid pie; built from saved results only, empty slices omitted. */
+export function outcomePieLines(exam: ScholarExam): string[] {
+  if (!(exam.status === "graded" || exam.gradedAt)) return [];
+  const slices = ([["Correct", "correct"], ["Partial", "partial"], ["Incorrect", "incorrect"], ["Unanswered", "unanswered"]] as const)
+    .map(([label, outcome]) => [label, exam.itemResults.filter((result) => result.outcome === outcome).length] as const)
+    .filter(([, count]) => count > 0);
+  return slices.length ? ["```mermaid", "pie title Your results", ...slices.map(([label, count]) => `    "${label}" : ${count}`), "```"] : [];
 }
 
 function competencyTable(exam: ScholarExam): string[] {
@@ -193,12 +273,14 @@ export function renderExamAnswerKey(config: ScholarConfig, book: ScholarBook, ex
   };
   const ordered = exam.questions.map((question, index) => ({ question, index })).sort((left, right) => rank(left.question) - rank(right.question) || left.index - right.index);
   const needsWork = ordered.filter(({ question }) => rank(question) < 3);
+  const pie = outcomePieLines(exam);
   return generatedDocument(frontmatter([
     "type: scholar-answer-key", `book_id: ${yaml(book.id)}`, `exam_id: ${yaml(exam.id)}`, `score: ${exam.percent}`,
     ...(exam.gradedAt ? [`graded: ${yaml(exam.gradedAt)}`] : []),
   ]), [
     `> [!success] Answer key · ${breakdownPoints(exam.earnedPoints)}/${breakdownPoints(exam.maxPoints)} · ${breakdownPoints(exam.percent)}%`,
     `> ${count("correct")} correct · ${count("partial")} partial · ${count("incorrect")} incorrect · ${count("unanswered")} unanswered`, "",
+    ...(pie.length ? [...pie, ""] : []),
     `${wikiLink(notePath, examNotePath(config, book, exam), exam.title)} · ${wikiLink(notePath, examAnswerNotePath(config, book, exam), "Your answer paper")}`, "",
     ...block("## Where to look first", needsWork.map(({ question, index }) => {
       const result = byId.get(question.id);
@@ -241,6 +323,21 @@ export function renderExam(config: ScholarConfig, book: ScholarBook, exam: Schol
     const response = exam.rawResponses.find((item) => item.questionId === question.id)?.response;
     return Array.isArray(response) ? response.some((value) => value.trim()) : Boolean(response?.trim());
   }).length;
+  const paperLink = (alias: string) => wikiLink(notePath, examAnswerNotePath(config, book, exam), alias);
+  const keyLink = () => wikiLink(notePath, answerKeyNotePath(config, book, exam), `${exam.title} — Answer Key`);
+  // One obvious next action per state. Review findings never appear here: before
+  // grading they would hint at answers, so they live only in the answer key.
+  const nextStep = graded
+    ? callout("tip", "Next step", `Your score: **${breakdownPoints(exam.earnedPoints)}/${breakdownPoints(exam.maxPoints)} (${breakdownPoints(exam.percent)}%)**. `
+      + `Open ${wikiLink(notePath, answerKeyNotePath(config, book, exam), "the answer key")} and start with **Where to look first**.`)
+    : submitted
+      ? callout("info", "Next step", "Your answers are saved and grading continues in Pi. If grading was interrupted, reopen this exam in Pi to resume it. The answer key appears here once grading finishes.")
+      : exam.questions.length
+        ? callout("tip", "Next step", [
+          `1. Answer every question in ${paperLink("your answer paper")} and save it.`,
+          `2. Submit in Pi: \`/scholar exam ${JSON.stringify(exam.id)} submit\``,
+        ].join("\n"))
+        : "";
   return generatedDocument(frontmatter([
     "type: scholar-exam", `book_id: ${yaml(book.id)}`, `exam_id: ${yaml(exam.id)}`, `status: ${yaml(exam.status)}`,
     `created: ${yaml(exam.createdAt)}`, ...(exam.startedAt ? [`started: ${yaml(exam.startedAt)}`] : []),
@@ -251,22 +348,21 @@ export function renderExam(config: ScholarConfig, book: ScholarBook, exam: Schol
       graded ? `Exam graded · ${breakdownPoints(exam.earnedPoints)}/${breakdownPoints(exam.maxPoints)} · ${breakdownPoints(exam.percent)}%`
         : submitted ? "Submitted · Awaiting grading" : exam.questions.length ? "Exam · Not yet submitted" : "Exam · Preparing questions",
       [
-        `${exam.questions.length} ${exam.questions.length === 1 ? "question" : "questions"} · ${breakdownPoints(points)} ${points === 1 ? "point" : "points"}`,
+        `${counted(exam.questions.length, "question")} · ${pointsLabel(points)}`,
+        !submitted && !graded && exam.questions.length ? `about ${counted(examMinutes(exam.questions), "minute")}` : "",
         submitted || graded ? `submitted completeness: ${submittedResponses}/${exam.questions.length} answered · ${exam.questions.length - submittedResponses} blank` : "",
       ].filter(Boolean).join(" · ")), "",
-    ...(!graded && !submitted && exam.questions.length ? [callout("note", "Next step", "Answer and save the paper in Obsidian, then submit once in Pi."), ""] : []),
+    ...(nextStep ? [nextStep] : []),
     wikiLink(notePath, bookHomePath(config, book), book.metadata.title), "",
     ...block("## Scope", scopeLines(config, book, notePath, exam.scope, { includeSections: false })),
     ...block("## Source figures", sourceFigureLines(config, book, notePath, exam.snapshots || [])),
-    ...(exam.questions.length ? block("## Answer paper", [
-      wikiLink(notePath, examAnswerNotePath(config, book, exam), "Open your answer paper"), "",
-      submitted || graded
-        ? "Your submitted answers are saved. Later edits to the paper do not change this submission."
-        : `Save in Obsidian, then run \`/scholar exam ${JSON.stringify(exam.id)} submit\` in Pi.`,
+    ...(exam.questions.length && (submitted || graded) ? block("## Answer paper", [
+      paperLink("Your answer paper"), "",
+      "Your submitted answers are saved. Later edits to the paper do not change this submission.",
     ]) : []),
     ...(graded ? [
       ...block("## Competency profile", competencyTable(exam)),
-      ...block("## Answer key", [`Review every question and its reasoning in ${wikiLink(notePath, answerKeyNotePath(config, book, exam), `${exam.title} — Answer Key`)}.`]),
+      ...block("## Answer key", [`Review every question and its reasoning in ${keyLink()}.`]),
     ] : []),
   ].join("\n"));
 }
@@ -283,15 +379,12 @@ export function renderTutorSession(config: ScholarConfig, book: ScholarBook, ses
       : session.scope.chapterIds.length ? session.scope.chapterIds.includes(chapter.id) : true;
     return selected ? section.snapshots || [] : [];
   }));
-  const commitWarnings: string[] = [];
-  for (const review of session.review?.receipts || []) {
-    if (review.failure) {
-      commitWarnings.push(`> [!warning] Not independently reviewed: ${review.role} (${review.failure.code})`);
-    }
-  }
+  // Tutor review is advisory: execution failures are listed once, collapsed below the
+  // teaching, so the note opens directly on its first unit (the Learning path, when the
+  // session has one). Entry order is untouched: the note is the transcript's authority.
+  const reviewNotes = [...new Set((session.review?.receipts || []).flatMap((review) =>
+    review.failure ? [`- Not independently reviewed: ${review.role} (${review.failure.code})`] : []))];
   const content = [
-    ...commitWarnings,
-    ...(commitWarnings.length ? [""] : []),
     ...(lesson.length ? block("## Lesson", lesson) : [session.synthesis?.trim()
       ? "A recap is saved below. The full explanation has not been saved yet."
       : "This session is ready. The lesson and practice will appear as you work.", ""]),
@@ -302,6 +395,9 @@ export function renderTutorSession(config: ScholarConfig, book: ScholarBook, ses
       ...block("### Key points", keyPoints.map((point) => `- ${point}`)),
     ]),
     ...collapsedRecord("Practice scope", scopeLines(config, book, notePath, session.scope)),
+    ...collapsedRecord("Reviewer notes", reviewNotes, "warning"),
+    // The book link travels with the appendix below the teaching, as in Learn.
+    wikiLink(notePath, bookHomePath(config, book), book.metadata.title), "",
     ...assessmentQuestionBlock(session.attempts),
   ];
   return generatedDocument(frontmatter([
@@ -309,8 +405,7 @@ export function renderTutorSession(config: ScholarConfig, book: ScholarBook, ses
     `created: ${yaml(session.createdAt)}`, ...(session.closedAt ? [`closed: ${yaml(session.closedAt)}`] : []), `updated: ${yaml(session.updatedAt)}`,
   ]), [
     statusCallout("Tutor", `${session.status === "active" ? "In progress" : "Closed"} · Assisted practice`), "",
-    "Practice does not change Exam scores or Learn completion.",
-    "", wikiLink(notePath, bookHomePath(config, book), book.metadata.title), "",
-    ...(content.some((line) => line.trim()) ? content : ["This session is ready. The model and practice will appear as you work."]),
+    "Practice does not change Exam scores or Learn completion.", "",
+    ...content,
   ].join("\n"));
 }

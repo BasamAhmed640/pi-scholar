@@ -103,14 +103,34 @@ const KeyEquationSchema = Type.Object({
   assumptions: Type.String({ minLength: 1 }), meaning: Type.String({ minLength: 1 }),
   sourcePages: Type.Array(Type.Integer({ minimum: 1 }), { minItems: 1 }),
 });
+const LessonDiagramSchema = Type.Object({
+  id: Type.String({ minLength: 1, maxLength: 120 }),
+  title: Type.String({ minLength: 1 }),
+  kind: Type.Union(["flowchart", "sequence", "state", "class", "mindmap", "timeline"].map(kind => Type.Literal(kind))),
+  mermaid: Type.String({ minLength: 1, description: "Mermaid source with a header matching kind; no code fence." }),
+  takeaway: Type.String({ minLength: 1, description: "One sentence explaining what the diagram shows." }),
+  sourcePages: Type.Array(Type.Integer({ minimum: 1 }), { minItems: 1 }),
+});
 const SourceCoverageSchema = Type.Object({
   id: Type.String({ minLength: 1, maxLength: 120 }),
-  kind: Type.Union(["concept", "definition", "derivation", "equation", "assumption", "example", "counterexample", "figure"].map(kind => Type.Literal(kind))),
+  kind: Type.Union(["concept", "definition", "derivation", "equation", "assumption", "example", "counterexample", "figure", "system", "workflow", "sequence"].map(kind => Type.Literal(kind))),
   description: Type.String({ minLength: 1 }), sourcePages: Type.Array(Type.Integer({ minimum: 1 }), { minItems: 1 }),
   objective: Type.String({ minLength: 1 }),
   lessonId: Type.Optional(Type.String()), evidence: Type.Optional(Type.String({ description: "Exact explanatory passage in the saved lesson; required at completion, not just a heading or label." })),
   equationId: Type.Optional(Type.String({ description: "ID of a Key equation rendered in this lesson. Required for equation items at completion; other kinds may reference an equation too." })),
   snapshotId: Type.Optional(Type.String({ description: "ID of a snapshot embedded in this lesson. Required for figure items at completion; other kinds may reference a figure too." })),
+  diagramId: Type.Optional(Type.String({ description: "ID of a diagram rendered in this lesson. Required for system, workflow and sequence items at completion." })),
+});
+const LessonSchema = Type.Object({
+  id: Type.String({ minLength: 1, maxLength: 120 }),
+  expectedContentHash: Type.Optional(Type.String({ description: "For an intentional editorial replacement, hash of the currently visible entry. Omit for new entries and identical retries." })),
+  title: Type.String({ minLength: 1 }),
+  markdown: Type.String({ minLength: 1, description: "The explanation. Place saved PDF figures with [[scholar-figure:ID]], key equations with [[scholar-equation:ID]], and diagrams with [[scholar-diagram:ID]], each on its own line." }),
+  objectives: Type.Array(Type.String(), { description: "Exact previously declared section objectives taught by this unit; use top-level objectives to declare the scope. Empty in Tutor." }),
+  keyPoints: Type.Array(Type.String()),
+  sourcePages: Type.Array(Type.Integer({ minimum: 1 }), { minItems: 1 }),
+  keyEquations: Type.Optional(Type.Array(KeyEquationSchema, { description: "Central equations. Place each exactly once using its own-line marker; Scholar builds the equation callout." })),
+  diagrams: Type.Optional(Type.Array(LessonDiagramSchema, { description: "Relevant Mermaid diagrams. Place each exactly once with an own-line [[scholar-diagram:ID]] marker." })),
 });
 
 export const FindingResponseSchema = Type.Object({
@@ -163,27 +183,21 @@ export const ScholarParams = Type.Object({
   coveredObjectives: Type.Optional(Type.Array(Type.String())),
   requiredChecks: Type.Optional(Type.Array(CheckKindSchema)),
   synthesis: Type.Optional(Type.String({ description: "Concise source-grounded recap. May be saved independently; recap and key points must be complete before lesson delivery." })),
-  sourceCoverage: Type.Optional(Type.Array(SourceCoverageSchema, { description: "Source-based checklist of essential concepts, derivations, central equations, assumptions, examples/counterexamples and useful figures. Map each to exact saved lesson evidence before completion." })),
+  sourceCoverage: Type.Optional(Type.Array(SourceCoverageSchema, { description: "Source-based checklist of essential concepts, derivations, equations, assumptions, examples, figures, systems, workflows and sequences. Map each to saved explanatory evidence before completion; system/workflow/sequence items need a rendered diagramId." })),
   coverageUpdates: Type.Optional(Type.Array(Type.Object({ id: Type.String(), lessonId: Type.Optional(Type.String()), evidence: Type.Optional(Type.String()),
-    equationId: Type.Optional(Type.String()), snapshotId: Type.Optional(Type.String()) }), { minItems: 1, maxItems: 200,
-    description: "Update only changed delivery evidence on existing sourceCoverage item IDs. Preserve the plan without resending descriptions/objectives. Use exact excerpts from status lessonId. Does not add, remove or change source requirements; do not combine with sourceCoverage." })),
-  lesson: Type.Optional(Type.Object({
-    id: Type.String({ minLength: 1, maxLength: 120 }),
-    expectedContentHash: Type.Optional(Type.String({ description: "For an intentional editorial replacement, hash of the currently visible entry. Omit for new entries and identical retries." })),
-    title: Type.String({ minLength: 1 }),
-    markdown: Type.String({ minLength: 1, description: "The actual explanation, with native Markdown/math/callouts. Place saved PDF figures using [[scholar-figure:snapshot-ID]]. Reuse an id only for an identical retry." }),
-    objectives: Type.Array(Type.String(), { description: "Exact previously declared section objectives taught by this unit; use top-level objectives to declare the scope. Empty in Tutor." }),
-    keyPoints: Type.Array(Type.String()),
-    sourcePages: Type.Array(Type.Integer({ minimum: 1 }), { minItems: 1 }),
-    keyEquations: Type.Optional(Type.Array(KeyEquationSchema, { description: "Central equations. Place each exactly once using its own-line [[scholar-equation:ID]] marker; Scholar builds the equation callout." })),
-  })),
+    equationId: Type.Optional(Type.String()), snapshotId: Type.Optional(Type.String()), diagramId: Type.Optional(Type.String()) }), { minItems: 1, maxItems: 200,
+    description: "Update only changed delivery evidence on existing sourceCoverage item IDs. Preserve the plan without resending descriptions/objectives. Use explanatory excerpts from status lessonId and diagramId for system/workflow/sequence items. Does not add, remove or change source requirements; do not combine with sourceCoverage." })),
+  lesson: Type.Optional(LessonSchema),
+  lessons: Type.Optional(Type.Array(LessonSchema, { minItems: 1, maxItems: 6,
+    description: "Save 2–4 independent lesson units in one call when practical; maximum 6. Do not combine with lesson." })),
   lessonComplete: Type.Optional(Type.Boolean({ description: "Commit the full saved Learn lesson after all declared objectives have real explanations and the editorial review is complete. Does not award mastery." })),
   lessonPatch: Type.Optional(Type.Object({
     id: Type.String(), expectedContentHash: Type.String(),
     edits: Type.Optional(Type.Array(Type.Object({ oldText: Type.String({ minLength: 1, maxLength: 24000 }), newText: Type.String({ maxLength: 24000 }) }), { minItems: 1, maxItems: 16 })),
     calloutEdits: Type.Optional(Type.Array(Type.Object({ oldText: Type.String({ minLength: 1, maxLength: 24000 }),
-      equation: Type.Optional(KeyEquationSchema), snapshotId: Type.Optional(Type.String()), replacesSnapshotId: Type.Optional(Type.String()) }), { minItems: 1, maxItems: 16 })),
-  }, { description: "Repair only changed passages after status lessonId. edits matches unique prose; calloutEdits matches a COMPLETE saved callout and supplies either its structured equation (existing ID) or snapshotId plus replacesSnapshotId. Scholar renders replacements and preserves other callouts. Update changed coverage excerpts/figureReviews separately. Never combine with full lesson." })),
+      equation: Type.Optional(KeyEquationSchema), diagram: Type.Optional(LessonDiagramSchema),
+      snapshotId: Type.Optional(Type.String()), replacesSnapshotId: Type.Optional(Type.String()) }), { minItems: 1, maxItems: 16 })),
+  }, { description: "Repair only changed passages after status lessonId. edits matches unique prose; calloutEdits matches a COMPLETE saved callout and supplies a structured equation, same-ID diagram, or snapshotId plus replacesSnapshotId. Scholar renders replacements and preserves other callouts. Update changed coverage excerpts/figureReviews separately. Never combine with full lesson." })),
   lessonId: Type.Optional(Type.String({ description: "With action=status, read this saved lesson entry and its current content hash before an intentional revision." })),
   objectiveChecks: Type.Optional(Type.Array(Type.Object({ objective: Type.String(), checks: Type.Array(CheckKindSchema, { minItems: 1 }) }))),
   keyPoints: Type.Optional(Type.Array(Type.String())),
@@ -210,12 +224,17 @@ export const ScholarParams = Type.Object({
   ])),
   difficulty: Type.Optional(Type.String()),
   examId: Type.Optional(Type.String()),
+  // The 16-item ceiling is enforced by validateExamQuestions, whose rejection names the
+  // recommended length; a schema maxItems would replace it with a generic error.
   questions: Type.Optional(Type.Array(ExamQuestionSchema, {
     minItems: 1,
-    description: "Build at least one question according to concept coverage, with multiple distinct probes for important concepts when useful. There is no fixed question-count cap; avoid redundant questions.",
+    description: "The complete form, chosen by concept coverage: about two short items per scoped subsection (normally 4–12), never more than 16. Use multiple distinct probes for important concepts; avoid redundant questions.",
   })),
-  // Runtime validation requires exactly one result per frozen question.
-  itemResults: Type.Optional(Type.Array(ExamItemResultSchema, { minItems: 1 })),
+  // Runtime validation requires one unique result for every item that needs judgment;
+  // Scholar scores clean multiple-choice answers from the frozen key.
+  itemResults: Type.Optional(Type.Array(ExamItemResultSchema, {
+    description: "One result per written (open-response) question. Scholar scores multiple-choice answers from the frozen key; any result sent for one is ignored. Omit or send [] when every item is multiple choice.",
+  })),
 });
 
 export type ToolDetails = {

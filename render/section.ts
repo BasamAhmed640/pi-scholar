@@ -1,6 +1,8 @@
 import { relative, resolve } from "node:path";
 import { answeredQuickQuestions, latestAttemptForKind, QUICK_QUESTIONS, sectionCompletionBlockers } from "../domain.ts";
 import { transcriptBlock } from "../note-records.ts";
+import { lessonReviewUnits } from "../lesson.ts";
+import { unitBlockingFindings, unitReviewRoles } from "../learn-quality.ts";
 import { callout } from "./callouts.ts";
 import { chapterNotePath, sectionNotePath, snapshotAssetPath } from "../obsidian-paths.ts";
 import type { AssessmentAttempt, AssessmentKind, ScholarBook, ScholarChapter, ScholarConfig, ScholarSection, ScholarSnapshot, TranscriptEntry } from "../types.ts";
@@ -201,18 +203,24 @@ export function renderSection(config: ScholarConfig, book: ScholarBook, chapter:
   const keyPoints = uniqueSupplementLines(section.keyPoints, [...lesson, ...summary]);
   const pitfalls = uniqueSupplementLines(section.misconceptions, [...lesson, ...summary, ...keyPoints]);
   const current = book.currentSectionId === section.id;
-  const commitWarnings: string[] = [];
-  if (section.lessonCommit && section.learnQuality?.reviews) {
-    for (const review of section.learnQuality.reviews) {
-      if (review.failure) {
-        commitWarnings.push(`> [!warning] Not independently reviewed: ${review.role} (${review.failure.code})`);
+  const reviewerNotes: string[] = [];
+  if (section.lessonCommit && section.learnQuality) {
+    const sourceHash = book.source.fingerprint.sha256;
+    const reviews = section.learnQuality.reviews || [];
+    for (const unit of lessonReviewUnits(section, sourceHash)) {
+      const context = { contentHash: unit.contentHash, sourceHash, roles: unit.roles, responses: section.learnQuality.responses };
+      for (const item of unitBlockingFindings(reviews, context)) {
+        reviewerNotes.push(`${unit.title} · ${item.role} [F-${item.key}]: ${item.finding.issue} Repair: ${item.finding.repair}`.replace(/\s+/g, " "));
       }
-      if (review.role === "visual" && review.findings.some(f => f.issue === "Figures were not visually checked (text-only model).")) {
-        commitWarnings.push("> [!warning] Figures were not visually checked (text-only model).");
+      for (const { role, receipt } of unitReviewRoles(reviews, context)) {
+        if (receipt?.failure) reviewerNotes.push(`${unit.title} · ${role}: review incomplete · ${receipt.failure.code}.`);
+        else if (role === "visual" && receipt?.findings.some(f => f.issue === "Figures were not visually checked (text-only model).")) {
+          reviewerNotes.push(`${unit.title}: figures were not visually checked (text-only model).`);
+        }
       }
     }
   }
-  const lessonLines = commitWarnings.length ? [...commitWarnings, "", ...lesson] : lesson;
+  const lessonLines = reviewerNotes.length ? [...collapsedRecord("Reviewer notes", reviewerNotes.map(note => `- ${note}`), "warning"), ...lesson] : lesson;
   const content = [
     ...(lessonLines.length ? block("## Lesson", lessonLines) : [section.synthesis?.trim()
       ? "A recap is saved below. The full explanation has not been saved yet."

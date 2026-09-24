@@ -2,7 +2,7 @@
 // author's turn instead of blocking it, findings ride the next Scholar result once per
 // revision, an unchanged revision is never re-audited, a stale receipt can neither approve
 // nor surface against its replacement, and finalization waits for outstanding current
-// revisions — reporting a failed audit clearly and leaving delivery unapproved.
+// revisions — reviewer execution failures remain advisory after deterministic gates.
 // Exam forms follow the same per-unit contract: one audit per submitted form fingerprint,
 // awaited at freeze, with the gate and the fingerprint revalidated inside the activation.
 // Synthetic in-memory records plus one real single-page PDF fixture; no vault or network access.
@@ -114,7 +114,7 @@ function fixture(caseId) {
 }
 
 /** The reviewer is fully controlled: hold, release with a verdict, fail, or answer automatically. */
-function harness(caseId, mode = "learn") {
+function harness(caseId, mode = "learn", waitOverrides = {}) {
   const book = fixture(caseId);
   const section = book.chapters[0].sections[0];
   // Exam freezes present their answer paper into the vault; Learn and Tutor never write there.
@@ -132,6 +132,7 @@ function harness(caseId, mode = "learn") {
     mutateBook: async (_id, mutate) => ({ book, result: await mutate(book) }),
     isActiveAuthority: () => true,
     isSetupActive: () => false,
+    ...waitOverrides,
   });
   controller.ensureRegistered();
   const requests = [], held = [];
@@ -148,7 +149,7 @@ function harness(caseId, mode = "learn") {
     return reply(gate.decide(role, requests.length));
   } } };
   return {
-    book, section, tutor: book.tutorSessions[0], exam: book.exams[0], requests, held, session, controller,
+    book, section, tutor: book.tutorSessions[0], exam: book.exams[0], requests, held, session, controller, context,
     bookLoads: () => bookLoads,
     reviews: () => (mode === "tutor" ? book.tutorSessions[0].review?.receipts : mode === "exam" ? book.exams[0].review?.receipts : section.learnQuality.reviews) || [],
     hold: () => { gate.mode = "hold"; gate.heldRoles = undefined; },
@@ -169,10 +170,13 @@ function harness(caseId, mode = "learn") {
   };
 }
 
-const lessonInput = id => ({ id, title: "Travel time from a constant speed", markdown: lessonMarkdown,
+const withDiagram = markdown => `${markdown}\n\n[[scholar-diagram:time-path]]`;
+const lessonInput = id => ({ id, title: "Travel time from a constant speed", markdown: withDiagram(lessonMarkdown),
+  diagrams: [{ id: "time-path", title: "Travel-time relation", kind: "flowchart",
+    mermaid: "flowchart TD\nLength[Path length] --> Time[Travel time]", takeaway: "At fixed speed, a longer path takes more time.", sourcePages: [1] }],
   objectives: [objective], keyPoints: [keyPoint], sourcePages: [1] });
 const objectiveGap = { action: "notes", synthesis: "An unreviewed recap that must not persist.",
-  lesson: { ...lessonInput("second-explanation"), markdown: lessonMarkdown.replace("A model connects", "A different model connects") },
+  lesson: { ...lessonInput("second-explanation"), markdown: withDiagram(lessonMarkdown.replace("A model connects", "A different model connects")) },
   coverageUpdates: [{ id: "unknown-item", evidence: "A model connects an input to an observable result." }] };
 const textOf = result => result.content.map(item => item.type === "text" ? item.text : "").join("\n");
 const keysIn = text => [...new Set([...text.matchAll(/\[F-([0-9a-f]{12})\]/g)].map(match => match[1]))];
@@ -338,9 +342,48 @@ await check("finalization awaits the outstanding audit of the current revision a
   h.release(pass);
   const committed = await finishing;
   assert.ok(!["review", "error", "retry"].includes(committed.details.tone), textOf(committed));
-  assert.match(textOf(committed), /Full lesson committed after source, teaching and visual review/);
+  assert.match(textOf(committed), /Full lesson committed after deterministic coverage checks/);
   assert.ok(h.section.lessonCommit, "the passing current-revision audit approves delivery");
   assert.ok(lesson.lessonReady(h.section, h.book.source.fingerprint.sha256));
+});
+
+await check("lesson delivery wait is capped and late findings cannot revoke readiness", async () => {
+  const h = harness("bounded-learn", "learn", { reviewWaitMs: 10 });
+  h.hold();
+  await h.execute({ action: "notes", lesson: lessonInput("fixture-explanation") });
+  await h.wait(() => h.held.length === 2);
+  const started = Date.now();
+  const result = await h.execute({ action: "notes", lessonComplete: true });
+  assert.ok(Date.now() - started < 1_000, "the injected 10ms wait bounds delivery");
+  assert.ok(!["review", "error", "retry"].includes(result.details.tone), textOf(result));
+  assert.ok(h.section.lessonCommit);
+  assert.ok(lesson.lessonReady(h.section, h.book.source.fingerprint.sha256));
+  h.release(blocking);
+  await h.wait(() => h.reviews().length === 2);
+  assert.ok(lesson.lessonReady(h.section, h.book.source.fingerprint.sha256), "late advisory findings do not revoke delivery");
+  assert.deepEqual(h.reviews().map(receipt => receipt.status), ["changes", "changes"]);
+});
+
+await check("a used lesson repair round never waits for a new revision's audit", async () => {
+  const h = harness("second-lesson-wait", "learn", { reviewWaitMs: 1_500 });
+  h.auto(() => blocking);
+  await h.execute({ action: "notes", lesson: lessonInput("fixture-explanation") });
+  await h.wait(() => h.reviews().length === 2);
+  const first = await h.execute({ action: "notes", lessonComplete: true });
+  assert.equal(first.details.tone, "review", textOf(first));
+  h.hold();
+  const oldHash = lesson.lessonHash(h.section.transcript[0].markdown);
+  const revised = { ...lessonInput("fixture-explanation"), markdown: withDiagram(`${lessonMarkdown}\n\nAt a fixed speed, the length changes while the speed stays constant.`),
+    expectedContentHash: oldHash };
+  const save = await h.execute({ action: "notes", lesson: revised });
+  assert.ok(!["review", "error", "retry"].includes(save.details.tone), textOf(save));
+  await h.wait(() => h.held.length === 2);
+  const started = Date.now();
+  const second = await h.execute({ action: "notes", lessonComplete: true });
+  assert.ok(Date.now() - started < 1_000, "the second submission bypasses the 1.5s review wait");
+  assert.ok(!["review", "error", "retry"].includes(second.details.tone), textOf(second));
+  assert.ok(lesson.lessonReady(h.section, h.book.source.fingerprint.sha256));
+  h.release(blocking);
 });
 
 await check("a tool result with nothing to deliver performs no delivery book load", async () => {
@@ -355,7 +398,7 @@ await check("a tool result with nothing to deliver performs no delivery book loa
 
   h.auto(() => blocking);
   await h.execute({ action: "notes", lesson: { ...lessonInput("second-explanation"),
-    markdown: lessonMarkdown.replace("A model connects", "A different model connects") } });
+    markdown: withDiagram(lessonMarkdown.replace("A model connects", "A different model connects")) } });
   await h.wait(() => h.reviews().length === 4);
   const before = h.bookLoads();
   const next = await h.execute({ action: "read", startPage: 1, endPage: 1 });
@@ -363,25 +406,47 @@ await check("a tool result with nothing to deliver performs no delivery book loa
   assert.equal(h.bookLoads() - before, 2, "a pending finding rides the next result and pays exactly one delivery load");
 });
 
-await check("a failed audit leaves delivery unapproved with a clear message", async () => {
+await check("a failed audit is recorded but deterministic lesson delivery succeeds", async () => {
   const h = harness("failed");
   h.failNext();
   await h.execute({ action: "notes", lesson: lessonInput("fixture-explanation") });
   await h.wait(() => h.reviews().length === 2 && h.reviews().every(receipt => receipt.failure));
   const failed = await h.execute({ action: "notes", lessonComplete: true });
-  assert.equal(failed.details.tone, "review", textOf(failed));
-  assert.match(textOf(failed), /review incomplete \(lesson:lesson-fixture-explanation: provider\)/);
-  assert.match(textOf(failed), /Generation stopped/);
-  assert.match(textOf(failed), /lesson:lesson-fixture-explanation \/ execution incomplete/);
-  assert.equal(h.section.lessonCommit, undefined, "a failed audit never approves delivery");
-  assert.equal(lesson.lessonReady(h.section, h.book.source.fingerprint.sha256), false);
-  const blocked = await h.execute({ action: "read", startPage: 1, endPage: 1 });
-  assert.ok(["retry", "error"].includes(blocked.details.tone), textOf(blocked));
-  assert.match(textOf(blocked), /review incomplete/, "a stopped preparation keeps blocking later actions");
-  assert.equal(h.section.transcript.length, 1, "the blocked action changed nothing");
+  assert.ok(!["review", "error", "retry"].includes(failed.details.tone), textOf(failed));
+  assert.match(textOf(failed), /Full lesson committed after deterministic coverage checks/);
+  assert.ok(h.reviews().every(receipt => receipt.failure?.code === "provider"), "the failed roles retain advisory receipts");
+  assert.ok(h.section.lessonCommit, "review execution failure does not stop delivery");
+  assert.equal(lesson.lessonReady(h.section, h.book.source.fingerprint.sha256), true);
+  const next = await h.execute({ action: "read", startPage: 1, endPage: 1 });
+  assert.ok(!["retry", "error"].includes(next.details.tone), textOf(next));
 });
 
-await check("a discarded audit returns an actionable repair path and approves nothing", async () => {
+await check("Learn question review has a 30s-style injectable cap and fails open", async () => {
+  const h = harness("bounded-question", "learn", { questionReviewWaitMs: 100 });
+  h.hold();
+  const questions = [{ question: "How does time change?", grounding: { sourcePages: [1] } }];
+  const started = Date.now();
+  const pending = h.controller.reviewQuestion(h.book, h.section, questions, [1], h.context);
+  await h.wait(() => h.held.length === 1);
+  const verify = await pending;
+  assert.ok(Date.now() - started < 1_000, "the question reviewer cannot hold presentation indefinitely");
+  assert.doesNotThrow(() => verify(h.section));
+  assert.equal(h.requests.length, 1, "the whole set made one model request");
+  h.release(pass);
+});
+
+await check("a flagged Learn question set gets one refusal, then no second model review", async () => {
+  const h = harness("question-round");
+  h.auto(() => blocking);
+  const questions = [{ question: "How does time change?", grounding: { sourcePages: [1] } }];
+  await assert.rejects(h.controller.reviewQuestion(h.book, h.section, questions, [1], h.context), /Repair the proposed question set/);
+  const requests = h.requests.length;
+  const verify = await h.controller.reviewQuestion(h.book, h.section, questions, [1], h.context);
+  assert.doesNotThrow(() => verify(h.section));
+  assert.equal(h.requests.length, requests, "resubmitting the same set skips a second assessment review");
+});
+
+await check("an interrupted preparation does not commit from its stale finalizer", async () => {
   const h = harness("discarded");
   h.hold();
   await h.execute({ action: "notes", lesson: lessonInput("fixture-explanation") });
@@ -393,11 +458,8 @@ await check("a discarded audit returns an actionable repair path and approves no
   h.release(pass); // a provider that ignores the abort still gets no verdict stored
   const result = await finishing;
   const text = textOf(result);
-  assert.equal(result.details.tone, "review", text);
-  assert.match(text, /discarded because the active preparation changed \(lesson:lesson-fixture-explanation\)/);
-  assert.match(text, /Save the current revision again, then resubmit lessonComplete/);
-  assert.doesNotMatch(text, /review incomplete|specialist review found repairs|Full lesson committed/,
-    "a discarded audit is never reported as a review result");
+  assert.equal(result.details.tone, "retry", text);
+  assert.match(text, /active Scholar record changed during audit/);
   assert.equal(h.section.learnQuality.reviews.length, 0, "the discarded preparation stored no verdict");
   assert.equal(h.section.lessonCommit, undefined);
   assert.equal(lesson.lessonReady(h.section, h.book.source.fingerprint.sha256), false, "a discarded audit never approves delivery");
@@ -491,14 +553,13 @@ await check("a changed form revision gets exactly one new audit the replaced rec
   const pending = h.execute({ action: "exam_build", questions: revised, findingResponses: answers });
   await h.wait(() => h.held.length === revised.length + 1);
   await h.settle();
-  assert.equal(h.exam.status, "draft", "the replaced revision's answered receipts cannot freeze its replacement");
-  assert.equal(h.exam.questions.length, 0);
-  h.release(pass);
   const frozen = await pending;
   assert.ok(!["review", "error", "retry"].includes(frozen.details.tone), textOf(frozen));
-  assert.equal(h.exam.status, "active");
+  assert.equal(h.exam.status, "active", "the used repair round skips waiting for the changed form's background audit");
   assert.deepEqual(h.exam.questions.map(question => question.prompt), revised.map(question => question.prompt), "the revised form is the frozen one");
   assert.equal(h.requests.length, calls + revised.length + 1, "the changed revision is audited exactly once");
+  h.release(pass);
+  await h.wait(() => h.reviews().filter(receipt => receipt.contentHash === examFormFingerprint(h.exam)).length === 2);
   const frozenFingerprint = examFormFingerprint(h.exam);
   assert.notEqual(frozenFingerprint, replacedFingerprint, "a different form is a different revision");
   assert.ok(h.reviews().some(receipt => receipt.contentHash === replacedFingerprint), "the replaced revision's receipts are kept, not rewritten");
@@ -527,21 +588,48 @@ await check("a pending exam audit is awaited at freeze", async () => {
     [["assessment", fingerprint], ["teaching", fingerprint]], "one passing receipt per role, bound to the frozen form");
 });
 
-await check("a failed exam audit leaves the exam unfrozen with a clear message", async () => {
+await check("exam review wait is capped and late findings remain advisory", async () => {
+  const h = harness("bounded-exam", "exam", { examReviewWaitMs: 10 });
+  h.hold();
+  const questions = examQuestions();
+  const started = Date.now();
+  const result = await h.execute({ action: "exam_build", questions });
+  assert.ok(Date.now() - started < 1_000, "the injected 10ms wait bounds exam freeze");
+  assert.ok(!["review", "error", "retry"].includes(result.details.tone), textOf(result));
+  assert.equal(h.exam.status, "active");
+  h.release(blocking);
+  await h.wait(() => h.reviews().length === 2);
+  assert.equal(h.exam.status, "active", "late findings do not unfreeze an exam");
+});
+
+await check("a used exam repair round freezes without another reviewer wait", async () => {
+  const h = harness("second-exam-wait", "exam", { examReviewWaitMs: 1_500 });
+  h.auto(() => blocking);
+  const original = examQuestions();
+  const first = await h.execute({ action: "exam_build", questions: original });
+  assert.equal(first.details.tone, "review", textOf(first));
+  h.hold();
+  const revised = examQuestions(" (revised)");
+  const started = Date.now();
+  const pending = h.execute({ action: "exam_build", questions: revised });
+  await h.wait(() => h.held.length === revised.length + 1);
+  const second = await pending;
+  assert.ok(Date.now() - started < 1_000, "the second submission bypasses the 1.5s exam wait");
+  assert.ok(!["review", "error", "retry"].includes(second.details.tone), textOf(second));
+  assert.equal(h.exam.status, "active");
+  h.release(blocking);
+});
+
+await check("a failed exam audit is recorded and the form freezes", async () => {
   const h = harness("exam-failed", "exam");
   h.failNext();
   const questions = examQuestions();
   const failed = await h.execute({ action: "exam_build", questions });
-  assert.equal(failed.details.tone, "review", textOf(failed));
-  assert.match(textOf(failed), /review incomplete \(form:exam-1: provider\)/);
-  assert.match(textOf(failed), /form:exam-1 \/ execution incomplete/);
-  assert.equal(h.exam.status, "draft", "a failed audit never freezes the exam");
-  assert.equal(h.exam.questions.length, 0);
+  assert.ok(!["review", "error", "retry"].includes(failed.details.tone), textOf(failed));
+  assert.equal(h.exam.status, "active", "a reviewer failure cannot block a valid exam form");
+  assert.equal(h.exam.questions.length, questions.length);
   assert.ok(h.reviews().length && h.reviews().every(receipt => receipt.failure), "the failure is recorded for this revision");
-  h.auto(() => pass);
-  const retried = await h.execute({ action: "exam_build", questions });
-  assert.ok(!["review", "error", "retry"].includes(retried.details.tone), textOf(retried));
-  assert.equal(h.exam.status, "active", "the failed revision is audited again and its retry can freeze");
+  assert.equal(h.requests.length, questions.length + 1, "the failed form is audited once");
 });
 
 await check("a form changed during its audit is never frozen", async () => {
@@ -573,8 +661,8 @@ await check("an interrupted exam audit resumes from its checkpointed question ch
   h.controller.resetTransientState();
   h.release(pass);
   const stopped = await interrupted;
-  assert.equal(stopped.details.tone, "review", textOf(stopped));
-  assert.match(textOf(stopped), /review incomplete/);
+  assert.equal(stopped.details.tone, "retry", textOf(stopped));
+  assert.match(textOf(stopped), /active Scholar record changed/);
   assert.equal(h.exam.status, "draft", "an interrupted audit never freezes the exam");
   assert.equal(h.exam.questions.length, 0);
 

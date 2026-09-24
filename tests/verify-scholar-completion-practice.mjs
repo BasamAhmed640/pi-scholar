@@ -130,7 +130,15 @@ try {
   async function quiz(id, kind, correct) {
     const calls = await fire("tool_call", { toolName: "scholar_quiz", toolCallId: id, input: { question: `Predict the result for ${id}.`, kind, difficulty: "easy", grounding: grounding(), options: [{ value: "change", label: "The output changes according to the source relation." }, { value: "fixed", label: "The output stays fixed despite the input change.", misconception: "Treating the output as independent of its governing input." }], correctAnswer: "change", explanation: "The saved model relates the changed input to the output." } });
     assert.ok(!calls.some((value) => value?.block), JSON.stringify(calls));
-    return fire("tool_result", { toolName: "scholar_quiz", toolCallId: id, content: [{ type: "text", text: "Quiz result" }], details: { status: "answered", correct, explanation: "The saved model supports the prediction." } });
+    const frozen = section(await read()).attempts.find((item) => item.toolCallId === id).quiz;
+    const selectedIndex = frozen.options.findIndex((option) => correct === frozen.correctValues.includes(option.value));
+    const selected = frozen.options[selectedIndex];
+    return fire("tool_result", { toolName: "scholar_quiz", toolCallId: id, content: [{ type: "text", text: "Quiz result" }],
+      details: { status: "answered", question: frozen.question, mode: frozen.mode,
+        options: frozen.options.map((option, index) => ({ index: index + 1, label: option.label })),
+        answers: [{ index: selectedIndex + 1, label: selected.label, value: selected.value }], dontKnow: false,
+        correctIndices: frozen.correctValues.map((value) => frozen.options.findIndex((option) => option.value === value) + 1),
+        correct, explanation: frozen.explanation } });
   }
   const final = await quiz("last-required", "discrimination", true);
   assert.match(JSON.stringify(final), /Section complete/);

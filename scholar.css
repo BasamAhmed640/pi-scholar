@@ -101,7 +101,7 @@
 }
 .scholar-note .callout.is-collapsed > .callout-title { font-size: 0.82em; font-weight: 500; }
 
-/* ---- Scholar callouts: status, equation, figure ---- */
+/* ---- Scholar callouts: status, equation, figure, diagram ---- */
 
 /* Status header: metadata, not a headline — it sits above the first heading
    without competing with it. */
@@ -159,6 +159,25 @@
 .scholar-note .callout[data-callout="scholar-figure"] .image-embed img { border-radius: 0.4rem; margin-inline: auto; }
 .scholar-note .callout[data-callout="scholar-figure"] .callout-content > p { color: var(--text-normal); }
 .scholar-note .callout[data-callout="scholar-figure"] .callout-content > p:last-child { color: var(--text-muted); font-size: 0.82em; }
+
+/* The diagram is a reading aid with a visible conclusion, in either theme. */
+.scholar-note .callout[data-callout="scholar-diagram"] {
+  --callout-icon: workflow;
+  border-inline-start: 3px solid var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 4%, var(--background-primary));
+  padding: var(--scholar-space-2) var(--scholar-space-3) var(--scholar-space-3);
+  margin-block: var(--scholar-space-3);
+}
+.scholar-note .callout[data-callout="scholar-diagram"] > .callout-title {
+  color: var(--text-accent); font-size: 0.85em; font-weight: 600; letter-spacing: 0.02em;
+}
+.scholar-note .callout[data-callout="scholar-diagram"] .mermaid {
+  max-width: 100%; overflow-x: auto; padding: var(--scholar-space-2);
+  border-radius: 0.5rem; background: var(--background-primary);
+}
+.scholar-note .callout[data-callout="scholar-diagram"] .callout-content > p:last-child {
+  color: var(--text-muted); font-size: 0.82em;
+}
 
 /* ---- Progress bar & score chip ---- */
 .scholar-note .scholar-progress {

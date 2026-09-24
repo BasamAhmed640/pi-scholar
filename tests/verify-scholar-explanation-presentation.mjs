@@ -131,18 +131,18 @@ for (const policy of [learnPolicy, tutorPolicy]) {
   assert.match(policy, /concrete meaning before relying on its technical term/);
   assert.match(policy, /Distinguish a definition from a derived result/);
   assert.match(policy, /one focused editorial review/);
-  assert.match(policy, /symbol → definition/);
+  assert.match(policy, /symbols:\[\{symbol,definition\}\]/);
   assert.match(policy, /\[\[scholar-figure:ID\]\]/);
   assert.match(policy, /Refer to an inspected source figure when it makes the explanation easier to understand/);
   assert.match(policy, /Refer back to the same figure for later reasoning/);
 }
 assert.match(learnPolicy, /before its confirmation questions/);
-assert.match(learnPolicy, /notes\.lessonComplete=true/);
+assert.match(learnPolicy, /lessonComplete=true/);
 assert.match(learnPolicy, /Diagnostic and practice results cannot satisfy missing mastery checks|Never announce completion unless it says Section complete/);
-assert.match(tutorPolicy, /Remain interactive/);
-assert.match(tutorPolicy, /does not require a complete section lesson/);
-assert.ok(learnPolicy.includes("Issue independent source calls together in one message — up to four `read`/`view` calls"), "Learn batches independent source calls so page reads, views and crops do not cost one model turn each");
-assert.ok(tutorPolicy.includes("issue independent source calls together in one message"), "Tutor uses the same batching rule when it prepares an explanation");
+assert.match(tutorPolicy, /Teach one path node per turn/);
+assert.match(tutorPolicy, /Tutor requires neither Learn's full-section lesson nor lessonComplete/);
+assert.match(learnPolicy, /Up to six independent source calls may be sent in one message/);
+assert.match(tutorPolicy, /Pi executes source calls sequentially, so batching saves model turns/);
 assert.match(examPolicy, /Explanation quality/, "Exam composes the shared explanation engine");
 assert.match(examPolicy, /Native Obsidian presentation/, "Exam composes the shared presentation engine");
 assert.match(examPolicy, /Question engine \(general, concept-centered, evidence-first\)/, "Exam composes the shared question engine");

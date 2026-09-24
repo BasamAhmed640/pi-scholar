@@ -60,6 +60,7 @@ export async function handleNotes(
     requiredChecks?: AssessmentKind[];
     misconceptions?: string[];
     lesson?: LessonInput;
+    lessons?: LessonInput[];
     lessonPatch?: LessonPatch;
     lessonComplete?: boolean;
     objectiveChecks?: ObjectiveCheck[];
@@ -76,14 +77,18 @@ export async function handleNotes(
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: ToolDetails }> {
   const synthesis = params.synthesis?.trim();
   const keyPoints = compactStrings(params.keyPoints);
-  if (params.lesson && params.lessonPatch) throw new Error("Use either lesson or lessonPatch in one notes call, not both.");
+  if (params.lesson && params.lessons) throw new Error("Use either lesson or lessons in one notes call, not both.");
+  if (params.lessons !== undefined && (!Array.isArray(params.lessons) || !params.lessons.length || params.lessons.length > 6
+    || new Set(params.lessons.map(unit => unit?.id)).size !== params.lessons.length)) throw new Error("lessons needs 1–6 units with unique stable IDs.");
+  const lessons = params.lessons || (params.lesson ? [params.lesson] : []);
+  if (lessons.length && params.lessonPatch) throw new Error("Use lessons/lesson or lessonPatch in one notes call, not both.");
   if (params.sourceCoverage && params.coverageUpdates) throw new Error("Use sourceCoverage or coverageUpdates in one notes call, not both.");
   if (params.findingResponses !== undefined) {
     if (!Array.isArray(params.findingResponses) || !params.findingResponses.length || !params.findingResponses.every(isFindingResponse)) {
       throw new Error("findingResponses must be an array of valid responses with key, action ('fixed' | 'declined'), and note (1-600 chars).");
     }
   }
-  if (![params.lesson, params.lessonPatch, params.lessonComplete, params.sourceCoverage, params.coverageUpdates, params.figureReviews,
+  if (![params.lesson, params.lessons, params.lessonPatch, params.lessonComplete, params.sourceCoverage, params.coverageUpdates, params.figureReviews,
     params.synthesis, params.keyPoints, params.objectives, params.coveredObjectives, params.objectiveChecks, params.requiredChecks, params.misconceptions, params.findingResponses].some(value => value !== undefined)) {
     throw new Error("Nothing saved. Supply a lesson, recap, source plan, figureReviews, objectiveChecks, coverageUpdates or findingResponses. These fields may be saved independently.");
   }
@@ -93,8 +98,8 @@ export async function handleNotes(
       const tutor = state.tutorSessions.find((item) => item.id === session.recordId);
       if (!tutor || tutor.status !== "active") throw new Error("The active Tutor session is missing or closed.");
       if (synthesis) tutor.synthesis = synthesis;
-      tutor.keyPoints = compactStrings([...tutor.keyPoints, ...keyPoints, ...(params.lesson?.keyPoints || [])]);
-      if (params.lesson) saveLesson(tutor, state, params.lesson, config);
+      tutor.keyPoints = compactStrings([...tutor.keyPoints, ...keyPoints, ...lessons.flatMap(unit => unit.keyPoints || [])]);
+      for (const lesson of lessons) saveLesson(tutor, state, lesson, config);
       if (params.lessonPatch) patchLesson(tutor, state, params.lessonPatch, config);
       if (params.findingResponses?.length) {
         if (!tutor.review) tutor.review = { version: 1, receipts: [], responses: [] };
@@ -151,7 +156,7 @@ export async function handleNotes(
       if (!isSourceCoverageLedger(rawCoverage)) {
         const invalid = Array.isArray(rawCoverage) ? rawCoverage.flatMap((item, index) =>
           isSourceCoverageItem(item) ? [] : [`${index + 1}${typeof item?.id === "string" ? ` (${item.id})` : ""}`]) : [];
-        throw new Error(`Nothing saved. Invalid sourceCoverage ${invalid.length ? `item(s): ${invalid.join(", ")}` : "checklist (expected an array with unique IDs)"}. Each item needs id, kind, description, sourcePages and objective. Optional IDs must be nonempty identifiers; optional evidence must be a nonempty exact passage. Omit unused optional fields. Equation and snapshot references may accompany any item, but must identify content rendered in that lesson at completion. Correct those fields and retry; do not discard the lesson or change its objectives.`);
+        throw new Error(`Nothing saved. Invalid sourceCoverage ${invalid.length ? `item(s): ${invalid.join(", ")}` : "checklist (expected an array with unique IDs)"}. Each item needs id, kind, description, sourcePages and objective. Optional IDs must be nonempty identifiers; optional evidence must be a nonempty explanatory passage. Omit unused optional fields. Equation, snapshot and diagram references must identify content rendered in that lesson at completion. Correct those fields and retry; do not discard the lesson or change its objectives.`);
       }
       const issues = sourceCoverageIssues(sourceCoverage, { ...section, lessons: [] });
       if (issues.length) throw new Error(`Repair the source coverage plan: ${issues.join("; ")}`);
@@ -173,9 +178,9 @@ export async function handleNotes(
     }
     section.requiredChecks = requiredChecks([...checks, ...(section.objectiveChecks || []).flatMap(item => item.checks)]);
     if (synthesis) section.synthesis = synthesis;
-    section.keyPoints = compactStrings([...(editorial && params.keyPoints !== undefined ? [] : section.keyPoints), ...keyPoints, ...(params.lesson?.keyPoints || [])]);
+    section.keyPoints = compactStrings([...(editorial && params.keyPoints !== undefined ? [] : section.keyPoints), ...keyPoints, ...lessons.flatMap(unit => unit.keyPoints || [])]);
     if (params.misconceptions !== undefined) section.misconceptions = compactStrings(params.misconceptions);
-    if (params.lesson) saveLesson(section, state, params.lesson, config);
+    for (const lesson of lessons) saveLesson(section, state, lesson, config);
     if (params.lessonPatch) patchLesson(section, state, params.lessonPatch, config);
     const taught = compactStrings(validLessonEntries(section, state.source.fingerprint.sha256).flatMap(entry => entry.lesson!.objectives));
     if (params.coveredObjectives !== undefined && covered.some(objective => !taught.includes(objective)) && section.status !== "complete") {
@@ -194,7 +199,9 @@ export async function handleNotes(
   const progress = section.learnQuality && !lessonReady(section, mutation.book.source.fingerprint.sha256)
     ? `Draft saved; lesson preparation is still in progress. ${!section.synthesis || !section.keyPoints.length ? "Save the recap and key points. " : ""}${!section.objectiveChecks?.length ? "Save the objectiveChecks plan. " : ""}When the explanation and exact evidence links are complete, submit lessonComplete for review. Learner mastery checks come after lesson approval.`
     : sectionProgressMessage(section);
-  return toolResult("notes", `Saved ${params.lesson || params.lessonPatch ? "instructional explanation" : "notes"} for ${sectionLabel(mutation.book, section)}.${params.lessonComplete ? deferCommit ? " Draft saved; independent review pending." : " Full lesson committed." : ""} Status: ${section.status}. ${progress}`, { bookId: book.id, sectionId });
+  const saved = lessons.length > 1 ? `${lessons.length} instructional explanations`
+    : lessons.length || params.lessonPatch ? "instructional explanation" : "notes";
+  return toolResult("notes", `Saved ${saved} for ${sectionLabel(mutation.book, section)}.${params.lessonComplete ? deferCommit ? " Draft saved; independent review pending." : " Full lesson committed." : ""} Status: ${section.status}. ${progress}`, { bookId: book.id, sectionId });
 }
 
 export async function handleAssess(

@@ -48,6 +48,27 @@ different surfaces.
 
 ## Installation
 
+### Reliable, visual study flow (0.8.0)
+
+Learn saves a short set of lesson units with a Mermaid diagram in every new
+section. Each source system, workflow, or sequence has its own diagram tied to
+explanatory text and source pages. Five mastery questions can be prepared in one
+turn; each answer is saved before the next question opens, and feedback appears
+without another model turn. Pending sets resume after interruption.
+
+Lesson review runs while teaching continues. At delivery, Scholar waits at most
+45 seconds for the current review, allows one repair round, and then accepts a
+lesson that passes its deterministic coverage gates even if review fails. Exam
+form review has a 60-second wait. Question review is one 30-second, fail-open
+check for a Learn mastery set or open assessment, not a wait before each item.
+
+New exams normally contain 4–12 items, with a hard maximum of 16. Multiple
+choice answers are scored by code against the frozen key; only written answers
+need model grading. Tutor starts with a short probe, maps a learning path, then
+teaches and checks one step at a time. Tutor may consult bounded HTTPS sources
+for fact checking, clearly labeled as external material in its note. PDF content
+remains the basis for graded Tutor questions.
+
 ### Independent review restored (0.7.1)
 
 Learn lesson and Tutor explanation revisions are audited once, as they are saved, while the author continues working; proposed questions are inspected before they are shown, and the Exam form before it freezes. Each audit uses the current Pi model at a fixed low reviewer reasoning level.
@@ -492,7 +513,7 @@ progress and reconciles qualifying unfinished sections. Answers, grades, teachin
 receipts, and exam records are preserved; no credit is inferred from question text.
 The repaired state persists with the next ordinary save.
 
-The last unanswered Learn or Tutor question resumes before new questions. Its
+The last unanswered Learn or Tutor question set resumes before new questions. Its
 prompt and choices are read from the actual note. Same-note details preserve the
 choice order and grading contract before the picker opens. Esc, unavailable UI,
 or ending Pi leaves it pending; submission resolves it once. An older cancelled
@@ -502,6 +523,9 @@ The collapsed question details include the grading key, so leave them closed whi
 answering. This is an inspectable local study record, not an exam security boundary.
 The terminal picker withholds feedback until submission. Editing a frozen quiz's
 prompt or choices stops automatic grading; delete its whole block to replace it.
+For a new Learn mastery set, one model turn can prepare the remaining questions
+together. Scholar saves each answer before showing the next question and resumes
+only unanswered items after a restart.
 
 ### Exam
 
@@ -525,12 +549,11 @@ hidden answer markers intact. Older text-entry papers still work without convers
 Save your edits, then run `/scholar exam "exam-001" submit` in Pi.
 Both named submission and `/scholar exam submit` show a confirmation with the
 answered/blank count. Changed files require a fresh confirmation.
-New exams contain at least one question, with no fixed question-count cap for
-generation or grading. Choose the length for concept coverage, using distinct
-probes for important concepts rather than redundant questions. Existing frozen
-exams keep their original questions. Model context/output limits and the 1 MiB
-answer-paper safety limit still apply; removing the count cap does not guarantee
-that an arbitrarily large exam can be generated in one turn.
+New exams contain at least one question and at most 16; 4–12 is the normal
+target. Choose the length for concept coverage, using distinct probes for
+important concepts rather than redundant questions. Existing frozen exams keep
+their original questions. Model context/output limits and the 1 MiB answer-paper
+safety limit still apply.
 
 Question-engine standards are enforced mechanically when a form is frozen, so a
 weak exam cannot be saved: at least three genuinely plausible options per
@@ -555,6 +578,8 @@ gives the correct answer, why that reasoning holds, the first decisive error, th
 correct reasoning, and a transferable lesson. Correct answers get a brief note on
 why the reasoning holds, so a lucky guess is not mistaken for competence. The
 learner's submitted responses stay in the visible exam record for grading.
+Multiple-choice outcomes are computed from the frozen key, including select-all
+items; model grading applies only to written answers.
 The learner's handwritten answers remain in
 their separate Obsidian answer paper, which is never overwritten by Scholar.
 
@@ -575,6 +600,10 @@ Tutor receives only its selected source scope and the current request—not Lear
 completion or Exam evidence. It diagnoses a specific gap, teaches the governing
 model, fades support, and uses fresh practice when helpful. Tutor success never
 changes an Exam score or counts as independent Learn evidence.
+Its default flow is a short source-grounded probe, a Mermaid learning path, one
+node of explanation, and a short lock-in check before advancing. Tutor alone can
+look up a material fact on public HTTPS pages. The note labels any resulting
+external quote and its URL; web text does not become a graded answer basis.
 
 During any active Scholar generation turn—book setup, Learn, Exam, or Tutor—the
 normal Pi chat editor is paused. New chat messages, steering, and queued
@@ -792,8 +821,9 @@ Interactive Pi hosts must implement and honor `getEditorComponent` and
 `setEditorComponent`. Scholar refuses to start a protected operation if it cannot
 install the chat lock, instead of silently continuing unlocked. Escape still
 interrupts, quiz dialogs stay interactive, and releasing the lock preserves the
-previous editor and draft. Only an explicitly headless context (`hasUI: false`)
-bypasses the editor lock. This protects Scholar's workflows; it is not a global
+previous editor and draft. An explicitly headless context (`hasUI: false`) and
+Pi's RPC mode bypass the TUI editor lock; RPC still uses Scholar's own pending
+question and save gates. This protects Scholar's workflows; it is not a global
 security boundary against unrelated Pi tools or other extensions.
 
 ## Verification and release contents
@@ -816,6 +846,15 @@ prerequisite failures are reported as blocked checks. It does not install,
 patch, or stub the Pi SDK. Full verification includes actual PDF extraction and
 cropping, loader/UI integration, vault authority, projection, exam contracts,
 question grounding, and durable history behavior.
+
+For a release, `node tests/e2e/run.mjs --scenario full --extension . --keep`
+drives the real Pi RPC host and selected model through setup, Learn, Tutor,
+Obsidian exam submission and grading, restart, interruption, and deletion in
+a disposable library and vault. `--scenario plumbing` checks the RPC setup
+without model calls. `node tests/e2e/real-vault-check.mjs --vault <vault-path>
+--extension .` checks a byte copy of an existing vault without changing it.
+These checks are separate from `npm test` because the full scenario costs model
+calls and a real vault must stay out of the repository.
 
 SDK discovery uses normal Node module search paths, standard Node installation
 prefixes, and `npm root --global`. For managed or unusual installations, set

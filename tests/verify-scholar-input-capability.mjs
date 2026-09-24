@@ -98,6 +98,18 @@ try {
     assert.equal(state.currentFactory, state.priorFactory);
   });
 
+  prove("RPC mode bypasses editor installation while an unspecified host stays strict", () => {
+    const controller = createController();
+    const state = editorUi();
+    state.ignoreWrites = true;
+    const release = controller.acquireInputLock({ ...state.ctx, mode: "rpc" }, "RPC question");
+    release();
+    controller.releaseAllInputLocks();
+    assert.equal(state.reads, 0);
+    assert.equal(state.writes, 0);
+    assert.throws(() => controller.acquireInputLock(state.ctx), /could not pause chat input/);
+  });
+
   for (const [name, fault] of [
     ["initial editor inspection failure", { failReads: [1] }],
     ["editor install failure before swap", { failBeforeWrites: [1] }],

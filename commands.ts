@@ -5,6 +5,7 @@ import { ensureScholarAppearance } from "./appearance.ts";
 
 import { cleanArgument, parseScholarCommand } from "./command-syntax.ts";
 import {
+  firstIncomplete,
   quoted,
   recomputeProgress,
   resolveLearnSection,
@@ -85,9 +86,6 @@ export type ScholarRuntimeCoordinator = {
   ) => Promise<RecoveryOutcome>;
 };
 
-/** How many times an exam scope is tried (the typed value counts) before giving up. */
-const MAX_EXAM_SCOPE_ATTEMPTS = 3;
-
 /**
  * Book-specific guidance for an exam scope. Examples use this book's real
  * chapter and subsection numbers so the accepted shapes are unambiguous.
@@ -133,16 +131,16 @@ export function scholarGuide(book?: ScholarBook, unreadable = false): string {
     "• /scholar open [book]",
     "  Open or switch textbooks from your configured PDF library. Run bare to browse all available books in a selector, or specify a partial title to jump directly.",
     "",
-    "• /scholar learn <chapter/section>",
-    '  Guided study with source-grounded explanations and 5 short questions. Reopening a section continues where it stopped. Pending unanswered questions resume unchanged.',
+    "• /scholar learn [chapter/section]",
+    '  Guided study with source-grounded explanations and 5 short questions. Bare learn continues the active section or picks the first unfinished section and names it. Pending unanswered questions resume unchanged.',
     "",
-    "• /scholar exam <scope>",
-    '  Answer an exam in Obsidian. Specify chapters (e.g. "1-3", "1, 2", or "all"), or reopen an exam by ID. Bare /scholar exam resumes the most recently touched unfinished exam and names any others; it never prompts.',
+    "• /scholar exam [scope]",
+    '  Answer an exam in Obsidian. Specify chapters (e.g. "1-3", "1, 2", or "all"), or reopen an exam by ID. Bare exam resumes the latest unfinished exam; otherwise it starts with the selected section’s chapter or the first chapter. It never prompts.',
     '• /scholar exam "exam-001" submit',
-    '  Confirm and submit saved Obsidian answers; blanks receive 0 points. /scholar exam submit offers active exams. Reopening a submitted exam resumes grading; reopening a graded exam restores a missing answer key without re-grading.',
+    '  Confirm and submit saved Obsidian answers; blanks receive 0 points. /scholar exam submit selects the sole active exam automatically, or offers a choice if several are active. Reopening a submitted exam resumes grading; reopening a graded exam restores a missing answer key without re-grading.',
     "",
-    "• /scholar tutor <section/topic>",
-    "  Interactive Socratic tutoring. Focuses on specific points of confusion, worked problem derivations, or conceptual questions without advancing formal section progress.",
+    "• /scholar tutor [section/topic]",
+    "  Interactive tutoring that starts with a short probe and follows a diagrammed learning path. Bare tutor resumes the active session or uses the current section. Tutor never advances formal Learn progress.",
     "",
     "• /scholar close",
     "  Safely leaves Scholar mode in this terminal session while preserving all progress, state, and notes.",
@@ -153,49 +151,34 @@ export function scholarGuide(book?: ScholarBook, unreadable = false): string {
   ].join("\n");
 }
 
-/**
- * Resolve an explicit exam scope, re-asking with the specific reason when the
- * entry does not match the book. The scope typed on the command line is the
- * first attempt, so a near miss reopens the dialog instead of ending the
- * command. A bare `/scholar exam` never reaches this: it resumes an unfinished
- * exam or explains the creation syntax without prompting.
- */
+/** A load never opens a dialog. Invalid scopes get concrete syntax guidance. */
 export async function resolveExamScope(
   book: ScholarBook,
   provided: string,
   ctx: ExtensionCommandContext,
 ): Promise<ScholarScope | undefined> {
   const guidance = examScopeGuidance(book);
-  const canPrompt = typeof ctx.ui?.input === "function";
-  let candidate = cleanArgument(provided);
-  let problem: string | undefined;
-
-  for (let attempt = 0; attempt < MAX_EXAM_SCOPE_ATTEMPTS; attempt += 1) {
-    if (!candidate) {
-      if (!canPrompt) {
-        ctx.ui.notify(`${problem || "No exam scope was given."}\n\n${guidance}`, "warning");
-        return undefined;
-      }
-      const heading = problem
-        ? `${problem}\n\nTry again.\n\n${guidance}`
-        : `Create an exam from ${titleFor(book)}.\n\n${guidance}`;
-      const entered = await ctx.ui.input(heading, "e.g. 1-3");
-      if (entered === undefined) return undefined;
-      candidate = cleanArgument(entered);
-      if (!candidate) {
-        problem = "No scope entered.";
-        continue;
-      }
-    }
-    try {
-      return resolveScope(book, candidate, false);
-    } catch (error) {
-      problem = error instanceof Error ? error.message : String(error);
-      candidate = undefined;
-    }
+  const candidate = cleanArgument(provided);
+  if (!candidate) {
+    ctx.ui.notify(`No exam scope was given.\n\n${guidance}`, "warning");
+    return undefined;
   }
-  ctx.ui.notify(`${problem || "That exam scope could not be matched."}\n\nNo exam was created.\n\n${guidance}`, "warning");
-  return undefined;
+  try {
+    return resolveScope(book, candidate, false);
+  } catch (error) {
+    const problem = error instanceof Error ? error.message : String(error);
+    ctx.ui.notify(`${problem}\n\nNo exam was created.\n\n${guidance}`, "warning");
+    return undefined;
+  }
+}
+
+export function defaultExamScope(book: ScholarBook): ScholarScope | undefined {
+  const current = findSection(book, book.currentSectionId);
+  const chapter = book.chapters.find(item => current && item.sections.some(section => section.id === current.id))
+    || book.chapters.find(item => item.sections.length > 0);
+  if (!chapter) return undefined;
+  return { chapterIds: [chapter.id], sectionIds: chapter.sections.map(section => section.id),
+    description: chapter.number ? `chapter ${chapter.number}` : chapter.title };
 }
 
 /**
@@ -515,16 +498,18 @@ export async function handleScholarCommand(
     try {
       await recoverActiveOutgoingSession(coordinator, activeConfig, ctx, "outgoing");
       if (parsed.action === "learn") {
-        const selected = resolveLearnSection(book, parsed.value);
+        const selected = resolveLearnSection(book, parsed.value)
+          || (!parsed.value ? firstIncomplete(book) || findSection(book, book.currentSectionId) || allSections(book)[0] : undefined);
         if (!selected) {
           ctx.ui.notify(
             parsed.value
               ? `No Scholar chapter or section matches ${quoted(parsed.value)}.`
-              : 'Choose a chapter or section first, for example: /scholar learn "chapter 1" or /scholar learn "section 1.2". A bare /scholar learn only resumes an unfinished section you already started.',
+              : "This book has no source section to learn. Verify its outline first.",
             "info",
           );
           return;
         }
+        if (!parsed.value) ctx.ui.notify(`Bare Learn selected ${selected.number || selected.id} ${selected.title}${selected.status === "complete" ? " for practice" : ""}.`, "info");
         const mutation = await coordinator.mutateBook(book.id, (state) => {
           state.currentSectionId = selected.id;
           const section = findSection(state, selected.id);
@@ -540,21 +525,26 @@ export async function handleScholarCommand(
 
       if (parsed.action === "exam") {
         let exam: ScholarExam | undefined;
+        let bareScope: ScholarScope | undefined;
         if (parsed.submit) {
           if (parsed.value) {
             exam = findNamedExam(book, parsed.value);
             if (!exam) throw new Error(`No exam matches ${quoted(parsed.value)}. Use an existing exam ID; no exam was created.`);
           } else {
-            if (!ctx.hasUI || typeof ctx.ui.select !== "function" || typeof ctx.ui.confirm !== "function") {
-              throw new Error("Exam submission requires interactive selection and confirmation in Pi.");
-            }
+            if (!ctx.hasUI || typeof ctx.ui.confirm !== "function") throw new Error("Exam submission requires interactive confirmation in Pi.");
             const candidates = unfinishedExams(book).filter((item) => item.status === "active");
             if (!candidates.length) { ctx.ui.notify("No active exam is ready to submit. Reopen a submitted exam to finish grading.", "info"); return; }
-            const labels = await Promise.all(candidates.map((item) => examPaperLabel(activeConfig, book!, item)));
-            const selected = await ctx.ui.select("Submit an exam — saved answers in Obsidian", labels);
-            if (selected === undefined) return;
-            exam = candidates[labels.indexOf(selected)];
-            if (!exam) return;
+            if (candidates.length === 1) {
+              exam = candidates[0]!;
+              ctx.ui.notify(`Submitting the sole active exam: ${exam.title} [${exam.id}].`, "info");
+            } else {
+              if (typeof ctx.ui.select !== "function") throw new Error("Choose an exam by ID before submitting when several are active.");
+              const labels = await Promise.all(candidates.map((item) => examPaperLabel(activeConfig, book!, item)));
+              const selected = await ctx.ui.select("Submit an exam — saved answers in Obsidian", labels);
+              if (selected === undefined) return;
+              exam = candidates[labels.indexOf(selected)];
+              if (!exam) return;
+            }
           }
           if (exam.status === "active") {
             const submission = await coordinator.toolController.submitExam(book.id, exam.id, ctx);
@@ -571,21 +561,24 @@ export async function handleScholarCommand(
           // Already-submitted/graded requests follow the resume route below;
           // they never parse the edited paper or replace the saved answers.
         } else if (!parsed.value) {
-          // Bare `/scholar exam` never prompts: the most recently touched
-          // unfinished exam wins, and the rest are named rather than offered.
+          // Bare exam resumes the latest unfinished form, otherwise starts the
+          // selected section's chapter (or the first chapter).
           const unfinished = unfinishedExams(book);
           if (!unfinished.length) {
-            ctx.ui.notify(`No unfinished exam to resume. Create one with /scholar exam "<scope>".\n\n${examScopeGuidance(book)}`, "info");
-            return;
+            bareScope = defaultExamScope(book);
+            if (!bareScope) { ctx.ui.notify("This book has no source chapter to examine. Verify its outline first.", "warning"); return; }
+            ctx.ui.notify(`Bare Exam selected ${bareScope.description}.`, "info");
+          } else {
+            exam = unfinished[0]!;
+            const others = unfinished.slice(1);
+            ctx.ui.notify(
+              `Resuming ${examResumeLabel(exam)}.${others.length ? `\nOther unfinished exams: ${others.map((item) => `${item.title} [${item.id}]`).join("; ")}.` : ""}`,
+              "info",
+            );
           }
-          exam = unfinished[0]!;
-          const others = unfinished.slice(1);
-          ctx.ui.notify(
-            `Resuming ${examResumeLabel(exam)}.${others.length ? `\nOther unfinished exams: ${others.map((item) => `${item.title} [${item.id}]`).join("; ")}.` : ""}`,
-            "info",
-          );
-        } else {
-          const found = findNamedExam(book, parsed.value);
+        }
+        if (!exam && (parsed.value || bareScope)) {
+          const found = parsed.value ? findNamedExam(book, parsed.value) : undefined;
           if (found) {
             exam = found;
             if (exam.status === "graded") {
@@ -594,7 +587,7 @@ export async function handleScholarCommand(
               ctx.ui.notify(`Resuming ${examResumeLabel(exam)}.`, "info");
             }
           } else {
-            const scope = await resolveExamScope(book, parsed.value, ctx);
+            const scope = bareScope || await resolveExamScope(book, parsed.value!, ctx);
             if (!scope) return;
             const now = new Date().toISOString();
             const number = book.exams.length + 1;
@@ -654,12 +647,15 @@ export async function handleScholarCommand(
 
       if (parsed.action === "tutor") {
         let tutor = !parsed.value ? book.tutorSessions.find((item) => item.id === book.currentTutorId && item.status === "active") : undefined;
+        if (tutor) ctx.ui.notify(`Bare Tutor resumed ${tutor.title} [${tutor.id}].`, "info");
         if (!tutor) {
-          if (!parsed.value) {
-            ctx.ui.notify('Choose a chapter, section, or topic, for example: /scholar tutor "1.2".', "warning");
-            return;
-          }
-          const scope = resolveScope(book, parsed.value, true);
+          const defaultSection = !parsed.value ? findSection(book, book.currentSectionId) || firstIncomplete(book) || allSections(book)[0] : undefined;
+          if (!parsed.value && !defaultSection) { ctx.ui.notify("This book has no source section to tutor. Verify its outline first.", "warning"); return; }
+          const scope = defaultSection
+            ? { chapterIds: book.chapters.filter(chapter => chapter.sections.some(section => section.id === defaultSection.id)).map(chapter => chapter.id),
+              sectionIds: [defaultSection.id], description: `section ${defaultSection.number || defaultSection.id}` }
+            : resolveScope(book, parsed.value, true);
+          if (defaultSection) ctx.ui.notify(`Bare Tutor selected ${scope.description}.`, "info");
           const now = new Date().toISOString();
           const number = book.tutorSessions.length + 1;
           tutor = {

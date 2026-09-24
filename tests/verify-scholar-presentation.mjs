@@ -83,9 +83,9 @@ try {
   await writeFile(paperPath,filled);await installScholarAppearance(config);await renderScholarWorkspace(config,[book]);assert.equal(await readFile(paperPath,"utf8"),filled);
   pass("native checkboxes stay inside their question and an existing filled paper is never restyled by rewriting");
   const policy=await readFile(join(extension,"policies.ts"),"utf8");
-  assert.match(policy,/notes\.lesson\.keyEquations/);assert.match(policy,/Optionally use a small fenced mermaid/);
+  assert.match(policy,/notes\.lesson\.keyEquations/);assert.match(policy,/lesson\.diagrams=.*\[\[scholar-diagram:ID\]\]/);
   const exported=await mod("policies.ts");assert.match(exported.learnInstructions(book,section),/Key equation/);assert.match(exported.tutorInstructions(book,tutor),/mermaid/);assert.match(exported.examInstructions(book,exam),/Native Obsidian presentation/, "every mode composes the one presentation engine");
-  pass("central equations are explicitly framed and Mermaid is optional in Learn/Tutor presentation guidance");
+  pass("central equations and authored Mermaid diagrams use saved native callouts");
   if(preview){
     await writeFile(join(config.obsidianRoot,".obsidian","app.json"),JSON.stringify({livePreview:true,readableLineLength:true}));
     await writeFile(join(config.obsidianRoot,".obsidian","appearance.json"),JSON.stringify({theme:"obsidian",baseFontSize:18,enabledCssSnippets:["scholar"]}));

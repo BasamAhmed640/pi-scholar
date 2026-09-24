@@ -126,6 +126,7 @@ export interface ScholarQuizDisplayedOption {
 /** Pre-answer update; deliberately excludes the answer key and explanation. */
 export interface ScholarQuizProgressDetails {
   options: ScholarQuizDisplayedOption[];
+  attemptId?: string;
 }
 
 export interface ScholarQuizResponse {
@@ -146,6 +147,8 @@ export interface ScholarQuizResultDetails {
   correct?: boolean;
   dontKnow?: boolean;
   explanation?: string;
+  attemptId?: string;
+  itemResults?: Array<ScholarQuizResultDetails & { attemptId: string }>;
 }
 
 /** Tolerant view of an event or historical result crossing the wire. */
@@ -161,6 +164,8 @@ export interface ObservedScholarQuizDetails {
   correct?: boolean;
   dontKnow?: boolean;
   explanation?: string;
+  attemptId?: string;
+  itemResults?: Array<ObservedScholarQuizDetails & { attemptId: string }>;
 }
 
 /** Fields used by Scholar when observing a quiz tool call. */
@@ -173,6 +178,23 @@ export interface ObservedScholarQuizInput {
   difficulty?: string;
   grounding?: QuestionGrounding;
   optionLabels?: string[];
+}
+
+/** A set is validated as a whole before Scholar persists or presents any item. */
+export function scholarQuizInputItems(value: unknown): unknown[] {
+  if (!isRecord(value)) return [];
+  if (value.resumeAttemptId !== undefined) return [];
+  if (value.questions !== undefined) {
+    if (!Array.isArray(value.questions) || value.questions.length < 1 || value.questions.length > 5
+      || value.questions.some((item) => !isRecord(item))) {
+      throw new Error("scholar_quiz questions must contain 1–5 item objects");
+    }
+    if (value.question !== undefined || value.grounding !== undefined || value.options !== undefined) {
+      throw new Error("Supply questions or one legacy question, not both.");
+    }
+    return value.questions;
+  }
+  return value.question !== undefined ? [value] : [];
 }
 
 type UnknownRecord = Record<string, unknown>;
@@ -265,6 +287,11 @@ export function parseScholarQuizDetails(value: unknown): ObservedScholarQuizDeta
     ...(typeof value.correct === "boolean" ? { correct: value.correct } : {}),
     ...(typeof value.dontKnow === "boolean" ? { dontKnow: value.dontKnow } : {}),
     ...(typeof value.explanation === "string" ? { explanation: value.explanation } : {}),
+    ...(typeof value.attemptId === "string" ? { attemptId: value.attemptId } : {}),
+    ...(Array.isArray(value.itemResults) ? { itemResults: value.itemResults.flatMap((item) => {
+      if (!isRecord(item) || typeof item.attemptId !== "string") return [];
+      return [{ ...parseScholarQuizDetails({ ...item, itemResults: undefined }), attemptId: item.attemptId }];
+    }) } : {}),
   };
 }
 

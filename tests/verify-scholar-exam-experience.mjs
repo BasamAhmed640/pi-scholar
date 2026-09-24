@@ -79,10 +79,47 @@ book.exams = [exam];
 
 // =============================================== 1. the form to answer in ==
 const form = examAnswerNoteText(config, book, exam);
-check("form states the scope and totals", /\*\*2 questions · 7 points\*\* · 1 multiple choice · 1 written response/.test(form) && form.includes("chapter 1"),
-  form.split("\n").find((line) => line.startsWith("**2 questions")));
-check("form explains how to answer", /Click the checkboxes/.test(form) && /Choose one unless/.test(form)
-  && /Write open responses in \*\*Live Preview\*\*/.test(form), "checkbox and written-response instructions present");
+const figure = (id, page, caption, createdAt) => ({
+  id: `snapshot-${id}`, page, caption, createdAt,
+  crop: { x: 0, y: 0, width: 600, height: 300, canvasWidth: 1000, canvasHeight: 1400 },
+  assetFile: `p${String(page).padStart(4, "0")}-snapshot-${id}.png`, sha256: id.repeat(4),
+});
+const olderFigure = figure("aaaaaaaaaaaaaaaa", 1, "Figure 1.1   Closed-loop diagram.", "2026-01-01T00:00:00.000Z");
+const newerFigure = figure("bbbbbbbbbbbbbbbb", 1, "figure 1.1 Closed-loop diagram.", "2026-01-02T00:00:00.000Z");
+const distinctFigure = figure("cccccccccccccccc", 1, "Figure 1.2 Separate diagram.", "2026-01-03T00:00:00.000Z");
+const otherPageFigure = figure("dddddddddddddddd", 2, "Figure 1.1 Closed-loop diagram.", "2026-01-04T00:00:00.000Z");
+const unlabelledA = figure("eeeeeeeeeeeeeeee", 1, "Uncaptioned source diagram", "2026-01-01T00:00:00.000Z");
+const unlabelledB = figure("ffffffffffffffff", 1, "Uncaptioned source diagram", "2026-01-02T00:00:00.000Z");
+const figureBook = structuredClone(book);
+figureBook.source = { fileName: "source.pdf" };
+figureBook.chapters[0].sections[0].snapshots = [newerFigure, distinctFigure, otherPageFigure, unlabelledA, unlabelledB];
+const figureExam = { ...exam, snapshots: [olderFigure], questions: [{ ...questions[0], prompt: "Using Figure 1.1, which model applies?" }, questions[1]] };
+const figurePaper = examAnswerNoteText(config, figureBook, figureExam);
+const sourceFigures = figurePaper.slice(figurePaper.indexOf("## Source figures"), figurePaper.indexOf("> [!question] Question 1"));
+const firstQuestion = figurePaper.slice(figurePaper.indexOf("> [!question] Question 1"), figurePaper.indexOf("> [!question] Question 2"));
+check("paper keeps the latest capture of a repeated labelled figure in source figures and question references",
+  !figurePaper.includes(olderFigure.assetFile)
+    && sourceFigures.includes(newerFigure.assetFile) && firstQuestion.includes(newerFigure.assetFile)
+    && figurePaper.split(newerFigure.assetFile).length - 1 === 2,
+  "one selected image appears in both places");
+check("paper preserves different source figures on the same page and matching captions on other pages",
+  (sourceFigures.match(/> \[!scholar-figure\]/g) || []).length === 5
+    && sourceFigures.includes(distinctFigure.assetFile) && sourceFigures.includes(otherPageFigure.assetFile)
+    && firstQuestion.includes(otherPageFigure.assetFile) && !firstQuestion.includes(distinctFigure.assetFile)
+    && sourceFigures.includes(unlabelledA.assetFile) && sourceFigures.includes(unlabelledB.assetFile),
+  "distinct figures and ambiguous unlabelled captures remain available");
+// One multiple-choice item (about 1 minute) and one written item (about 3 minutes).
+check("form opens with a header callout stating questions, points and time, plus the scope",
+  /^> \[!info\] 2 questions · 7 points · about 4 minutes$/m.test(form)
+    && /^> 1 multiple choice · 1 written · blank answers score 0$/m.test(form) && form.includes("chapter 1")
+    && form.indexOf("> [!info] 2 questions") < form.indexOf("> [!question] Question 1"),
+  form.split("\n").find((line) => line.startsWith("> [!info]")));
+check("form explains how to answer in three steps: tick, write, save and submit",
+  /^> \*\*How to answer\*\*$/m.test(form)
+    && /^> 1\. \*\*Choose\*\* — tick one box\.$/m.test(form)
+    && /^> 2\. \*\*Write\*\* — answer in a line or two under \*\*Your response\*\*, in Live Preview\./m.test(form)
+    && /^> 3\. \*\*Submit\*\* — save this note, then run the command at the end of the paper in Pi\.$/m.test(form),
+  "checkbox, written-response and submission steps present");
 check("each question shows its points and format",
   /> \[!question\] Question 1 · 2 points[\s\S]*?> \*Select one answer\.\*/.test(form)
     && /> \[!question\] Question 2 · 5 points[\s\S]*?> \*Written response · Answer briefly — one line or two sentences, not an extended derivation\.\*/.test(form)
@@ -101,9 +138,17 @@ const openBlock = /<!-- scholar:answer:q2:start -->([\s\S]*?)<!-- \/scholar:answ
 check("open questions get real blank space to write in",
   openBlock.split("\n").length >= 8 && openBlock.replace(/^> ?/gm, "").trim() === "",
   `${openBlock.split("\n").length - 2} blank line(s), no placeholder text to delete`);
-check("form ends with a submit block",
-  /## Submit/.test(form) && form.includes('/scholar exam "exam-001" submit') && /save/i.test(form),
+const submitTip = form.slice(form.indexOf("> [!tip] Submit when you're done"));
+check("form ends with a submit tip carrying the exact command",
+  form.includes("> [!tip] Submit when you're done")
+    && form.indexOf("> [!tip] Submit when you're done") > form.lastIndexOf("<!-- /scholar:answer:")
+    && submitTip.includes('> /scholar exam "exam-001" submit') && /Save this note/.test(submitTip)
+    && submitTip.indexOf("<!-- scholar:exam-paper:complete -->") > 0,
   "save in Obsidian, then explicitly submit the exact exam in Pi");
+check("a select-all paper tells the learner when to tick several boxes",
+  /^> 1\. \*\*Choose\*\* — tick one box, or every box that applies when a question says \*select all that apply\*\.$/m.test(
+    examAnswerNoteText(config, book, { ...exam, questions: [{ ...questions[0], correctAnswer: ["a", "b"] }, questions[1]] })),
+  "select-all guidance appears only when the paper needs it");
 
 const parsedBlank = parseExamResponses(exam, form);
 check("an untouched form parses as entirely unanswered",
@@ -131,6 +176,11 @@ check("paper is separate from the generated receipt",
   "one editable copy of every question");
 check("an unsubmitted exam note reveals no answer key",
   !/Correct answer/.test(activeNote) && !/Rubric/.test(activeNote), "nothing leaked before submission");
+const nextStep = activeNote.slice(activeNote.indexOf("> [!tip] Next step"), activeNote.indexOf("[[../"));
+check("the unsubmitted note's next-step callout names the paper link and the submit command",
+  activeNote.indexOf("> [!tip] Next step") > activeNote.indexOf("Not yet submitted")
+    && /\[\[[^\]]*Answers\|your answer paper\]\]/.test(nextStep) && nextStep.includes('`/scholar exam "exam-001" submit`'),
+  nextStep.split("\n").slice(0, 4).join(" / "));
 
 // ==================================================== 3. the graded key note ==
 const graded = {
@@ -178,6 +228,15 @@ check("the key gives a transferable lesson",
   /spatial extent to the interconnect/.test(key), "lesson present");
 check("the key reports the competency profile",
   /## Competency profile/.test(key) && /1\.1 What Is SI/.test(key), "breakdown present");
+const pie = '```mermaid\npie title Your results\n    "Partial" : 1\n    "Incorrect" : 1\n```';
+check("the key charts its outcomes as a Mermaid pie right under the banner, omitting empty slices",
+  key.includes(pie) && key.indexOf(pie) > key.indexOf("Answer key · 3/7") && key.indexOf(pie) < key.indexOf("## Where to look first")
+    && !/"Correct" :|"Unanswered" :/.test(key),
+  "partial and incorrect slices only");
+check("an ungraded or empty result set draws no pie",
+  !renderExamAnswerKey(config, book, { ...graded, status: "submitted", gradedAt: undefined }).includes("```mermaid")
+    && !renderExamAnswerKey(config, bookGraded, { ...graded, itemResults: [] }).includes("```mermaid"),
+  "the chart only summarizes saved grades");
 
 // The invariant that matters most.
 check("the key never contains the learner's raw response",
@@ -188,6 +247,10 @@ check("the graded exam note never contains the raw response",
 check("the graded exam note links to the key instead of inlining it",
   /## Answer key/.test(gradedNote) && /Answer Key/.test(gradedNote) && !/First decisive error/.test(gradedNote),
   "key lives in its own node");
+check("the graded note's next step states the score and links the answer key",
+  /> \[!tip\] Next step\n>\n> Your score: \*\*3\/7 \(42\.9%\)\*\*\. Open \[\[[^\]]*Answer Key\|the answer key\]\]/.test(gradedNote)
+    && !gradedNote.includes("/scholar exam"),
+  "score first, then the key; no submit command once graded");
 
 // ==================================================== 4. resuming an exam ===
 const draft = { ...exam, id: "exam-002", title: "Exam 02 — chapter 1", status: "draft", questions: [], createdAt: "2026-03-01T00:00:00.000Z" };

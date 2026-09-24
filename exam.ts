@@ -3,13 +3,24 @@ import { compactStrings, sectionLabel } from "./domain.ts";
 import { answerShapeIssues, CATCH_ALL_OPTION, MAX_RECOGNITION_SHARE, MIN_MCQ_OPTIONS, MIN_RUBRIC_CRITERIA, MIXED_FORM_THRESHOLD, optionIssues } from "./quiz-contract.ts";
 import { markdownText } from "./render/common.ts";
 import { isExamQuestion } from "./state-schema.ts";
-import { findSection, type ExamBreakdown, type ExamItemResult, type ExamQuestion, type ScholarBook, type ScholarExam } from "./types.ts";
+import { findSection, type ExamBreakdown, type ExamItemResult, type ExamQuestion, type ExamRawResponse, type ScholarBook, type ScholarExam } from "./types.ts";
 
 const ANSWER_START = "<!-- scholar:answer:";
 const ANSWER_END = "<!-- /scholar:answer:";
 
 /** Mirrors state-schema's isStableId so a rejection names its own field. */
 const MAX_STABLE_ID = 200;
+
+/** Guidance, not enforcement: a new form aims for about two items per scoped subsection, kept at 4–12. */
+export const EXAM_RECOMMENDED_MIN = 4;
+export const EXAM_RECOMMENDED_MAX = 12;
+/** The only hard length rule, applied when a new form freezes; frozen exams keep their original length. */
+export const EXAM_MAX_QUESTIONS = 16;
+
+export function recommendedExamLength(sectionCount: number): number {
+  const sections = Number.isFinite(sectionCount) ? Math.max(0, Math.trunc(sectionCount)) : 0;
+  return Math.min(EXAM_RECOMMENDED_MAX, Math.max(EXAM_RECOMMENDED_MIN, 2 * sections));
+}
 
 /** What a frozen form actually covers, reported back so weak coverage is visible. */
 export type ExamBlueprint = {
@@ -20,6 +31,8 @@ export type ExamBlueprint = {
   sectionsScoped: number;
   sectionsSampled: number;
   dimensions: string[];
+  /** The concise length this scope calls for; reported beside the actual count. */
+  recommendedLength: number;
 };
 
 export function examBlueprint(exam: ScholarExam, questions: ExamQuestion[]): ExamBlueprint {
@@ -36,6 +49,7 @@ export function examBlueprint(exam: ScholarExam, questions: ExamQuestion[]): Exa
     sectionsScoped: exam.scope.sectionIds.length,
     sectionsSampled: exam.scope.sectionIds.filter((id) => sampled.has(id)).length,
     dimensions: [...new Set(questions.flatMap((question) => question.dimensions))].sort(),
+    recommendedLength: recommendedExamLength(exam.scope.sectionIds.length),
   };
 }
 
@@ -66,9 +80,11 @@ export function examBlueprintSummary(blueprint: ExamBlueprint): string {
   const coverage = blueprint.sectionsScoped > 0
     ? `${blueprint.sectionsSampled}/${blueprint.sectionsScoped} scoped subsection(s) sampled`
     : "no scoped subsections";
+  const recommended = blueprint.recommendedLength ?? recommendedExamLength(blueprint.sectionsScoped);
   return `${blueprint.questionCount} question(s) · ${blueprint.totalPoints} point(s) · `
     + `${Math.round(blueprint.recognitionShare * 100)}% recognition · ${coverage} · `
-    + `${blueprint.dimensions.length} competency dimension(s)`;
+    + `${blueprint.dimensions.length} competency dimension(s) · recommended length ${recommended} `
+    + `(about 2 per scoped subsection, ${EXAM_RECOMMENDED_MIN}–${EXAM_RECOMMENDED_MAX}; at most ${EXAM_MAX_QUESTIONS})`;
 }
 
 function coerceAnswerValues(value: string | string[] | undefined): string[] {
@@ -109,8 +125,16 @@ function stableIdOrThrow(value: unknown, label: string): string {
  * item, options on an open item — are reported so they can be corrected.
  */
 export function validateExamQuestions(exam: ScholarExam, questions: ExamQuestion[]): ExamQuestion[] {
+  const target = recommendedExamLength(exam.scope?.sectionIds?.length ?? 0);
   if (!Array.isArray(questions) || questions.length < 1) {
-    throw new Error("A new exam must contain at least one question. Choose the count from the scoped concepts and distinct evidence needed.");
+    throw new Error(`A new exam must contain at least one question. Aim for about ${target} — roughly two per scoped subsection — chosen from the scoped concepts and distinct evidence needed.`);
+  }
+  // A long paper costs the learner time and the grader a turn; the cap is fixed so a
+  // rejected form always says exactly how short it must become.
+  if (questions.length > EXAM_MAX_QUESTIONS) {
+    throw new Error(`This form has ${questions.length} questions, but a new exam holds at most ${EXAM_MAX_QUESTIONS}. `
+      + `Aim for about ${target} (roughly two per scoped subsection): keep one demanding item per important concept, `
+      + "merge or drop near-duplicates, then call exam_build again with the shorter form.");
   }
   const scoped = new Set(exam.scope.sectionIds);
   const ids = new Set<string>();
@@ -274,7 +298,7 @@ export function examAnswerRegionLines(question: ExamQuestion): string[] {
 }
 
 /** Native Obsidian task checkboxes; indices identify the frozen options, not labels. */
-function checkboxResponse(question: ExamQuestion, response: string): string {
+function checkboxResponse(question: ExamQuestion, response: string): string | string[] {
   const rows = response.split(/\r?\n/).filter((line) => line.trim());
   const selected: string[] = [];
   const seen = new Set<number>();
@@ -294,7 +318,11 @@ function checkboxResponse(question: ExamQuestion, response: string): string {
   if (selected.length > 1 && !(Array.isArray(question.correctAnswer) && question.correctAnswer.length > 1)) {
     throw new Error(`Question ${question.id}: select one answer only. Uncheck the extra choices before submitting.`);
   }
-  return selected.join(", ");
+  // Raw responses already permit string arrays. Preserve that structure when a
+  // frozen option contains a comma: a joined string could name one option or
+  // several different options, so scoring it would guess at the learner's tick.
+  return question.options?.some((option) => option.value.includes(",")) && selected.length
+    ? selected : selected.join(", ");
 }
 
 function canonicalFormValue(value: unknown): unknown {
@@ -341,7 +369,7 @@ export function validateExamAnswerNote(book: ScholarBook, exam: ScholarExam, tex
   parseExamResponses(exam, text);
 }
 
-export function parseExamResponses(exam: ScholarExam, text: string): Array<{ questionId: string; response: string }> {
+export function parseExamResponses(exam: ScholarExam, text: string): ExamRawResponse[] {
   const spans: Array<{ questionId: string; start: number; contentStart: number; end: number; endLength: number }> = [];
   if (new Set(exam.questions.map((question) => question.id)).size !== exam.questions.length) {
     throw new Error("The frozen exam has duplicate question IDs; its answers cannot be read safely.");
@@ -412,26 +440,170 @@ export type ExamAnswerProgress = { ok: true; total: number; answered: number; bl
 export function examAnswerProgress(exam: ScholarExam, text: string): ExamAnswerProgress {
   try {
     const responses = parseExamResponses(exam, text);
-    const blank = responses.filter((item) => !item.response).map((item) => item.questionId);
+    const blank = responses.filter((item) => Array.isArray(item.response)
+      ? !item.response.some((value) => value.trim()) : !item.response).map((item) => item.questionId);
     return { ok: true, total: responses.length, answered: responses.length - blank.length, blank };
   } catch (error) {
     return { ok: false, problem: error instanceof Error ? error.message : String(error) };
   }
 }
 
-export function gradingPacket(exam: ScholarExam): string {
-  const lines = [`Exam ${exam.id} was submitted. Grade every item now against this frozen contract.`];
-  for (const question of exam.questions) {
-    const response = exam.rawResponses.find((item) => item.questionId === question.id)?.response || "";
-    lines.push("", `QUESTION ${question.id}`, question.prompt, `LEARNER RESPONSE:\n${Array.isArray(response) ? response.join(", ") : response || "(blank)"}`);
-    if (question.format === "multiple-choice") {
-      lines.push(`CORRECT VALUE(S): ${coerceAnswerValues(question.correctAnswer).join(", ")}`);
-    } else {
-      lines.push("RUBRIC:", ...(question.rubric || []).map((criterion) => `- ${criterion.id}: ${criterion.points} point(s) — ${criterion.criterion}; evidence: ${criterion.requiredEvidence.join("; ")}`));
-    }
-    lines.push(`MAX POINTS: ${question.maxPoints}`, `GOLD EXPLANATION: ${question.explanation}`);
+/** Scholar's own score for a multiple-choice item; a grader can add feedback but never change it. */
+export type ChoiceScore = {
+  outcome: "correct" | "incorrect" | "unanswered";
+  earnedPoints: number;
+  /** Frozen option values the learner selected, in the order they were read. */
+  selected: string[];
+  /** Frozen option values the key requires, as an exact set. */
+  key: string[];
+  /** The submitted text did not unambiguously name frozen options. */
+  unrecognized?: boolean;
+};
+
+/** A blank never earns credit and is not evidence of a misconception. */
+export const UNANSWERED_FEEDBACK = "Not answered — 0 points. Review the correct answer and reasoning below.";
+
+function frozenChoiceKey(question: ExamQuestion): string[] | undefined {
+  const values = (question.options || []).map((option) => option.value);
+  const key = [...new Set(coerceAnswerValues(question.correctAnswer))];
+  return question.format === "multiple-choice" && key.length && key.every((value) => values.includes(value)) ? key : undefined;
+}
+
+/**
+ * Read a submitted choice as frozen option values: [] when blank, undefined when
+ * the text is not unambiguously a set of options. A checkbox paper stores the
+ * ticked values joined by ", "; an older typed paper may hold "b", "B" or a
+ * sentence. Only an exact (or unambiguous case-folded) option value counts.
+ */
+export function submittedChoiceValues(question: ExamQuestion, response: unknown): string[] | undefined {
+  const values = (question.options || []).map((option) => option.value);
+  const optionFor = (token: string): string | undefined => {
+    if (values.includes(token)) return token;
+    const folded = values.filter((value) => value.toLowerCase() === token.toLowerCase());
+    return folded.length === 1 ? folded[0] : undefined;
+  };
+  const read = (tokens: string[]): string[] | undefined => {
+    const selected = tokens.map(optionFor);
+    return tokens.length && selected.every((value): value is string => value !== undefined) ? [...new Set(selected)] : undefined;
+  };
+  if (Array.isArray(response)) {
+    if (!response.every((item) => typeof item === "string")) return undefined;
+    const tokens = response.map((item) => item.trim()).filter(Boolean);
+    return tokens.length ? read(tokens) : [];
   }
-  lines.push("", "Call scholar action=exam_grade with one result per question. Feedback must be diagnostic and nonverbatim; never copy the learner response into feedback.");
+  if (typeof response !== "string") return undefined;
+  const text = response.trim();
+  if (!text) return [];
+  const whole = optionFor(text);
+  const split = read(text.split(",").map((token) => token.trim()).filter(Boolean));
+  // An option value that itself contains a comma makes the joined text readable two
+  // ways; a grader decides rather than Scholar picking one.
+  if (whole !== undefined && split !== undefined && (split.length !== 1 || split[0] !== whole)) return undefined;
+  return whole !== undefined ? [whole] : split;
+}
+
+/**
+ * Deterministic multiple-choice scoring: an exact set match earns full points,
+ * a blank is unanswered and anything else is incorrect. An unrecognized answer
+ * earns zero deterministically; only a corrupt frozen key makes scoring impossible.
+ */
+export function scoreChoiceItem(question: ExamQuestion, response: unknown): ChoiceScore | undefined {
+  const key = frozenChoiceKey(question);
+  const selected = key ? submittedChoiceValues(question, response) : undefined;
+  if (!key) return undefined;
+  if (!selected) return { outcome: "incorrect", earnedPoints: 0, selected: [], key, unrecognized: true };
+  if (!selected.length) return { outcome: "unanswered", earnedPoints: 0, selected, key };
+  const exact = selected.length === key.length && key.every((value) => selected.includes(value));
+  return { outcome: exact ? "correct" : "incorrect", earnedPoints: exact ? question.maxPoints : 0, selected, key };
+}
+
+/** Every item Scholar scores itself, by question id. */
+export function scholarChoiceScores(exam: ScholarExam): Map<string, ChoiceScore> {
+  const scores = new Map<string, ChoiceScore>();
+  for (const question of exam.questions) {
+    if (question.format !== "multiple-choice") continue;
+    const score = scoreChoiceItem(question, exam.rawResponses.find((item) => item.questionId === question.id)?.response);
+    if (!score) throw new Error(`Exam ${exam.id} has an invalid frozen answer key for ${question.id}; grading cannot continue.`);
+    scores.set(question.id, score);
+  }
+  return scores;
+}
+
+function optionName(question: ExamQuestion, value: string): string {
+  const label = question.options?.find((option) => option.value === value)?.label || value;
+  return `“${label.replace(/\s+/g, " ").trim()}”`;
+}
+
+function listed(items: string[]): string {
+  return items.length < 3 ? items.join(" and ") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+}
+
+function asSentence(text: string): string {
+  const value = text.replace(/\s+/g, " ").trim();
+  return /[.!?…]$/.test(value) ? value : `${value}.`;
+}
+
+/**
+ * Scholar's feedback for an item it scored: the verdict, the declared misconception
+ * behind each wrong pick, then the frozen explanation. It names authored option
+ * labels only, never learner-written text.
+ */
+export function choiceFeedback(question: ExamQuestion, score: ChoiceScore): string {
+  if (score.outcome === "unanswered") return UNANSWERED_FEEDBACK;
+  const explanation = question.explanation.trim();
+  if (score.outcome === "correct") return `Correct. ${explanation}`;
+  if (score.unrecognized) return `Incorrect — the submitted answer did not match a listed choice. ${explanation}`;
+  const wrong = score.selected.filter((value) => !score.key.includes(value));
+  const missed = score.key.filter((value) => !score.selected.includes(value));
+  const diagnosed = wrong.flatMap((value) => {
+    const misconception = question.options?.find((option) => option.value === value)?.misconception?.trim();
+    return misconception ? [{ value, misconception }] : [];
+  });
+  const parts = [`Incorrect — you chose ${listed(score.selected.map((value) => optionName(question, value)))}.`];
+  if (diagnosed.length === 1 && score.selected.length === 1) parts.push(`That choice reflects a common misconception: ${asSentence(diagnosed[0]!.misconception)}`);
+  else for (const { value, misconception } of diagnosed) parts.push(`${optionName(question, value)} reflects a common misconception: ${asSentence(misconception)}`);
+  if (missed.length && score.key.length > 1) parts.push(`The answer also includes ${listed(missed.map((value) => optionName(question, value)))}.`);
+  parts.push(explanation);
+  return parts.join(" ");
+}
+
+function packetPoints(points: number): string {
+  return String(Number(points.toPrecision(6)));
+}
+
+/**
+ * The submitted form as the grader sees it. Scholar has already scored every clean
+ * multiple-choice answer, so the grader judges only written responses.
+ */
+export function gradingPacket(exam: ScholarExam): string {
+  const scores = scholarChoiceScores(exam);
+  const judged = exam.questions.filter((question) => !scores.has(question.id));
+  const lines = [`Exam ${exam.id} was submitted.`];
+  if (scores.size) {
+    lines.push("", `SCORED BY SCHOLAR from the frozen key (${scores.size} multiple-choice item(s); final, do not re-grade):`);
+    for (const question of exam.questions) {
+      const score = scores.get(question.id);
+      if (!score) continue;
+      lines.push(`- ${question.id}: ${score.outcome} · ${packetPoints(score.earnedPoints)}/${packetPoints(question.maxPoints)}`
+        + (score.unrecognized ? " (answer did not match a listed choice)"
+          : score.outcome === "incorrect" ? ` (selected ${score.selected.join(", ")}; key ${score.key.join(", ")})` : ""));
+    }
+  }
+  if (judged.length) {
+    lines.push("", `GRADE ${judged.length === exam.questions.length ? "EVERY ITEM" : "THESE ITEMS"} against the frozen contract:`);
+    for (const question of judged) {
+      const response = exam.rawResponses.find((item) => item.questionId === question.id)?.response || "";
+      lines.push("", `QUESTION ${question.id}`,
+        question.prompt, `LEARNER RESPONSE:\n${Array.isArray(response) ? response.join(", ") : response || "(blank)"}`);
+      lines.push("RUBRIC:", ...(question.rubric || []).map((criterion) => `- ${criterion.id}: ${criterion.points} point(s) — ${criterion.criterion}; evidence: ${criterion.requiredEvidence.join("; ")}`));
+      lines.push(`MAX POINTS: ${question.maxPoints}`, `GOLD EXPLANATION: ${question.explanation}`);
+    }
+    lines.push("", `Call scholar action=exam_grade with exactly one result for each of: ${judged.map((question) => question.id).join(", ")}.`
+      + (scores.size ? " Omit the Scholar-scored items; any result sent for one is ignored." : "")
+      + " Feedback must be diagnostic and nonverbatim; never copy the learner response into feedback.");
+  } else {
+    lines.push("", "Every item was scored by Scholar. Call scholar action=exam_grade with no itemResults to record the grade.");
+  }
   return lines.join("\n");
 }
 

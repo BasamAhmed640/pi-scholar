@@ -380,7 +380,9 @@ try {
       sourceCoverage: [{ id: "compact-meaning", kind: "concept", description: "Remove redundant borders while retaining the passage", objective: "Explain why the compact renderer avoids padded cards.", sourcePages: [1], lessonId: "compact-explanation", evidence: "Extra nested cards repeat visual boundaries without adding evidence." }],
       lesson: { id: "compact-explanation", title: "Keep information, remove repeated framing", objectives: ["Explain why the compact renderer avoids padded cards."],
         keyPoints: ["Compact source reads remain visible without redundant framing."], sourcePages: [1],
-        markdown: "### Keep information, remove repeated framing\n\nA source read is one bounded passage fetched from the PDF. The learner needs that passage and its page reference. Extra nested cards repeat visual boundaries without adding evidence. Keep one informative row so the passage stays visible while repeated padding disappears." },
+        markdown: "### Keep information, remove repeated framing\n\nA source read is one bounded passage fetched from the PDF. The learner needs that passage and its page reference. Extra nested cards repeat visual boundaries without adding evidence. Keep one informative row so the passage stays visible while repeated padding disappears.\n\n[[scholar-diagram:compact-flow]]",
+        diagrams: [{ id: "compact-flow", title: "Source read layout", kind: "flowchart", mermaid: "flowchart TD\nPassage[Source passage] --> Row[Informative row] --> Learner[Learner view]",
+          takeaway: "The compact row preserves the source passage without repeated framing.", sourcePages: [1] }] },
       lessonComplete: true,
     },
     undefined,
@@ -390,7 +392,7 @@ try {
   const notesText = notesResult.content?.map((item) => item.type === "text" ? item.text : "").join("\n") || "";
   check(
     "Learn notes persist through the extracted tool controller",
-    !notesText.startsWith("Scholar error:") && notesText.includes("Full lesson committed after source, teaching and visual review"),
+    !notesText.startsWith("Scholar error:") && notesText.includes("Full lesson committed after deterministic coverage checks"),
     JSON.stringify(notesText),
   );
 
@@ -480,22 +482,15 @@ try {
       && demandingAttempt?.grounding?.competency.includes("scaled and width-constrained"),
     `${demandingQuiz?.reason || "allowed"}; ${demandingAttempt?.question || "no attempt"}`,
   );
-  for (const handler of extension.handlers.get("tool_execution_update") || []) {
-    await handler({
-      toolName: "scholar_quiz",
-      toolCallId: "quiz-demanding-transfer-ui-contract",
-      partialResult: {
-        details: {
-          options: demandingQuizInput.options.map((option, index) => ({ index: index + 1, label: option.label })),
-        },
-      },
-    }, context);
-  }
+  const demandingResult = await extension.tools.get("scholar_quiz").definition.execute(
+    "quiz-demanding-transfer-ui-contract", demandingQuizInput, undefined, undefined,
+    { hasUI: true, mode: "rpc", ui: { select: async (_title, choices) => choices[0], notify() {} } },
+  );
   for (const handler of extension.handlers.get("tool_result") || []) {
     await handler({
       toolName: "scholar_quiz",
       toolCallId: "quiz-demanding-transfer-ui-contract",
-      details: { status: "answered", correct: false, question: demandingQuizInput.question, mode: "single-select" },
+      details: demandingResult.details,
     }, context);
   }
 
@@ -556,7 +551,7 @@ try {
       && (await readFixtureBook(bookStatePath)).chapters[0].sections[0].transcript.some(entry => entry.id === "lesson-compact-clarification"),
     clarification.content?.[0]?.text || "no saved clarification");
   const revisedCommit = await definition.execute("learn-clarification-review", { action: "notes", lessonComplete: true }, undefined, undefined, context);
-  check("an editorial addition is reviewed again before the revised lesson is considered delivered", revisedCommit.content[0].text.includes("Full lesson committed after source, teaching and visual review"), revisedCommit.content[0].text);
+  check("an editorial addition remains deliverable after its audit is scheduled", revisedCommit.content[0].text.includes("Full lesson committed after deterministic coverage checks"), revisedCommit.content[0].text);
   const sectionDirectory = join(obsidian, "Scholar", "Books", bookDirectories[0].name, "Sections");
   const sectionFile = (await readdir(sectionDirectory)).find((name) => name.endsWith(".md"));
   if (!sectionFile) throw new Error("Expected the active Scholar section note.");

@@ -125,8 +125,11 @@ try {
     }
   }
   assert.equal(target(await load(), "learn").attempts.length, 0);
-  await gatedHost.emit("tool_call", { toolName: "scholar_quiz", toolCallId: "diagnostic-before-figures", input: { ...gateInput, grounding: { ...grounding, purpose: "diagnostic" } } });
-  await gatedHost.emit("tool_result", { toolName: "scholar_quiz", toolCallId: "diagnostic-before-figures", details: { status: "answered", correct: true } });
+  const diagnosticInput = { ...gateInput, grounding: { ...grounding, purpose: "diagnostic" } };
+  await gatedHost.emit("tool_call", { toolName: "scholar_quiz", toolCallId: "diagnostic-before-figures", input: diagnosticInput });
+  const diagnostic = await gatedHost.quiz.execute("diagnostic-before-figures", diagnosticInput, undefined, undefined,
+    { hasUI: true, mode: "rpc", ui: { select: async (_title, choices) => choices[1], notify() {} } });
+  await gatedHost.emit("tool_result", { toolName: "scholar_quiz", toolCallId: "diagnostic-before-figures", details: diagnostic.details });
   const restored = await load();
   restored.chapters[0].sections[0].figureCoverage = structuredClone(book.chapters[0].sections[0].figureCoverage);
   restored.revision++;

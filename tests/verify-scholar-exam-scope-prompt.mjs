@@ -1,13 +1,6 @@
 import { extensionPath as packagedExtensionPath, piPackageRoot as sdkRoot, jitiPath as sdkJitiPath, resolvePiDependency } from "./sdk.mjs";
-// Scholar exam-scope prompt gate.
-//
-// An explicit `/scholar exam "<scope>"` is the only way to create an exam, and
-// a near miss used to end the command with a bare "No chapter or section
-// matches". It must instead say what shapes are accepted, using this book's
-// real numbers, and re-ask with the specific reason rather than giving up.
-// A bare `/scholar exam` never reaches this resolver at all.
+// Invalid scopes provide book-specific guidance without opening a dialog.
 import { dirname, join } from "node:path";
-import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
 
 const piPackageRoot = sdkRoot;
@@ -19,7 +12,7 @@ const jiti = createJiti(import.meta.url, {
 });
 
 const EXT = dirname(process.env.PI_SCHOLAR_EXTENSION || packagedExtensionPath);
-const { examScopeGuidance, resolveExamScope } = await jiti.import(join(EXT, "commands.ts"));
+const { examScopeGuidance, resolveExamScope, defaultExamScope } = await jiti.import(join(EXT, "commands.ts"));
 
 let pass = 0, fail = 0;
 const check = (name, ok, detail) => {
@@ -48,13 +41,13 @@ const book = {
   ],
 };
 
-/** Scripted UI: replays `answers` through ui.input and records every prompt. */
-function fakeCtx(answers) {
+/** The input function fails if any loading path opens a dialog. */
+function fakeCtx() {
   const prompts = [], notices = [];
   return {
     prompts, notices,
     ui: {
-      input: async (title) => { prompts.push(title); return answers.shift(); },
+      input: async (title) => { prompts.push(title); throw new Error("loading must not prompt"); },
       notify: (message, level) => { notices.push({ message, level }); },
     },
   };
@@ -78,7 +71,7 @@ for (const [name, input, expected] of [
   ["a range", "1-3", 3], ["a list", "1, 3", 2], ["one chapter", "chapter 2", 1],
   ["a subsection", "1.1", 1], ["the whole book", "all", 4],
 ]) {
-  const ctx = fakeCtx([]);
+  const ctx = fakeCtx();
   const scope = await resolveExamScope(book, input, ctx);
   check(`command-line scope accepted: ${name} (${JSON.stringify(input)})`,
     scope?.sectionIds.length === expected,
@@ -86,42 +79,16 @@ for (const [name, input, expected] of [
   check(`  ...without prompting`, ctx.prompts.length === 0, `${ctx.prompts.length} prompt(s)`);
 }
 
-// ------------------------------------------------ re-ask on a bad entry ----
-{
-  const ctx = fakeCtx(["1-2"]);
-  const scope = await resolveExamScope(book, "quantum tunnelling", ctx);
-  check("an unmatched typed scope is re-asked, then accepted", scope?.sectionIds.length === 2,
-    `${scope?.sectionIds.length ?? "rejected"} section(s) after ${ctx.prompts.length} prompt(s)`);
-  check("the retry prompt carries the specific reason",
-    /No chapter or section matches/.test(ctx.prompts[0] || ""),
-    JSON.stringify((ctx.prompts[0] || "").split("\n")[0]));
-  check("the retry prompt repeats the guidance", /Accepted formats:/.test(ctx.prompts[0] || ""), "guidance repeated");
-}
-{
-  const ctx = fakeCtx(["nonsense", "2-3"]);
-  const scope = await resolveExamScope(book, "also nonsense", ctx);
-  check("a bad command-line scope reopens the dialog", scope?.sectionIds.length === 2,
-    `${scope?.sectionIds.length ?? "rejected"} section(s) after ${ctx.prompts.length} prompt(s)`);
-  check("the first prompt already explains the failure",
-    /No chapter or section matches/.test(ctx.prompts[0] || ""), "reason shown up front");
-}
-
-// -------------------------------------------------------------- giving up --
-{
-  // The valid answer left at the end of the queue must stay unused: the loop is
-  // bounded, not rescued by one more prompt.
-  const ctx = fakeCtx(["bad two", "bad three", "1-2"]);
-  const scope = await resolveExamScope(book, "bad one", ctx);
-  check("repeated bad entries stop after a bounded number of tries", scope === undefined,
-    `${ctx.prompts.length} prompt(s), then ${ctx.notices.length} notice(s)`);
-  check("giving up says no exam was created",
-    /No exam was created/.test(ctx.notices.at(-1)?.message || ""), ctx.notices.at(-1)?.level);
-}
-{
-  const ctx = fakeCtx([undefined]);
-  const scope = await resolveExamScope(book, "not a chapter", ctx);
-  check("cancelling the dialog creates no exam and warns nothing",
-    scope === undefined && ctx.notices.length === 0, `${ctx.notices.length} notice(s)`);
+// ------------------------------------------------ invalid explicit scope --
+for (const input of ["quantum tunnelling", "also nonsense", "bad one", "not a chapter", ""]) {
+  const ctx = fakeCtx();
+  const scope = await resolveExamScope(book, input, ctx);
+  check(`invalid scope ${JSON.stringify(input)} gives one notice and no dialog`,
+    scope === undefined && ctx.prompts.length === 0 && ctx.notices.length === 1,
+    `${ctx.prompts.length} prompt(s), ${ctx.notices.length} notice(s)`);
+  check("  ...with the failure reason and accepted formats",
+    /Accepted formats:/.test(ctx.notices[0]?.message || "") && /No exam was created|No exam scope was given/.test(ctx.notices[0]?.message || ""),
+    ctx.notices[0]?.message.split("\n")[0]);
 }
 
 // ------------------------------------------------------- non-interactive ---
@@ -133,6 +100,12 @@ for (const [name, input, expected] of [
   check("  ...and that message carries the guidance",
     /Accepted formats:/.test(ctx.notices[0]?.message || ""), "guidance included");
 }
+
+book.currentSectionId = "chapter-003-section-001";
+check("bare Exam selects the current section's chapter", defaultExamScope(book)?.description === "chapter 3"
+  && defaultExamScope(book)?.sectionIds.join() === "chapter-003-section-001", defaultExamScope(book)?.description);
+delete book.currentSectionId;
+check("without a current section, bare Exam selects the first chapter", defaultExamScope(book)?.description === "chapter 1");
 
 console.log(`\nScholar exam-scope-prompt summary: ${pass} passed, ${fail} failed.`);
 process.exitCode = fail ? 1 : 0;

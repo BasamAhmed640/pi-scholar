@@ -179,29 +179,86 @@ function normalizedOutlineNumber(value: string): string {
   return normalized;
 }
 
-type SourceChapterSignal = { number: string; title?: string; line: string };
+type SourceChapterSignal = { number: string; title?: string; line: string; uncertain: boolean };
+
+function clearChapterTextBoundary(next: string): boolean {
+  if (/^chapter\s+[a-z0-9]+\b/i.test(next) || /^\d+(?:\.\d+)+\s+\S/.test(next)) return true;
+  const words = next.split(/\s+/);
+  return /[.!?]$/.test(next) && words.length >= 5
+    && words.filter((word) => /^\p{Ll}/u.test(word)).length >= 2;
+}
 
 function normalizedChapterTitle(value: string): string {
   return normalizedSourceExcerpt(value)
-    .replace(/^chapter\s+[a-z0-9]+\s*(?:[:.\-]\s*)?/, "")
+    .replace(/^chapter\s+[a-z0-9]+\s*(?:[:.\-\u2013\u2014\u00b7]\s*)?/, "")
     .trim();
 }
 
 export function sourceChapterSignals(value: string): SourceChapterSignal[] {
   const signals: SourceChapterSignal[] = [];
   const leadingLines = value.replace(/\r\n?/g, "\n").split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 8);
-  for (const line of leadingLines) {
-    const chapter = /^(?:\d+\s+)?chapter\s+([a-z0-9]+)\b(?:\s*[:.\-\u2013\u2014]\s*|\s+)?(.*)$/i.exec(line);
+  for (const [index, line] of leadingLines.entries()) {
+    const chapter = /^(?:\d+\s+)?chapter\s+([a-z0-9]+)\b(?:\s*[:.\-\u2013\u2014\u00b7]\s*|\s+)?(.*)$/i.exec(line);
+    const numericHeading = !chapter && /^(\d{1,3})\s+([\p{Lu}][\p{L}\p{N} ,:;()\-]+)$/u.exec(line);
+    if (numericHeading) {
+      // This can also be a page number beside a running title. It is a
+      // competing signal, never sufficient text evidence by itself.
+      signals.push({ number: normalizedOutlineNumber(numericHeading[1]!), title: normalizedChapterTitle(numericHeading[2]!), line, uncertain: true });
+      continue;
+    }
     if (chapter) {
-      const title = normalizedChapterTitle(chapter[2] || "");
+      let title = normalizedChapterTitle(chapter[2] || "");
+      let uncertain = false;
+      if (title) {
+        const next = leadingLines[index + 1] || "";
+        if (next && !clearChapterTextBoundary(next)) uncertain = true;
+      }
+      if (!title) {
+        // A short Title Case line can continue a wrapped chapter title. When
+        // the next extracted line might be either prose or title, text alone
+        // cannot verify the boundary and the page needs visual review.
+        const titleLines: string[] = [];
+        for (const next of leadingLines.slice(index + 1, index + 4)) {
+          if (clearChapterTextBoundary(next)) break;
+          if (/[.!?]$/.test(next) || /^\d/.test(next) || next.length > 100 || !/^[\p{L}]/u.test(next)) {
+            uncertain = true;
+            break;
+          }
+          const words = next.split(/\s+/);
+          const titleCase = words.length <= 8 && next.length <= 60 && words.every((word) =>
+            /^(?:a|an|and|as|at|by|for|from|in|of|on|or|the|to|via|with)$/i.test(word)
+            || /^\p{Lu}/u.test(word));
+          if (titleLines.length === 0 && !titleCase) {
+            titleLines.push(next);
+            uncertain = true;
+            break;
+          }
+          if (titleLines.length > 0 && !titleCase) {
+            uncertain = true;
+            break;
+          }
+          titleLines.push(next);
+        }
+        title = normalizedChapterTitle(titleLines.join(" "));
+        // A second Title Case line may also be a subheading. Text extraction
+        // cannot establish the font/layout boundary, so require a page view.
+        if (titleLines.length > 1) uncertain = true;
+        if (titleLines.length > 0 && index + 1 + titleLines.length >= leadingLines.length) uncertain = true;
+      }
       signals.push({
         number: normalizedOutlineNumber(chapter[1]!),
         ...(title ? { title } : {}),
-        line,
+        line: title && !chapter[2]?.trim() ? `${line} / ${title}` : line,
+        uncertain,
       });
     }
   }
   return signals;
+}
+
+function preferredChapterSignals(signals: SourceChapterSignal[]): { signals: SourceChapterSignal[]; ambiguous: boolean } {
+  const distinct = new Set(signals.map((signal) => `${signal.number}|${signal.title || ""}`));
+  return { signals, ambiguous: distinct.size > 1 || signals.some((signal) => signal.uncertain) };
 }
 
 export function sourceChapterMatchesCandidate(signal: SourceChapterSignal, chapter: ScholarChapter): boolean {
@@ -341,19 +398,33 @@ export function preflightOutlineValidation(book: ScholarBook, run: OutlineValida
     const observed = observedSourceStart(rawSource || "");
     if (checkpoint.kind === "heading") {
       const label = normalizedSourceExcerpt(checkpoint.label);
-      if (source.includes(label)) continue;
-
       const chapter = checkpointChapter(book, checkpoint);
-      const chapterSignals = chapter ? sourceChapterSignals(rawSource || "") : [];
-      const conflictingChapter = chapterSignals.find((signal) => !sourceChapterMatchesCandidate(signal, chapter!));
-      if (chapter && conflictingChapter) {
-        issues.push(issue(
-          checkpoint,
-          "heading-conflict",
-          "repair",
-          `The source heading on PDF page ${checkpoint.page} conflicts with the mapped chapter.`,
-          { expected: checkpoint.label, observed: conflictingChapter.line },
-        ));
+      if (chapter) {
+        const { signals, ambiguous } = preferredChapterSignals(sourceChapterSignals(rawSource || ""));
+        if (ambiguous) {
+          issues.push(issue(
+            checkpoint,
+            "visual-required",
+            "review",
+            `PDF page ${checkpoint.page} has ambiguous chapter text; inspect the mapped heading on the page.`,
+            { expected: checkpoint.label, observed },
+          ));
+          requiredDecisionIds.push(checkpoint.id);
+          continue;
+        }
+        const conflictingChapter = signals.find((signal) => !sourceChapterMatchesCandidate(signal, chapter));
+        if (conflictingChapter) {
+          issues.push(issue(
+            checkpoint,
+            "heading-conflict",
+            "repair",
+            `The source heading on PDF page ${checkpoint.page} conflicts with the mapped chapter.`,
+            { expected: checkpoint.label, observed: conflictingChapter.line },
+          ));
+          continue;
+        }
+        if (signals.some((signal) => signal.title)) continue;
+      } else if (source.includes(label)) {
         continue;
       }
 
@@ -370,7 +441,18 @@ export function preflightOutlineValidation(book: ScholarBook, run: OutlineValida
 
     const mappedChapters = book.chapters.filter((chapter) =>
       chapter.startPage <= checkpoint.page && chapter.endPage >= checkpoint.page);
-    const sourceChapters = sourceChapterSignals(rawSource || "");
+    const { signals: sourceChapters, ambiguous } = preferredChapterSignals(sourceChapterSignals(rawSource || ""));
+    if (ambiguous && mappedChapters.length > 0) {
+      issues.push(issue(
+        checkpoint,
+        "visual-required",
+        "review",
+        `PDF page ${checkpoint.page} has ambiguous chapter text; inspect which chapter maps to this page.`,
+        { expected: checkpoint.label, observed },
+      ));
+      requiredDecisionIds.push(checkpoint.id);
+      continue;
+    }
     const conflictingChapters = sourceChapters.filter((sourceSignal) =>
       !mappedChapters.some((chapter) => sourceChapterMatchesCandidate(sourceSignal, chapter)));
     if (conflictingChapters.length > 0) {
