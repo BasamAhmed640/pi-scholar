@@ -41,6 +41,8 @@ for (const [source, match] of [
   ["flowchart TD\nclick A https://example.com", /line 2.*links/i],
   ["flowchart TD\n%%{init: {theme: 'dark'}}%%", /line 2.*directives/i],
   ["flowchart TD\nA[<script>alert(1)</script>] --> B", /line 2.*HTML/i],
+  ["flowchart TD\nthis is not Mermaid", /line 2.*malformed/i],
+  ["flowchart TD\nclassDef known fill:#4a4", /at least one node/i],
   ["sequenceDiagram\nA->>B: Not a flowchart", /line 1.*kind/i],
   [`flowchart TD\n${Array.from({ length: 41 }, (_, n) => `N${n}[Node ${n}]`).join("\n")}`, /40 nodes/i],
   [`flowchart TD\n${Array.from({ length: 80 }, (_, n) => `N${n}[Node]`).join("\n")}`, /line 81/i],
@@ -95,6 +97,10 @@ for (const kind of ["system", "workflow", "sequence"]) {
   const { diagramId: _diagramId, ...withoutDiagram } = coverageBase;
   assert.match(quality.sourceCoverageIssues([{ ...withoutDiagram, kind }], context, { delivered: true }).join(" "), /diagram ID/);
 }
+assert.match(quality.sourceCoverageIssues([
+  coverageBase,
+  { ...coverageBase, id: "workflow", kind: "workflow" },
+], context, { delivered: true }).join(" "), /own diagram/i);
 assert.match(quality.sourceCoverageIssues([{ ...coverageBase, evidence: "A --> B" }], context, { delivered: true }).join(" "), /explanatory body/);
 const { diagramId: _diagramId, ...withoutDiagram } = coverageBase;
 assert.deepEqual(quality.updateCoverageEvidence([withoutDiagram], [{ id: "system", diagramId: "feedback" }])[0].diagramId, "feedback");

@@ -134,6 +134,7 @@ export function sourceCoverageIssues(value: unknown, context: SourceCoverageCont
   if (!isSourceCoverageLedger(value)) return ["Provide a valid source-coverage ledger with unique IDs and supported fields."];
   const issues: string[] = [];
   const delivered = options.delivered === true;
+  const diagramOwners = new Map<string, string>();
   if (!value.length) issues.push("Build a source-based coverage plan before completing Learn.");
   for (const objective of context.objectives) {
     if (!value.some(item => item.objective === objective)) issues.push(`Add source coverage for objective: ${objective}`);
@@ -166,6 +167,12 @@ export function sourceCoverageIssues(value: unknown, context: SourceCoverageCont
     if ((["system", "workflow", "sequence"].includes(item.kind) || item.diagramId)
       && (!item.diagramId || !lesson.diagramIds?.includes(item.diagramId))) {
       issues.push(`${prefix} needs a diagram ID actually rendered in this lesson unit.`);
+    }
+    if (["system", "workflow", "sequence"].includes(item.kind) && item.diagramId && lesson.diagramIds?.includes(item.diagramId)) {
+      const diagramKey = `${lesson.id}:${item.diagramId}`;
+      const owner = diagramOwners.get(diagramKey);
+      if (owner) issues.push(`${prefix} needs its own diagram; ${item.diagramId} already covers source item ${owner}.`);
+      else diagramOwners.set(diagramKey, item.id);
     }
   }
   // A derivation item is verified, not merely requested, once its objective must be applied

@@ -77,6 +77,23 @@ function nodeCount(lines: string[], kind: LessonDiagram["kind"]): number {
   return ids.size;
 }
 
+/** Accept a small, documented Mermaid subset instead of saving arbitrary prose as a diagram. */
+function diagramStatement(line: string, kind: LessonDiagram["kind"]): boolean {
+  const value = line.trim();
+  if (!value || value.startsWith("%%")) return true;
+  if (kind === "flowchart") {
+    if (/^(?:classDef\s+\S+\s+\S+|class\s+\S+\s+\S+|style\s+\S+\s+\S+|linkStyle\s+\d+\s+\S+|direction\s+(?:TD|TB|BT|LR|RL)|subgraph\s+\S.*|end)$/i.test(value)) return true;
+    const node = String.raw`[A-Za-z][\w-]*(?::::[\w-]+)?(?:\[[^\]]+\]|\([^)]*\)|\{[^}]*\})?`;
+    const edge = String.raw`(?:-->|-.->|==>|---)(?:\|[^|]+\|)?`;
+    return new RegExp(`^${node}(?:\\s*${edge}\\s*${node})*;?$`).test(value);
+  }
+  if (kind === "sequence") return /^(?:(?:participant|actor)\s+[A-Za-z][\w-]*(?:\s+as\s+.+)?|[A-Za-z][\w-]*\s*(?:->>|-->>|->|-->|-x|--x)\s*[A-Za-z][\w-]*\s*:\s*.+|(?:Note\s+(?:over|left of|right of)\s+.+|activate\s+\S+|deactivate\s+\S+|autonumber|alt\s+.+|else\s+.+|opt\s+.+|loop\s+.+|par\s+.+|and\s+.+|end))$/i.test(value);
+  if (kind === "state") return /^(?:\[\*\]|[A-Za-z][\w-]*)(?:\s*--?>\s*(?:\[\*\]|[A-Za-z][\w-]*)(?:\s*:\s*.+)?|\s*:\s*.+)$|^state\s+[A-Za-z][\w-]*(?:\s+as\s+.+)?$/i.test(value);
+  if (kind === "class") return /^(?:class\s+[A-Za-z][\w-]*(?:\s*\{)?|\}|[A-Za-z][\w-]*\s*(?:<\|--|\*--|o--|-->|--|\.\.)\s*[A-Za-z][\w-]*(?:\s*:\s*.+)?|[+#~-]?[A-Za-z][\w-]*(?:\([^)]*\))?(?:\s*:\s*.+)?)$/.test(value);
+  if (kind === "mindmap") return /^(?:root\(\(.+\)\)|[A-Za-z0-9][^<>`{}]*)$/.test(value);
+  return /^(?:title\s+.+|section\s+.+|[^:]+\s*:\s*.+)$/.test(value);
+}
+
 /** Returns lint-clean Mermaid; all errors identify their source line. */
 export function lintMermaid(value: unknown, kind: LessonDiagram["kind"]): string {
   if (typeof value !== "string" || !value.trim() || !kinds.has(kind)) throw new Error("Diagram needs Mermaid text and a supported kind.");
@@ -91,9 +108,12 @@ export function lintMermaid(value: unknown, kind: LessonDiagram["kind"]): string
     }
     const issue = syntaxIssue(line);
     if (issue) throw new Error(`Diagram line ${index + 1}: ${issue}.`);
+    if (index && !diagramStatement(line, kind)) throw new Error(`Diagram line ${index + 1}: unsupported or malformed ${kind} statement.`);
     return line;
   });
-  if (nodeCount(normalized, kind) > 40) throw new Error("Diagram exceeds 40 nodes.");
+  const count = nodeCount(normalized, kind);
+  if (!count) throw new Error("Diagram needs at least one node or event.");
+  if (count > 40) throw new Error("Diagram exceeds 40 nodes.");
   return normalized.join("\n");
 }
 
