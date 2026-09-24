@@ -16,11 +16,12 @@
 import { spawn, execFileSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
+import { homedir } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 import { dirname, join, resolve } from "node:path";
 
 const PI_PACKAGE = "@earendil-works/pi-coding-agent";
-const WINDOWS_DEFAULT_CLI = "C:/Users/basam/AppData/Local/pi-node/current/node_modules/@earendil-works/pi-coding-agent/dist/cli.js";
+const WINDOWS_DEFAULT_CLI = join(homedir(), "AppData", "Local", "pi-node", "current", "node_modules", PI_PACKAGE, "dist", "cli.js");
 export const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor"]);
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -464,8 +465,11 @@ export class PiRpcClient extends EventEmitter {
     this.cancelPendingDialogs("stop");
     const exited = new Promise((done) => child.once("exit", () => done()));
     try { child.stdin.end(); } catch { /* already closed */ }
-    const timer = sleep(timeoutMs).then(() => "timeout");
-    if (await Promise.race([exited.then(() => "exit"), timer]) === "timeout") {
+    let timer;
+    const deadline = new Promise((done) => { timer = setTimeout(() => done("timeout"), timeoutMs); });
+    const outcome = await Promise.race([exited.then(() => "exit"), deadline]);
+    clearTimeout(timer);
+    if (outcome === "timeout") {
       this.record("meta", { type: "stop_timeout_kill" });
       child.kill("SIGKILL");
       await exited;
@@ -480,7 +484,9 @@ export class PiRpcClient extends EventEmitter {
     const exited = new Promise((done) => child.once("exit", () => done()));
     this.record("mark", { type: "harness_mark", name: "kill" });
     child.kill("SIGKILL");
-    await Promise.race([exited, sleep(15_000)]);
+    let timer;
+    await Promise.race([exited, new Promise((done) => { timer = setTimeout(done, 15_000); })]);
+    clearTimeout(timer);
     return this.exitInfo;
   }
 

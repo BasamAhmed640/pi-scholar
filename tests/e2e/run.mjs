@@ -12,12 +12,13 @@
 // Scratch: <tmp>/claude/scholar-e2e/<run-id>/{library,vault,sessions,state,work,logs}.
 // PI_SCHOLAR_STATE_ROOT points into the scratch dir, PI_SCHOLAR_LIBRARY_ROOT /
 // PI_SCHOLAR_OBSIDIAN_ROOT are removed from the child environment, and Pi runs
-// with --no-extensions -e <checkout> --session-dir <scratch>/sessions, so the
-// owner's Scholar pointer and vault are never touched (verified at the end).
+// with --no-extensions -e <checkout> --session-dir <scratch>/sessions. The
+// configured owner vault is excluded from scratch paths; the owner pointer is
+// fingerprinted before and after the run.
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ScriptedLearner } from "./learner.mjs";
 import { makeTextbook, TEXTBOOK_FILE_NAME } from "./make-textbook.mjs";
@@ -28,8 +29,34 @@ import { inspectVault } from "./vault-inspect.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCENARIOS = ["full", "smoke", "baseline", "plumbing"];
-const OWNER_VAULT = process.env.SCHOLAR_E2E_OWNER_VAULT || "C:/Users/basam/Desktop/Basam's_Vault";
 const OWNER_POINTER = join(homedir(), ".pi", "agent", "scholar", "config.json");
+const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
+
+function protectedVaults() {
+  const roots = [];
+  if (existsSync(OWNER_POINTER)) {
+    let config;
+    try { config = JSON.parse(readFileSync(OWNER_POINTER, "utf8")); }
+    catch (error) { throw new Error(`Cannot read the owner's Scholar vault pointer: ${error.message}`); }
+    if (config?.obsidianRoot && typeof config.obsidianRoot === "string") roots.push(config.obsidianRoot);
+  }
+  if (process.env.PI_SCHOLAR_OBSIDIAN_ROOT) roots.push(process.env.PI_SCHOLAR_OBSIDIAN_ROOT);
+  if (process.env.SCHOLAR_E2E_OWNER_VAULT) roots.push(process.env.SCHOLAR_E2E_OWNER_VAULT);
+  return [...new Set(roots.map((root) => existsSync(root) ? realpathSync(root) : resolve(root)))];
+}
+
+/** Canonicalize an intended new path through its nearest existing parent. */
+function projectedRealPath(path) {
+  let parent = resolve(path);
+  const missing = [];
+  while (!existsSync(parent)) {
+    missing.unshift(basename(parent));
+    const next = dirname(parent);
+    if (next === parent) throw new Error(`Cannot resolve scratch parent for ${path}`);
+    parent = next;
+  }
+  return resolve(realpathSync(parent), ...missing);
+}
 
 function usage() {
   return `Usage: node tests/e2e/run.mjs [options]
@@ -48,7 +75,7 @@ function usage() {
   --seed <n>            learner RNG seed (default 42)
   --p-correct <p>       probability of choosing the right answer when the key is known (default 0.7)
   --compare <file>      earlier report.json to compare stage timings against
-  --run-id <id>         scratch folder name (default: <timestamp>-<scenario>)
+  --run-id <id>         safe single-segment scratch folder name (default: <timestamp>-<scenario>)
   --full-deltas         log every streamed delta verbatim (default: lengths only)`;
 }
 
@@ -81,6 +108,9 @@ function parseArgs(argv) {
   if (!SCENARIOS.includes(options.scenario)) throw new Error(`--scenario must be one of ${SCENARIOS.join(", ")}`);
   if (!["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(options.thinking)) throw new Error(`invalid --thinking ${options.thinking}`);
   if (!(options.pCorrect >= 0 && options.pCorrect <= 1)) throw new Error("--p-correct must be between 0 and 1");
+  if (options.runId && (!SAFE_RUN_ID.test(options.runId) || /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(options.runId))) {
+    throw new Error("--run-id must be one safe folder name using letters, digits, underscore or hyphen (max 80 characters)");
+  }
   return options;
 }
 
@@ -113,13 +143,24 @@ async function main() {
     return 2;
   }
   const runId = options.runId || `${timestampId()}-${options.scenario}`;
-  const runRoot = join(tmpdir(), "claude", "scholar-e2e");
-  const runDir = join(runRoot, runId);
-  if (isInside(OWNER_VAULT, runDir) || isInside(runDir, OWNER_VAULT)) { console.error(`Refusing: scratch ${runDir} overlaps the owner's vault.`); return 2; }
+  const runRoot = resolve(tmpdir(), "claude", "scholar-e2e");
+  let ownerVaults;
+  try { ownerVaults = protectedVaults(); } catch (error) { console.error(error.message); return 2; }
+  // Resolve existing parent symlinks before creating anything or choosing cleanup paths.
+  const effectiveRunRoot = projectedRealPath(runRoot);
+  const runDir = projectedRealPath(resolve(runRoot, runId));
+  if (runDir === effectiveRunRoot || !isInside(effectiveRunRoot, runDir)) { console.error("Refusing: scratch escaped the e2e root."); return 2; }
+  for (const protectedRoot of [...ownerVaults, existsSync(dirname(OWNER_POINTER)) ? realpathSync(dirname(OWNER_POINTER)) : dirname(OWNER_POINTER)]) {
+    if (isInside(protectedRoot, runDir) || isInside(runDir, protectedRoot)) {
+      console.error(`Refusing: scratch ${runDir} overlaps protected Scholar data at ${protectedRoot}.`);
+      return 2;
+    }
+  }
   if (existsSync(runDir)) { console.error(`Scratch folder already exists: ${runDir} (choose another --run-id)`); return 2; }
+  mkdirSync(runRoot, { recursive: true });
+  if (!isInside(realpathSync(runRoot), runDir)) { console.error("Refusing: scratch root changed while preparing the run."); return 2; }
   ensureDirectories(runDir);
   const stateRoot = join(runDir, "state");
-  if (isInside(dirname(OWNER_POINTER), stateRoot)) { console.error("Refusing: state root would be the owner's Scholar state."); return 2; }
 
   let piCli;
   try { piCli = resolvePiCli(options.piCli); } catch (error) { console.error(error.message); return 2; }

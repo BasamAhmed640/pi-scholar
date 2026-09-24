@@ -242,18 +242,21 @@ export async function stepSetup(h) {
     });
     h.check(stage, "outline matches the book (PDF viewer pages)", sectionsMatch, "expected 1.1:3-4 1.2:5-7 1.3:8-9 2.1:10-10 2.2:11-11", { soft: true });
     const unexpected = h.quizDialogsSince(since).length;
-    h.check(stage, "setup asked the learner nothing", unexpected === 0 && !h.learner.unexpected.length, `${unexpected} quiz dialogs, ${h.learner.unexpected.length} unexpected dialogs`, { soft: true });
+    h.check(stage, "setup asked the learner nothing", unexpected === 0 && !h.learner.unexpected.length, `${unexpected} quiz dialogs, ${h.learner.unexpected.length} unexpected dialogs`, { soft: !h.strict });
   });
 }
 
 /** Learn one section end to end (lesson → five questions). */
 export async function stepLearnSection(h, number, { name = `learn ${number}`, questionTarget = 5, timeoutMs = 2_400_000 } = {}) {
   return h.stage(name, async (stage) => {
-    h.learner.setPlan({});
+    const since = h.client.seq;
+    h.learner.setPlan({ forceWrongAtQuiz: 2 });
     const state = await h.learn(stage, number, { questionTarget, timeoutMs, retryAfterStop: 0 });
     h.check(stage, "lesson committed", state.committed, state.exists ? `section status ${state.status}` : "no section note");
     h.check(stage, "no \"Generation stopped\"", !stage.generationStopped, stage.generationStopped ? "stopped by Scholar" : "none", { soft: !h.strict });
     h.check(stage, `${questionTarget} questions answered`, state.answered >= questionTarget, `${state.answered} answered, ${state.pending.length} pending`);
+    const deliberateMiss = h.quizDialogsSince(since).some((dialog) => dialog.intended === "wrong" || dialog.intended === "dont-know");
+    h.check(stage, "learner gave a deliberately non-correct answer", deliberateMiss, deliberateMiss ? "wrong choice or I don't know" : "none", { soft: !h.strict });
     const ids = state.questions.map((question) => question.id).filter(Boolean);
     h.check(stage, "no duplicate question ids", new Set(ids).size === ids.length, `${ids.length} ids`);
     const titles = state.lessonUnits.map((unit) => unit.id);
@@ -288,14 +291,15 @@ export async function stepAbortAndRerun(h, number = "1.2") {
       return args?.action === "notes" && Boolean(args.lesson || args.lessons) && !/^Scholar (?:retry|error)/.test(text);
     };
     const trigger = h.client.abortAfter(savedUnit, { afterMs: 300_000, label: "first saved lesson unit" });
-    const result = await h.command(stage, `/scholar learn "section ${number}"`, { timeoutMs: 1_200_000 });
+    await h.command(stage, `/scholar learn "section ${number}"`, { timeoutMs: 1_200_000 });
     trigger.disarm();
     const fired = await Promise.race([trigger.fired, sleep(2_000).then(() => undefined)]);
     const state = h.sectionState(number);
     h.facts.unitsBeforeAbort = state.lessonUnits;
-    h.check(stage, "preparation was interrupted", Boolean(fired) || !result.ok, fired ? `abort after ${fired.timer ? "timer" : "a saved lesson unit"}` : "the run ended before the trigger", { soft: true });
+    h.check(stage, "aborted after a saved lesson unit", Boolean(fired && !fired.timer), fired ? `abort after ${fired.timer ? "timer" : "a saved lesson unit"}` : "the run ended before the trigger");
     h.note(stage, `after abort: committed=${state.committed}, units=${state.lessonUnits.map((unit) => unit.id).join(", ") || "none"}`);
-    h.check(stage, "interrupted before commit", !state.committed, state.committed ? "lesson was already committed" : "draft only", { soft: true });
+    h.check(stage, "interrupted before commit", !state.committed, state.committed ? "lesson was already committed" : "draft only");
+    h.check(stage, "saved a unit before abort", state.lessonUnits.length > 0, `${state.lessonUnits.length} saved unit(s)`);
   });
 
   await h.stage(`learn ${number} · re-run, answer 2, Esc on the 3rd`, async (stage) => {
@@ -307,7 +311,8 @@ export async function stepAbortAndRerun(h, number = "1.2") {
     const titles = state.lessonUnits.map((unit) => String(unit.title || "").toLowerCase());
     h.check(stage, "no duplicate lesson titles after re-run", new Set(titles).size === titles.length, `${titles.length} units`, { soft: true });
     const kept = (h.facts.unitsBeforeAbort || []).every((unit) => ids.includes(unit.id));
-    h.check(stage, "units saved before the abort were resumed, not re-created", kept, (h.facts.unitsBeforeAbort || []).map((unit) => unit.id).join(", ") || "none saved before abort", { soft: true });
+    h.check(stage, "units saved before the abort were resumed, not re-created", kept && (h.facts.unitsBeforeAbort || []).length > 0,
+      (h.facts.unitsBeforeAbort || []).map((unit) => unit.id).join(", ") || "none saved before abort");
     h.check(stage, "Esc paused the set after 2 answers", h.learner.plan.cancelled && state.answered === 2 && state.pending.length >= 1,
       `${state.answered} answered, ${state.pending.length} pending`);
     h.facts.pendingAfterEsc = state.pending.map((question) => question.id);
@@ -384,6 +389,10 @@ export async function stepExam(h, scope = "chapter 1") {
     if (!h.facts.paperPath) throw new Error("no answer paper from the previous step");
     const original = readFileSync(h.facts.paperPath, "utf8");
     const filled = h.learner.fillExamPaper(original, examQuestionsFromEvents(h.client.events));
+    const regions = (original.match(/<!-- scholar:answer:.+?:start -->/g) || []).length;
+    h.check(stage, "filled every exam answer region", filled.answers.length === regions && filled.answers.every((answer) =>
+      !answer.problem && (answer.format === "open" ? Boolean(answer.answer?.trim()) : answer.picks?.length > 0)),
+    `${filled.answers.length}/${regions} regions filled`);
     writeFileSync(h.facts.paperPath, filled.text, "utf8");
     h.facts.examAnswers = filled.answers;
     h.note(stage, `filled ${filled.answers.length} regions (${filled.answers.filter((answer) => answer.format === "open").length} written, ${filled.answers.filter((answer) => answer.intended === "correct").length} intended correct)`);
@@ -397,7 +406,7 @@ export async function stepExam(h, scope = "chapter 1") {
     const confirm = h.learner.dialogs.find((dialog) => dialog.kind === "exam-submit-confirm" && (dialog.seq ?? 0) > since);
     h.check(stage, "submission confirmed once", Boolean(confirm), confirm?.message?.split("\n")[0]);
     const exam = h.inspect().exams.find((candidate) => candidate.examId === h.facts.examId);
-    h.check(stage, "grading was interrupted", Boolean(fired), fired ? "aborted during grading" : `not interrupted (status ${exam?.status})`, { soft: true });
+    h.check(stage, "grading was interrupted at a grading tool call", Boolean(fired && !fired.timer), fired ? `abort after ${fired.timer ? "timer" : "grading tool start"}` : `not interrupted (status ${exam?.status})`);
     h.note(stage, `exam status after abort: ${exam?.status}`);
     h.check(stage, "submission persisted", ["submitted", "graded"].includes(exam?.status), exam?.status);
   });
@@ -432,30 +441,27 @@ function removeQuestionBlock(text, index) {
   return { text: lines.join("\n"), removed };
 }
 
-function removeLessonParagraph(text) {
+function removeLessonUnit(text) {
   const lines = text.split("\n");
   const lessonStart = lines.findIndex((line) => /^## Lesson\s*$/.test(line));
   if (lessonStart < 0) return undefined;
-  let inEntry = false;
-  let fence = false;
   for (let row = lessonStart + 1; row < lines.length; row++) {
-    const line = lines[row];
-    if (/^## /.test(line)) break;
-    if (/^> \[!info\]- Scholar entry details/.test(line)) { inEntry = true; continue; }
-    if (line.startsWith("<!-- scholar:entry:end -->")) { inEntry = false; continue; }
-    if (/^\s*(```|~~~)/.test(line)) { fence = !fence; continue; }
-    if (!inEntry || fence || line.startsWith(">")) continue;
-    const plain = line.trim();
-    if (plain.length >= 80 && /^[A-Z(]/.test(plain) && !/[|$]|\[\[|^\d+\./.test(plain)
-      && (lines[row - 1] ?? "").trim() === "" && (lines[row + 1] ?? "").trim() === "") {
-      lines.splice(row, 2);
-      return { text: lines.join("\n"), removed: plain };
-    }
+    if (/^## /.test(lines[row])) break;
+    if (!/^> \[!info\]- Scholar entry details/.test(lines[row])) continue;
+    const end = lines.findIndex((line, index) => index > row && line.trim() === "<!-- scholar:entry:end -->");
+    if (end < 0) return undefined;
+    const entry = lines.slice(row, end + 1).join("\n");
+    const details = readDetails(entry, "entry");
+    if (!details?.lesson || !details.id) { row = end; continue; }
+    const visible = entry.replace(/^> \[!info\]- Scholar entry details\r?\n(?:>[^\n]*(?:\n|$))*/, "")
+      .replace("<!-- scholar:entry:end -->", "").trim();
+    lines.splice(row, end - row + 1);
+    return { text: lines.join("\n"), id: details.id, visible };
   }
   return undefined;
 }
 
-/** Plan §5 step 8: delete a question block and a lesson paragraph, restart, reopen, verify neither returns. */
+/** Plan §5 step 8: delete a question block and an entire lesson unit, then verify neither returns. */
 export async function stepDeletion(h, number = "1.1") {
   return h.stage(`deletion test · section ${number}`, async (stage) => {
     const state = h.sectionState(number);
@@ -464,16 +470,20 @@ export async function stepDeletion(h, number = "1.1") {
     const question = removeQuestionBlock(text, 1);
     if (question) text = question.text;
     const deletedQuestion = question ? state.questions[1] : undefined;
-    const paragraph = removeLessonParagraph(text);
-    if (paragraph) text = paragraph.text;
-    h.check(stage, "found a question block and a lesson paragraph to delete", Boolean(question && paragraph), `${question ? "question" : "no question"} / ${paragraph ? "paragraph" : "no paragraph"}`, { soft: true });
+    const lessonUnit = removeLessonUnit(text);
+    if (lessonUnit) text = lessonUnit.text;
+    h.check(stage, "found a question block to delete", Boolean(question), question ? "Question 2" : "no question block");
+    h.check(stage, "found a full saved lesson unit to delete", Boolean(lessonUnit), lessonUnit?.id || "no lesson unit");
     writeFileSync(state.path, text, "utf8");
-    h.note(stage, `deleted Q2 (${deletedQuestion?.id ?? "?"}) and a ${paragraph?.removed.length ?? 0}-char lesson paragraph`);
+    h.note(stage, `deleted Q2 (${deletedQuestion?.id ?? "?"}) and lesson unit ${lessonUnit?.id ?? "?"}`);
     const verify = (label) => {
       const now = h.sectionState(number);
       if (deletedQuestion?.id) h.check(stage, `${label}: deleted question id stays deleted`, !now.text.includes(deletedQuestion.id), deletedQuestion.id);
       if (deletedQuestion?.prompt) h.check(stage, `${label}: deleted question text stays deleted`, !now.questions.some((candidate) => candidate.prompt === deletedQuestion.prompt), deletedQuestion.prompt.slice(0, 80));
-      if (paragraph) h.check(stage, `${label}: deleted lesson paragraph stays deleted`, !now.text.replace(/\s+/g, " ").includes(paragraph.removed.replace(/\s+/g, " ")), paragraph.removed.slice(0, 80));
+      if (lessonUnit) {
+        h.check(stage, `${label}: deleted lesson unit id stays deleted`, !now.lessonUnits.some((unit) => unit.id === lessonUnit.id), lessonUnit.id);
+        if (lessonUnit.visible) h.check(stage, `${label}: deleted lesson text stays deleted`, !now.text.includes(lessonUnit.visible), lessonUnit.visible.slice(0, 80));
+      }
       return now;
     };
     await h.client.kill();
@@ -500,7 +510,7 @@ export async function stepFinalInspection(h, { soft = false } = {}) {
     h.check(stage, "no duplicate question blocks/ids", !vault.duplicates.questionBlocks.length && !vault.duplicates.questionIds.length, `${vault.duplicates.questionBlocks.length} blocks, ${vault.duplicates.questionIds.length} ids`, { soft });
     h.check(stage, "no duplicate lesson units", !vault.duplicates.lessonEntryIds.length, `${vault.duplicates.lessonEntryIds.length}`, { soft });
     h.check(stage, "no duplicate notes", !vault.duplicates.notes.length, `${vault.duplicates.notes.length}`, { soft });
-    h.check(stage, "math delimiters balanced", vault.math.issues.length === 0, `${vault.math.issues.length} issues`, { soft: true });
+    h.check(stage, "math delimiters balanced", vault.math.issues.length === 0, `${vault.math.issues.length} issues`, { soft: soft || !h.strict });
   });
 }
 

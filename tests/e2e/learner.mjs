@@ -104,7 +104,7 @@ export class ScriptedLearner {
     this.log = log;
   }
 
-  /** e.g. setPlan({ cancelAtQuiz: 3 }) cancels the 3rd quiz dialog from now; setPlan({ cancelAllQuizzes: true }). */
+  /** e.g. cancelAtQuiz pauses the 3rd dialog; forceWrongAtQuiz tests a known incorrect choice. */
   setPlan(plan = {}) {
     this.plan = { ...plan };
     this.quizCounter = 0;
@@ -206,7 +206,13 @@ export class ScriptedLearner {
     const roll = this.random();
     let choice;
     let intended;
-    if (dontKnowOption && roll < this.pDontKnow) {
+    const forceWrong = this.plan.forceWrongAtQuiz === this.quizCounter;
+    if (forceWrong && correctOptions.length && answerable.some((option) => !correctOptions.includes(option))) {
+      const wrong = answerable.filter((option) => !correctOptions.includes(option));
+      choice = wrong[0]; intended = "wrong";
+    } else if (forceWrong && dontKnowOption) {
+      choice = dontKnowOption; intended = "dont-know";
+    } else if (dontKnowOption && roll < this.pDontKnow) {
       choice = dontKnowOption; intended = "dont-know";
     } else if (correctOptions.length && this.random() < this.pCorrect) {
       choice = correctOptions[0]; intended = "correct";
@@ -235,7 +241,11 @@ export class ScriptedLearner {
     const correct = item ? labels.map((label, index) => (item.correctLabels.includes(normalizeText(label)) ? index + 1 : 0)).filter(Boolean) : [];
     let picks;
     let intended;
-    if (correct.length && this.random() < this.pCorrect) { picks = correct; intended = "correct"; }
+    if (this.plan.forceWrongAtQuiz === this.quizCounter && correct.length) {
+      const other = labels.findIndex((_, index) => !correct.includes(index + 1));
+      picks = other >= 0 ? [other + 1] : correct.slice(0, -1);
+      intended = picks.length ? "wrong" : "random";
+    } else if (correct.length && this.random() < this.pCorrect) { picks = correct; intended = "correct"; }
     else {
       const count = Math.max(1, Math.min(2, labels.length));
       picks = [...new Set(Array.from({ length: count }, () => 1 + Math.floor(this.random() * Math.max(1, labels.length))))];

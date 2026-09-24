@@ -6,8 +6,8 @@
 //
 // 1. Byte-copies ONLY <vault>/Scholar plus .obsidian/snippets/scholar.css and
 //    .obsidian/scholar-appearance.json (when present) into a fresh temp vault.
-//    Source files are opened read-only; the real vault is never written, and a
-//    before/after manifest (size, mtime, sha256) proves it.
+//    Source files are opened read-only; a before/after manifest (size, mtime,
+//    sha256) checks that the copied Scholar files stayed unchanged.
 // 2. Loads every book from the COPY with the extension's own modules
 //    (storage.ts listBookStates/loadBookState through jiti, as tests/*.mjs do).
 // 3. Records per book: section statuses, lessonCommit / earnedDelivery /
@@ -19,14 +19,26 @@
 //    change state), then renders a second time to report non-idempotent writes.
 // 5. Prints a compact PASS/FAIL summary with load/render timings.
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_VAULT = process.env.SCHOLAR_REAL_VAULT || "C:/Users/basam/Desktop/Basam's_Vault";
+const DEFAULT_VAULT = process.env.SCHOLAR_REAL_VAULT;
 const EXTRA_FILES = [join(".obsidian", "snippets", "scholar.css"), join(".obsidian", "scholar-appearance.json")];
+
+function projectedRealPath(path) {
+  let parent = resolve(path);
+  const missing = [];
+  while (!existsSync(parent)) {
+    missing.unshift(basename(parent));
+    const next = dirname(parent);
+    if (next === parent) throw new Error(`Cannot resolve scratch parent for ${path}`);
+    parent = next;
+  }
+  return resolve(realpathSync(parent), ...missing);
+}
 
 function parseArgs(argv) {
   const options = { vault: DEFAULT_VAULT, keep: false, json: false };
@@ -127,12 +139,21 @@ async function main() {
     console.log("Usage: node tests/e2e/real-vault-check.mjs [--vault <path>] [--extension <scholar checkout>] [--keep] [--json]");
     return 0;
   }
-  const realVault = resolve(options.vault);
-  if (!existsSync(join(realVault, "Scholar"))) { console.error(`No Scholar folder in ${realVault}`); return 2; }
+  if (!options.vault) { console.error("Specify --vault <path> or SCHOLAR_REAL_VAULT; there is no implicit personal vault."); return 2; }
+  const requestedVault = resolve(options.vault);
+  if (!existsSync(join(requestedVault, "Scholar"))) { console.error(`No Scholar folder in ${requestedVault}`); return 2; }
+  const realVault = realpathSync(requestedVault);
   const extensionDir = resolve(options.extension || join(HERE, "..", ".."));
   if (!existsSync(join(extensionDir, "storage.ts"))) { console.error(`--extension is not a Scholar checkout: ${extensionDir}`); return 2; }
 
-  const workRoot = join(tmpdir(), "claude", "scholar-e2e", `real-vault-${Date.now()}`);
+  const workRoot = projectedRealPath(join(tmpdir(), "claude", "scholar-e2e", `real-vault-${Date.now()}`));
+  const overlaps = (left, right) => {
+    const a = resolve(left).toLowerCase();
+    const b = resolve(right).toLowerCase();
+    return a === b || a.startsWith(`${b}${sep}`) || b.startsWith(`${a}${sep}`);
+  };
+  if (overlaps(realVault, workRoot)) { console.error(`Refusing: scratch ${workRoot} overlaps source vault ${realVault}.`); return 2; }
+  if (existsSync(workRoot)) { console.error(`Scratch folder already exists: ${workRoot}`); return 2; }
   const copyVault = join(workRoot, "vault");
   const stateRoot = join(workRoot, "state");
   mkdirSync(copyVault, { recursive: true });
@@ -299,12 +320,12 @@ async function main() {
   }
   if (!before.length && !result.failures.length) fail("no books were found in the copy");
 
-  // The real vault must be byte-identical and untouched.
+  // Verify only the source files copied above; unrelated vault files are outside this manifest.
   const realAfter = manifest(realVault);
   const realChanges = changedFiles(Object.fromEntries(Object.entries(realBefore).map(([path, entry]) => [path, `${entry.sha256}:${entry.mtimeMs}`])),
     Object.fromEntries(Object.entries(realAfter).map(([path, entry]) => [path, `${entry.sha256}:${entry.mtimeMs}`])));
-  result.realVaultUntouched = realChanges.length === 0;
-  if (realChanges.length) fail(`THE REAL VAULT CHANGED during the check: ${realChanges.slice(0, 10).join("; ")}`);
+  result.trackedSourceFilesUnchanged = realChanges.length === 0;
+  if (realChanges.length) fail(`TRACKED SOURCE FILES CHANGED during the check: ${realChanges.slice(0, 10).join("; ")}`);
 
   result.result = result.failures.length ? "FAIL" : "PASS";
   const reportPath = join(workRoot, "real-vault-check.json");
@@ -323,7 +344,7 @@ async function main() {
     }
     for (const warning of result.warnings) console.log(`  warn ${warning}`);
     for (const failure of result.failures) console.log(`  FAIL ${failure}`);
-    console.log(`  real vault untouched: ${result.realVaultUntouched ? "yes" : "NO"}`);
+    console.log(`  copied source files unchanged: ${result.trackedSourceFilesUnchanged ? "yes" : "NO"}`);
   }
   if (!options.keep) rmSync(workRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   else console.log(`  kept: ${workRoot}`);

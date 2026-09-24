@@ -7,7 +7,7 @@
 //   6    Tutor 1.2: probe → path diagram → one node → lock-in (Learn unchanged)
 //   7    Exam "chapter 1": paper in the vault → learner answers → submit → abort
 //        during grading → reopen → graded, answer key present
-//   8    delete a question block and a lesson paragraph → restart → neither returns;
+//   8    delete a question block and a complete lesson unit → restart → neither returns;
 //        links resolve, no duplicates, Mermaid lint-clean
 //   9    timing report (run.mjs), optionally against a --compare baseline
 import { stepAbortAndRerun, stepDeletion, stepExam, stepFinalInspection, stepLearnSection, stepSetup, stepTutor } from "./steps.mjs";
