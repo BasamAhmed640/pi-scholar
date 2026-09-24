@@ -236,6 +236,7 @@ export function questionGroundingIssues(
   const supported = new Set<number>();
   const taughtSupport = new Set<number>();
   let durableBasis = false;
+  let inScopeSourcePrerequisite = false;
   const seenBasis = new Set<string>();
   for (const basis of value.basis) {
     const identity = `${basis.kind}\u0000${basis.value}`;
@@ -286,6 +287,9 @@ export function questionGroundingIssues(
       issues.push(`source-declared prerequisite requires a source page: ${basis.value}`);
     } else {
       durableBasis = true;
+      if (value.sourcePages.includes(basis.sourcePage) && pageAllowed(basis.sourcePage, ranges)) {
+        inScopeSourcePrerequisite = true;
+      }
       if (!value.sourcePages.includes(basis.sourcePage)) {
         issues.push(`source-declared prerequisite page ${basis.sourcePage} is absent from sourcePages`);
       }
@@ -295,8 +299,12 @@ export function questionGroundingIssues(
     }
   }
 
-  if (value.purpose === "diagnostic" && !durableBasis) {
-    issues.push("a diagnostic question needs either already taught material or a source-declared basis tied to an in-scope PDF page");
+  if (value.purpose === "diagnostic") {
+    if (target.mode === "tutor" && !options.resume && !inScopeSourcePrerequisite) {
+      issues.push("a Tutor diagnostic question needs a source-declared prerequisite tied to an in-scope PDF page");
+    } else if (!durableBasis) {
+      issues.push("a diagnostic question needs either already taught material or a source-declared basis tied to an in-scope PDF page");
+    }
   }
 
   for (let index = 1; index <= value.requiredEvidence.length; index += 1) {
