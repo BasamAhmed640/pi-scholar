@@ -4,14 +4,15 @@ import { pageInRanges, scopedPageRanges } from "./page-scope.ts";
 import { resolveLessonFigures } from "./lesson-figures.ts";
 import { normalizeObsidianMath } from "./math-formatting.ts";
 import { renderKeyEquations, type KeyEquation } from "./equation-presentation.ts";
+import { renderLessonDiagrams, type LessonDiagram } from "./diagram-presentation.ts";
 import { sourceCoverageIssues, reviewUnitIssues, type ReviewRole } from "./learn-quality.ts";
 import { recordValidatedLessonRevision } from "./history.ts";
 import type { AssessmentKind, ScholarBook, ScholarConfig, ScholarSection, TranscriptEntry, TutorSession } from "./types.ts";
 
-export type LessonInput = { id: string; title: string; markdown: string; objectives: string[]; keyPoints: string[]; sourcePages: number[]; keyEquations?: KeyEquation[]; expectedContentHash?: string };
+export type LessonInput = { id: string; title: string; markdown: string; objectives: string[]; keyPoints: string[]; sourcePages: number[]; keyEquations?: KeyEquation[]; diagrams?: LessonDiagram[]; expectedContentHash?: string };
 export type LessonPatch = { id: string; expectedContentHash: string; edits?: Array<{ oldText: string; newText: string }>;
-  calloutEdits?: Array<{ oldText: string; equation?: KeyEquation; snapshotId?: string; replacesSnapshotId?: string }> };
-export type LessonReceipt = Omit<LessonInput, "id" | "markdown" | "expectedContentHash" | "keyEquations"> & { contentHash: string; sourceHash: string; keyEquationIds?: string[]; embeddedSnapshotIds?: string[] };
+  calloutEdits?: Array<{ oldText: string; equation?: KeyEquation; diagram?: LessonDiagram; snapshotId?: string; replacesSnapshotId?: string }> };
+export type LessonReceipt = Omit<LessonInput, "id" | "markdown" | "expectedContentHash" | "keyEquations" | "diagrams"> & { contentHash: string; sourceHash: string; keyEquationIds?: string[]; diagramIds?: string[]; embeddedSnapshotIds?: string[] };
 export type LessonCommit = { entryIds: string[]; contentHash: string; sourceHash: string };
 export type ObjectiveCheck = { objective: string; checks: AssessmentKind[] };
 const checks = new Set(["conceptual", "application", "computation", "discrimination"]);
@@ -22,8 +23,9 @@ const savedLessonId = (record: ScholarSection | TutorSession, id: string): strin
   || record.lessonEntryIds?.includes(id) ? id : `lesson-${id}`;
 
 export function isLessonReceipt(value: any): value is LessonReceipt {
-  return value && Object.keys(value).every(key => ["title", "objectives", "keyPoints", "sourcePages", "contentHash", "sourceHash", "keyEquationIds", "embeddedSnapshotIds"].includes(key))
+  return value && Object.keys(value).every(key => ["title", "objectives", "keyPoints", "sourcePages", "contentHash", "sourceHash", "keyEquationIds", "diagramIds", "embeddedSnapshotIds"].includes(key))
     && (value.keyEquationIds === undefined || strings(value.keyEquationIds))
+    && (value.diagramIds === undefined || strings(value.diagramIds))
     && (value.embeddedSnapshotIds === undefined || strings(value.embeddedSnapshotIds))
     && typeof value.title === "string" && value.title.trim().length > 0
     && strings(value.objectives) && strings(value.keyPoints)
@@ -153,6 +155,9 @@ export function saveLesson(record: ScholarSection | TutorSession, book: ScholarB
   if (input.sourcePages.some(page => !Number.isSafeInteger(page) || !pageInRanges(page, ranges)) || new Set(input.sourcePages).size !== input.sourcePages.length) throw new Error("Lesson sourcePages must be unique pages in this active source scope.");
   let markdown = normalizeLessonHeadings(normalizeObsidianMath(markdownText(input.markdown)).trim()).replace(/\n\s*\n/g, "\n\n");
   if (input.keyEquations !== undefined || markdown.includes("[[scholar-equation:")) markdown = renderKeyEquations(markdown, input.keyEquations || [], input.sourcePages);
+  const diagramResult = input.diagrams !== undefined || markdown.includes("[[scholar-diagram:") || /^ {0,3}>\s*\[!scholar-diagram\]/m.test(markdown)
+    ? renderLessonDiagrams(markdown, input.diagrams || [], input.sourcePages) : { markdown, diagramIds: [] as string[] };
+  markdown = diagramResult.markdown;
   const embeddedSnapshotIds = [...markdown.matchAll(/\[\[scholar-figure:([^\]]+)\]\]/g)].map(match => match[1]!);
   const issues = lessonMarkdownIssues(markdown);
   if (!/^#{1,6}\s/.test(markdown)) markdown = `### ${input.title.trim().replace(/[\r\n]+/g, " ")}\n\n${markdown}`;
@@ -162,6 +167,7 @@ export function saveLesson(record: ScholarSection | TutorSession, book: ScholarB
   const receipt: LessonReceipt = { title: input.title.trim(), objectives: input.objectives, keyPoints: input.keyPoints,
     sourcePages: input.sourcePages, sourceHash: book.source.fingerprint.sha256, contentHash: lessonHash(markdown),
     ...(input.keyEquations?.length ? { keyEquationIds: input.keyEquations.map(item => item.id) } : {}),
+    ...(diagramResult.diagramIds.length ? { diagramIds: diagramResult.diagramIds } : {}),
     ...(embeddedSnapshotIds.length ? { embeddedSnapshotIds } : {}) };
   const id = savedLessonId(record, input.id);
   const finalIssues = lessonMarkdownIssues(markdown);
@@ -180,7 +186,7 @@ export function saveLesson(record: ScholarSection | TutorSession, book: ScholarB
 }
 
 /** Exact prose repairs preserve callouts. Explicit callout replacements reuse
- * the structured equation/figure validators without regenerating the lesson. */
+ * the structured equation, diagram and figure validators. */
 export function patchLesson(record: ScholarSection | TutorSession, book: ScholarBook, patch: LessonPatch, config?: ScholarConfig): void {
   const edits = patch?.edits ?? [];
   const calloutEdits = patch?.calloutEdits ?? [];
@@ -209,7 +215,7 @@ export function patchLesson(record: ScholarSection | TutorSession, book: Scholar
     ...text.matchAll(/!\[\[[^\]]+\]\]|!\[[^\]]*\]\([^\n]+?\)/g),
   ].map(match => match[0]);
   if (JSON.stringify(protectedContent(original)) !== JSON.stringify(protectedContent(markdown))
-    || markdown.includes("[[scholar-") || /<!--|-->/.test(markdown)) throw new Error("lessonPatch preserves rendered equation, figure and other callout blocks. Use a full lesson revision to change those blocks or their references.");
+    || markdown.includes("[[scholar-") || /<!--/.test(markdown)) throw new Error("lessonPatch preserves rendered equation, figure and other callout blocks. Use a full lesson revision to change those blocks or their references.");
   let embeddedSnapshotIds = [...(entry.lesson.embeddedSnapshotIds || [])];
   const changed = new Set<string>();
   for (const edit of calloutEdits) {
@@ -219,16 +225,21 @@ export function patchLesson(record: ScholarSection | TutorSession, book: Scholar
     if (!blocks.includes(old) || markdown.split(old).length !== 2 || changed.has(old)) throw new Error("Replace exactly one complete saved callout; no partial or duplicate targets.");
     changed.add(old);
     let replacement: string;
-    if (edit.equation && !edit.snapshotId && !edit.replacesSnapshotId) {
-      if (!/^> \[!note\] Key equation\b/.test(old) || !entry.lesson.keyEquationIds?.includes(edit.equation.id)) throw new Error("Equation edits must preserve an existing equation ID and target a Key equation callout.");
+    if (edit.equation && !edit.diagram && !edit.snapshotId && !edit.replacesSnapshotId) {
+      if (!/^> \[!(?:note|scholar-equation)\] Key equation\b/.test(old) || !entry.lesson.keyEquationIds?.includes(edit.equation.id)) throw new Error("Equation edits must preserve an existing equation ID and target a Key equation callout.");
       replacement = renderKeyEquations(`[[scholar-equation:${edit.equation.id}]]`, [edit.equation], entry.lesson.sourcePages);
-    } else if (!edit.equation && edit.snapshotId && edit.replacesSnapshotId) {
+    } else if (edit.diagram && !edit.equation && !edit.snapshotId && !edit.replacesSnapshotId) {
+      const diagramBlocks = blocks.filter(block => /^> \[!scholar-diagram\] Diagram · /.test(block));
+      const diagramIndex = diagramBlocks.indexOf(old);
+      if (diagramIndex < 0 || entry.lesson.diagramIds?.[diagramIndex] !== edit.diagram.id) throw new Error("Diagram edits must preserve the ID of the targeted diagram callout.");
+      replacement = renderLessonDiagrams(`[[scholar-diagram:${edit.diagram.id}]]`, [edit.diagram], entry.lesson.sourcePages).markdown;
+    } else if (!edit.equation && !edit.diagram && edit.snapshotId && edit.replacesSnapshotId) {
       const previous = record.snapshots?.find(item => item.id === edit.replacesSnapshotId);
       if (!/^> \[!example\] Figure\b/.test(old) || !previous || !old.includes(previous.assetFile)
         || !embeddedSnapshotIds.includes(previous.id) || embeddedSnapshotIds.includes(edit.snapshotId)) throw new Error("Figure edits must replace one existing embedded source crop with a new scoped crop.");
       replacement = resolveLessonFigures(`[[scholar-figure:${edit.snapshotId}]]`, record, book, entry.lesson.sourcePages, config);
       embeddedSnapshotIds = embeddedSnapshotIds.map(id => id === previous.id ? edit.snapshotId! : id);
-    } else throw new Error("Supply either a structured equation or a replacement snapshot pair for each callout edit.");
+    } else throw new Error("Supply a structured equation, a same-ID diagram, or a replacement snapshot pair for each callout edit.");
     markdown = markdown.replace(old, () => replacement.trim());
   }
   const issues = lessonMarkdownIssues(markdown);
@@ -259,7 +270,8 @@ export function learnDeliveryIssues(section: ScholarSection, sourceHash?: string
   return sourceCoverageIssues(section.learnQuality.coverage, {
     startPage: section.startPage, endPage: section.endPage, objectives: section.objectives, objectiveChecks: section.objectiveChecks,
     lessons: validLessonEntries(section, sourceHash).map(entry => ({ id: entry.id, markdown: entry.markdown,
-      keyEquationIds: entry.lesson!.keyEquationIds, embeddedSnapshotIds: entry.lesson!.embeddedSnapshotIds })),
+      keyEquationIds: entry.lesson!.keyEquationIds, diagramIds: entry.lesson!.diagramIds,
+      embeddedSnapshotIds: entry.lesson!.embeddedSnapshotIds })),
   }, { delivered: true });
 }
 
@@ -333,6 +345,15 @@ export function lessonCoverageIssues(section: ScholarSection, sourceHash?: strin
     ...section.objectives.filter(objective => !covered.has(objective)).map(objective => `explain: ${objective}`),
     ...(!section.synthesis?.trim() || !section.keyPoints.length ? ["save a recap and key points"] : []),
   ];
+}
+
+/** New Learn preparations need a diagram; legacy committed sections are not re-gated. */
+export function lessonDiagramIssues(section: ScholarSection): string[] {
+  return validLessonEntries(section).some(entry => {
+    const ids = entry.lesson?.diagramIds || [];
+    return ids.length > 0 && (entry.markdown.match(/^> \[!scholar-diagram\] Diagram · /gm) || []).length === ids.length;
+  })
+    ? [] : ["add at least one relevant Mermaid diagram to the Learn lesson"];
 }
 
 export function commitLesson(section: ScholarSection, book: ScholarBook): void {
