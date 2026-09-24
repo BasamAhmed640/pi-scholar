@@ -18,7 +18,8 @@ const jiti = createJiti(import.meta.url, { moduleCache: false, alias: { ...sdkAl
 const extension = dirname(process.env.PI_SCHOLAR_EXTENSION || packagedExtensionPath);
 const mod = (path) => jiti.import(join(extension, path));
 const { handleExamGrade } = await mod("tool-actions/exam.ts");
-const { gradingPacket, scoreChoiceItem } = await mod("exam.ts");
+const { examAnswerProgress, gradingPacket, parseExamResponses, scoreChoiceItem } = await mod("exam.ts");
+const { examAnswerNoteText } = await mod("render/assessment.ts");
 const { createScholarToolController } = await mod("tool-controller.ts");
 const { ScholarRuntimeSession } = await mod("runtime-session.ts");
 const { isScholarBook, scholarBookIssues } = await mod("state-schema.ts");
@@ -181,6 +182,32 @@ try {
     assert.equal(scoreChoiceItem(question, "b").outcome, "incorrect");
     assert.equal(scoreChoiceItem(question, "a, b, c").outcome, "incorrect");
   });
+  for (const [name, key, checked, expected] of [
+    ["one comma-valued choice", "a, b", ["a, b"], ["a, b"]],
+    ["two choices sharing a comma-valued option", ["a", "b"], ["a", "b"], ["a", "b"]],
+  ]) {
+    await check(`${name} round-trips without a guessed grade`, async () => {
+      const book = mcFixture("", key), exam = book.exams[0], question = exam.questions[0];
+      question.options = [
+        { value: "a, b", label: "Combined answer", misconception: "combines distinct choices" },
+        { value: "a", label: "First answer", misconception: "misses the second choice" },
+        { value: "b", label: "Second answer", misconception: "misses the first choice" },
+      ];
+      assert.ok(isScholarBook(book), scholarBookIssues(book).join("; "));
+      let paper = examAnswerNoteText(config, book, exam);
+      for (const value of checked) paper = paper.replace(`- [ ] **${value}**`, `- [x] **${value}**`);
+      const parsed = parseExamResponses(exam, paper);
+      assert.deepEqual(parsed, [{ questionId: "q1", response: expected }]);
+      assert.deepEqual(examAnswerProgress(exam, paper), { ok: true, total: 1, answered: 1, blank: [] });
+      assert.equal(scoreChoiceItem(question, parsed[0].response).outcome, "correct");
+      exam.rawResponses = parsed;
+      const h = harness(book);
+      await h.grade([]);
+      assert.equal(h.stored.exams[0].itemResults[0].outcome, "correct");
+      assert.equal(h.stored.exams[0].itemResults[0].earnedPoints, 2);
+      assert.deepEqual(h.stored.exams[0].rawResponses, parsed);
+    });
+  }
   await check("a corrupt frozen choice key stops grading before mutation", async () => {
     const h = harness(mcFixture("b", "missing"));
     await assert.rejects(() => h.grade([]), /invalid frozen answer key/);

@@ -3,7 +3,7 @@ import { compactStrings, sectionLabel } from "./domain.ts";
 import { answerShapeIssues, CATCH_ALL_OPTION, MAX_RECOGNITION_SHARE, MIN_MCQ_OPTIONS, MIN_RUBRIC_CRITERIA, MIXED_FORM_THRESHOLD, optionIssues } from "./quiz-contract.ts";
 import { markdownText } from "./render/common.ts";
 import { isExamQuestion } from "./state-schema.ts";
-import { findSection, type ExamBreakdown, type ExamItemResult, type ExamQuestion, type ScholarBook, type ScholarExam } from "./types.ts";
+import { findSection, type ExamBreakdown, type ExamItemResult, type ExamQuestion, type ExamRawResponse, type ScholarBook, type ScholarExam } from "./types.ts";
 
 const ANSWER_START = "<!-- scholar:answer:";
 const ANSWER_END = "<!-- /scholar:answer:";
@@ -298,7 +298,7 @@ export function examAnswerRegionLines(question: ExamQuestion): string[] {
 }
 
 /** Native Obsidian task checkboxes; indices identify the frozen options, not labels. */
-function checkboxResponse(question: ExamQuestion, response: string): string {
+function checkboxResponse(question: ExamQuestion, response: string): string | string[] {
   const rows = response.split(/\r?\n/).filter((line) => line.trim());
   const selected: string[] = [];
   const seen = new Set<number>();
@@ -318,7 +318,11 @@ function checkboxResponse(question: ExamQuestion, response: string): string {
   if (selected.length > 1 && !(Array.isArray(question.correctAnswer) && question.correctAnswer.length > 1)) {
     throw new Error(`Question ${question.id}: select one answer only. Uncheck the extra choices before submitting.`);
   }
-  return selected.join(", ");
+  // Raw responses already permit string arrays. Preserve that structure when a
+  // frozen option contains a comma: a joined string could name one option or
+  // several different options, so scoring it would guess at the learner's tick.
+  return question.options?.some((option) => option.value.includes(",")) && selected.length
+    ? selected : selected.join(", ");
 }
 
 function canonicalFormValue(value: unknown): unknown {
@@ -365,7 +369,7 @@ export function validateExamAnswerNote(book: ScholarBook, exam: ScholarExam, tex
   parseExamResponses(exam, text);
 }
 
-export function parseExamResponses(exam: ScholarExam, text: string): Array<{ questionId: string; response: string }> {
+export function parseExamResponses(exam: ScholarExam, text: string): ExamRawResponse[] {
   const spans: Array<{ questionId: string; start: number; contentStart: number; end: number; endLength: number }> = [];
   if (new Set(exam.questions.map((question) => question.id)).size !== exam.questions.length) {
     throw new Error("The frozen exam has duplicate question IDs; its answers cannot be read safely.");
@@ -436,7 +440,8 @@ export type ExamAnswerProgress = { ok: true; total: number; answered: number; bl
 export function examAnswerProgress(exam: ScholarExam, text: string): ExamAnswerProgress {
   try {
     const responses = parseExamResponses(exam, text);
-    const blank = responses.filter((item) => !item.response).map((item) => item.questionId);
+    const blank = responses.filter((item) => Array.isArray(item.response)
+      ? !item.response.some((value) => value.trim()) : !item.response).map((item) => item.questionId);
     return { ok: true, total: responses.length, answered: responses.length - blank.length, blank };
   } catch (error) {
     return { ok: false, problem: error instanceof Error ? error.message : String(error) };
