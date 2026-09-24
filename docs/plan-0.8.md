@@ -179,3 +179,120 @@ workflow, a request/response sequence, equations, a worked example). Steps:
 8. Delete a question block and a lesson unit in the vault → restart → verify neither
    returns. Check wikilinks resolve, no duplicate notes/attempts, Mermaid lint-clean.
 9. Timing report per stage vs. the 0.7.1 baseline.
+
+## 6. Advisor amendments (binding; they override §2–§3 where they differ)
+
+### C1 · Quiz sets
+- **Host object, awaited.** New `quiz-host.ts` (Q) exports a factory the coordinator builds in
+  place of `loadSaved` (runtime-coordinator.ts ~487-499):
+  `{ load(toolCallId) → [{attemptId, quiz}], record(toolCallId, attemptId, result) → "saved" | "gone" }`
+  using `mutateBook`. The picker shows feedback at once but awaits `record` before opening the
+  next item. `record` only updates a still-pending attempt (never inserts); on failure it retries
+  once with a fresh load, then pauses the set. (`onUpdate`/`tool_execution_update` is
+  fire-and-forget and history backfill is disabled, so an answer not saved inside `execute` is lost.)
+- **Set-aware lookups everywhere.** Every item stores the set's `toolCallId` plus
+  `quizSet{id,index,size}`; one set-aware lookup replaces every single-attempt lookup
+  (index.ts ~329-331, 419-421, 443-445, 479-481; runtime-coordinator.ts ~492-496). Today
+  `findQuizAttempt` returns the last match and `findTutorQuizAttempt` the first — unify.
+- Resume appends the resume toolCallId to every still-pending item of the set (history.ts
+  allows append-only). Before persisting a new set, verify none of the N ids exist
+  (state-schema `hasUniqueIds` would otherwise reject the whole section).
+- One `applyQuizAnswer()` in domain.ts is used by both `record` and the `tool_result` hook; the
+  hook stays an idempotent backstop and still accepts legacy single-question details.
+- Host detection: `tui = ctx.mode === undefined ? typeof ui.custom === "function" : ctx.mode === "tui"`;
+  in RPC `custom()` returns `undefined` (not Esc). Pass `{ signal }` to `ui.select`/`ui.input`.
+- Result content / `renderResult` reveal keys and explanations only for answered items.
+- A Learn mastery set may not exceed `QUICK_QUESTIONS − answeredQuickQuestions`.
+- index.ts ~302 must recognise `questions[]`; `execute` presents only persisted items and never
+  falls back to `prepareScholarQuiz(params)`.
+- **Question review (decision):** Learn *mastery* sets and Learn open `assess` questions get ONE
+  batched assessment review per set (R's `reviewQuestion`, set-aware), capped at
+  `QUESTION_REVIEW_WAIT_MS` = 30 s and **fail-open** on timeout/failure; flagged items are refused
+  once with their findings; the resubmitted set in that preparation is not re-reviewed.
+  Tutor sets, diagnostic probes and practice sets are not model-reviewed (deterministic gates
+  only). Keep `reviewQuestion` exported.
+- index.ts must keep the exact line `  const toolController = createScholarToolController({`
+  once (two verifiers inject a hook there).
+
+### C2 · Diagrams
+- The "≥ 1 diagram" rule is a D-exported `lessonDiagramIssues(section)` checked ONLY in the
+  controller's commit pre-check (tool-controller.ts ~1001; the coordinator wires it after merge).
+  Never add it to `lessonCoverageIssues`, `lessonReady`, `commitLesson` or completion blockers —
+  that would demote existing committed/completed sections in real vaults.
+- `calloutEdits` supports replacing one diagram callout (same id) with `diagram: {...}`.
+- Lint allows `classDef`, `class`, `:::`, `style` (Tutor path colours nodes). Coverage evidence
+  must exclude fenced code (a `A --> B` line is not explanation).
+- `lessons[]` schema max stays small (≤ 6); guidance says 2–4 units per call (a truncated tool
+  call is discarded by Pi and the turn ends with "length").
+
+### C3 · Bounded review
+- **Repair-round rule, restart-safe, no new persisted field:**
+  `roundUsed = (learnQuality.responses?.length ?? 0) > 0 || usedRounds.has(book:section:sourceHash)`
+  where `usedRounds` is a process-level set NOT cleared by `resetTransientState`. Once the round is
+  used, the commit condition is deterministic coverage gaps only; failures, timeouts, discards and
+  missing receipts never block. Same rule for exams via `exam.review.responses`. A Pi restart can
+  allow at most one extra block — never a loop, never a stuck section.
+- Waits are injectable through `ports` (like `now`): `reviewWaitMs` (45 s),
+  `examReviewWaitMs` (60 s), `questionReviewWaitMs` (30 s).
+- Add a process-wide reviewer semaphore (≤ 4 requests in flight) and a short backstop for
+  background audits (they currently allow 12 concurrent per unit and a 45-minute backstop).
+- Exam findings are never visible in exam notes before grading (answer key only, as today).
+- Loading-widget review text (runtime-coordinator.ts ~151-165, 389-403) is R's; the
+  "shared deadline" wording must change.
+
+### C4 · Exams
+- The 16-item cap lives only in `validateExamQuestions`; the minimum stays 1; 4–12 is guidance.
+- "Submit skips the picker when one exam is active" is P's (commands.ts).
+- MC scoring is deterministic (E); graders judge written responses only.
+
+### C5 · Tutor
+- `SOURCE_AND_PRIVACY` gets a Tutor-only web exception: graded Tutor items test only material
+  taught from the PDF; web information appears only inside a `> [!quote] External source · <title>`
+  callout with its URL in saved Tutor text and never becomes a key point.
+- `scholar_web`: https only; block private/loopback addresses after DNS resolution; ≤ 3
+  redirects re-checked; byte/time caps (reuse `fetchWithTimeout`/`readBounded` from
+  commons-images.ts); results wrapped as untrusted data; active only in Tutor and removed on
+  close (`syncActiveTools` must strip it like `scholar`/`scholar_quiz`).
+- A diagnostic probe must cite a source-declared prerequisite page inside the Tutor scope
+  (question-grounding.ts ~298-300) — the policy must say so.
+
+### C6 · RPC
+- `typeof ctx.mode === "string" && ctx.mode !== "tui"` → no-op release; add `mode?` to
+  `InputLockContext`. Contexts without `mode` keep today's strict behaviour.
+
+### C7 · Speed
+- Pi never runs tool calls concurrently (one sequential tool makes the batch sequential); remove
+  that claim from policies.ts. Batching still saves model turns. Multi-page `view` renders with
+  `Promise.all` and saves all page receipts in ONE `mutateBook`.
+
+### Ownership regions (supersedes §3 where finer)
+- lesson.ts: D owns ~11-242, 257-264, 327-336 and new `lessonDiagramIssues`; R owns ~316-321,
+  338-360. Nobody changes the inputs of `commitHash`, `learnReviewHash`, `lessonObjectiveHash`,
+  `lessonUnitRevision`.
+- learn-quality.ts: D owns ~1-153; R owns ~155-455.
+- tool-contract.ts: D, except E owns the `questions`/`itemResults` properties.
+- runtime-coordinator.ts: Q owns ~487-499 (moved into quiz-host.ts); R owns ~151-165, 389-403;
+  P owns ~104-137, 287-335 and adds web-tool registration after Q's block.
+- state-schema.ts, types.ts, domain.ts: Q only. commands.ts: P only.
+- render/callouts.ts: D may add helpers but must not change `callout()`, `unframeQuestion` or the
+  FEEDBACK markers (note-records.ts parses every existing question with them).
+- Model-facing wording: P owns the final policy text; Q/R/D/E put their model-facing strings in
+  their reports for P.
+
+### Backward compatibility (must-haves)
+- `SCHOLAR_SCHEMA_VERSION` unchanged. New fields optional, never backfilled: attempt `quizSet`,
+  receipt `diagramIds` (omit when empty), coverage `diagramId` (also in the coverage-updates
+  allow-list and tool-contract), new coverage kinds added not replaced; nothing new inside the
+  frozen `quiz` object.
+- Note parsing keeps "Question N" titles, status lines, details kinds, `NOTE_FORMAT`, legacy paths.
+- Exam papers keep the identity header, answer markers, `checkboxes-v1`, completion marker and
+  single-level `> ` framing; old papers still parse. Answer keys rebuild from old results.
+- 0.7.1 cannot read notes carrying the new optional fields: **back up the owner's vault before
+  0.8 first writes to it.**
+- **Real-vault regression gate** (not in `npm test`; personal data never enters the repo): on a
+  byte copy of the owner's vault every book loads; load → render → load is identical; status,
+  `earnedDelivery` and attempts are unchanged; pending questions resume; active exam papers parse.
+
+### Agent environment
+- Unset `PI_SCHOLAR_EXTENSION`; confirm `tests/run.mjs` prints your own worktree path; run
+  `npm ci --ignore-scripts` in the worktree; never edit files in the main checkout.
