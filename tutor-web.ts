@@ -40,8 +40,15 @@ export function isPublicWebAddress(address: string): boolean {
   if (isIP(ip) !== 6) return false;
   const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
   if (mapped) return publicIPv4(mapped[1]!);
-  // Public IPv6 unicast is 2000::/3. 2001:db8::/32 is documentation only.
-  return /^[23][0-9a-f]{0,3}:/.test(ip) && !/^2001:db8:/i.test(ip);
+  // Limit to global unicast and refuse transition/special-use ranges that can
+  // tunnel an embedded private IPv4 destination past the DNS address check.
+  const parts = ip.split(":");
+  const first = Number.parseInt(parts[0] || "0", 16);
+  const second = Number.parseInt(parts[1] || "0", 16);
+  if (first < 0x2000 || first >= 0x4000 || first === 0x2002) return false; // 6to4
+  if (first === 0x2001 && (second === 0 || second === 2 || second === 0x0db8
+    || (second >= 0x10 && second <= 0x2f))) return false; // Teredo, benchmark, docs, ORCHID
+  return true;
 }
 
 function webUrl(value: string): URL {

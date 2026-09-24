@@ -9,7 +9,7 @@ const web = await jiti.import(join(dirname(extensionPath), "tutor-web.ts"));
 const publicAddress = [{ address: "93.184.216.34", family: 4 }];
 const response = (status, body = "", headers = {}) => ({ status, body: Buffer.from(body), headers });
 
-for (const address of ["127.0.0.1", "10.1.2.3", "172.16.0.9", "192.168.1.1", "169.254.10.1", "100.64.0.1", "::1", "fc00::1", "fe80::1", "::ffff:127.0.0.1", "2001:db8::1"]) {
+for (const address of ["127.0.0.1", "10.1.2.3", "172.16.0.9", "192.168.1.1", "169.254.10.1", "100.64.0.1", "::1", "fc00::1", "fe80::1", "::ffff:127.0.0.1", "2001:db8::1", "2001::1", "2002:7f00:1::", "2002:c0a8:101::"]) {
   assert.equal(web.isPublicWebAddress(address), false, address);
 }
 for (const address of ["8.8.8.8", "93.184.216.34", "2606:4700::1111"]) assert.equal(web.isPublicWebAddress(address), true, address);
@@ -26,6 +26,10 @@ assert.equal(redirected.url, "https://destination.example/final");
 assert.deepEqual(hops, ["dns:source.example", "get:source.example:93.184.216.34", "dns:destination.example", "get:destination.example:93.184.216.34"]);
 await assert.rejects(web.boundedWebGet("https://public.example/", 1000, undefined, {
   resolve: async host => host === "private.example" ? [{ address: "127.0.0.1", family: 4 }] : publicAddress,
+  transport: async () => response(302, "", { location: "https://private.example/secret" }),
+}), /private|loopback|reserved/);
+await assert.rejects(web.boundedWebGet("https://public.example/", 1000, undefined, {
+  resolve: async host => host === "private.example" ? [{ address: "2002:7f00:1::", family: 6 }] : publicAddress,
   transport: async () => response(302, "", { location: "https://private.example/secret" }),
 }), /private|loopback|reserved/);
 await assert.rejects(web.boundedWebGet("https://public.example/", 1000, undefined, {
