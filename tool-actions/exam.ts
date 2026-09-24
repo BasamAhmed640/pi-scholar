@@ -1,11 +1,15 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   buildExamBreakdown,
+  choiceFeedback,
   examBlueprint,
   examBlueprintSummary,
   examFormIssues,
   gradingPacket,
+  scholarChoiceScores,
+  UNANSWERED_FEEDBACK,
   validateExamQuestions,
+  type ChoiceScore,
 } from "../exam.ts";
 import type { ToolDetails } from "../tool-contract.ts";
 import type { FindingResponse } from "../learn-quality.ts";
@@ -90,11 +94,14 @@ export async function handleExamPresent(
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: ToolDetails }> {
   const presented = await presentExam(book.id, examId, ctx);
   if (presented.exam.status === "submitted") {
+    const judged = presented.exam.questions.length - scholarChoiceScores(presented.exam).size;
     return {
       content: [{ type: "text" as const, text: gradingPacket(presented.exam) }],
       details: {
         action: "exam_present",
-        summary: `${presented.exam.title} submitted; grade it now.`,
+        summary: judged
+          ? `${presented.exam.title} submitted; Scholar scored the multiple-choice answers — grade the ${judged} remaining item(s) now.`
+          : `${presented.exam.title} submitted; Scholar scored every item — record the grade now.`,
         bookId: book.id,
       } satisfies ToolDetails,
     };
@@ -106,6 +113,33 @@ export async function handleExamPresent(
       : `${presented.exam.title} is already ${presented.exam.status}. Do not re-grade it.`,
     { bookId: book.id },
   );
+}
+
+const ADVISORY_FIELDS = ["diagnosticSummary", "firstDecisiveError", "correctReasoning", "transferableLesson"] as const;
+
+/**
+ * A multiple-choice item Scholar scored from the frozen key. A grader's result is
+ * optional: when it agrees, its wording is kept; when it disagrees, only its note
+ * survives, labelled, and its verdict and diagnosis are dropped. The score is never
+ * the grader's.
+ */
+function scholarScoredResult(question: ExamQuestion, score: ChoiceScore, supplied: Record<string, unknown> | undefined): { result: ExamItemResult; overridden: boolean } {
+  const base = { questionId: question.id, outcome: score.outcome, earnedPoints: score.earnedPoints, maxPoints: question.maxPoints };
+  const agrees = Boolean(supplied) && supplied!.outcome === score.outcome && typeof supplied!.earnedPoints === "number"
+    && Math.abs(supplied!.earnedPoints - score.earnedPoints) <= 1e-7 * Math.max(1, question.maxPoints);
+  // Absence is not evidence of a misconception: a blank keeps its fixed note, whatever a grader wrote.
+  if (score.outcome === "unanswered") return { result: { ...base, feedback: UNANSWERED_FEEDBACK }, overridden: Boolean(supplied) && !agrees };
+  const note = typeof supplied?.feedback === "string" ? supplied.feedback.trim() : "";
+  if (!supplied || !note) return { result: { ...base, feedback: choiceFeedback(question, score) }, overridden: Boolean(supplied) && !agrees };
+  if (!agrees) {
+    return { result: { ...base, feedback: `Scored from the frozen answer key as ${score.outcome}; the grader's differing verdict was not applied. Grader's note: ${note}` }, overridden: true };
+  }
+  const result: ExamItemResult = { ...base, feedback: note };
+  for (const field of ADVISORY_FIELDS) {
+    const value = supplied[field];
+    if (typeof value === "string" && value.trim()) result[field] = value.trim();
+  }
+  return { result, overridden: false };
 }
 
 export async function handleExamGrade(
@@ -124,14 +158,34 @@ export async function handleExamGrade(
     }
     return item as Record<string, unknown>;
   });
-  if (
-    supplied.length !== exam.questions.length
-    || new Set(supplied.map((item) => item.questionId)).size !== exam.questions.length
-  ) {
-    throw new Error("exam_grade requires exactly one unique result for every frozen question.");
+  const idName = (id: unknown) => typeof id === "string" ? id : "(missing questionId)";
+  const counts = new Map<unknown, number>();
+  for (const item of supplied) counts.set(item.questionId, (counts.get(item.questionId) || 0) + 1);
+  const duplicated = [...counts].filter(([, count]) => count > 1).map(([id]) => idName(id));
+  if (duplicated.length) {
+    throw new Error(`exam_grade requires exactly one unique result per question; ${duplicated.join(", ")} ${duplicated.length === 1 ? "appears" : "appear"} more than once.`);
   }
+  // Scholar scores every clean multiple-choice answer itself; only the rest need a grader.
+  const scores = scholarChoiceScores(exam);
+  const known = new Set(exam.questions.map((question) => question.id));
+  const unknown = supplied.filter((item) => typeof item.questionId !== "string" || !known.has(item.questionId)).map((item) => idName(item.questionId));
+  const missing = exam.questions.filter((question) => !scores.has(question.id) && !counts.has(question.id));
+  if (missing.length || unknown.length) {
+    const unreadableChoice = missing.some((question) => question.format === "multiple-choice");
+    throw new Error([
+      ...(missing.length ? [`Missing result for ${missing.map((question) => question.id).join(", ")}. exam_grade requires exactly one unique result for every item that needs judgment: each written response${unreadableChoice ? " and each multiple-choice answer that is not a clean option value" : ""}. Scholar scores clean multiple-choice answers from the frozen key.`] : []),
+      ...(unknown.length ? [`itemResults name no frozen question: ${unknown.join(", ")}.`] : []),
+    ].join(" "));
+  }
+  const overridden: string[] = [];
   const results = exam.questions.map((question): ExamItemResult => {
     const result = supplied.find((item) => item.questionId === question.id);
+    const score = scores.get(question.id);
+    if (score) {
+      const scored = scholarScoredResult(question, score, result);
+      if (scored.overridden) overridden.push(question.id);
+      return scored.result;
+    }
     if (!result) throw new Error(`Missing result for ${question.id}.`);
     // NaN and Infinity pass every comparison below (NaN < 0 is false, and so
     // is NaN > max), so they must be excluded before the range checks.
@@ -165,11 +219,11 @@ export async function handleExamGrade(
     if (response !== undefined && (Array.isArray(response) ? response.every((value) => !value.trim()) : !response.trim())) {
       // Absence is not evidence of a misconception, and never earns credit,
       // even if a model accidentally marks the blank answer correct.
-      return { questionId: question.id, outcome: "unanswered", earnedPoints: 0, maxPoints: question.maxPoints, feedback: "Not answered — 0 points. Review the correct answer and reasoning below." };
+      return { questionId: question.id, outcome: "unanswered", earnedPoints: 0, maxPoints: question.maxPoints, feedback: UNANSWERED_FEEDBACK };
     }
     // Freeze the maximum to the question and persist only schema-owned fields.
     const normalized: ExamItemResult = { questionId: question.id, outcome, earnedPoints, maxPoints: question.maxPoints, feedback: result.feedback.trim() };
-    for (const field of ["diagnosticSummary", "firstDecisiveError", "correctReasoning", "transferableLesson"] as const) {
+    for (const field of ADVISORY_FIELDS) {
       const value = result[field];
       if (value === undefined) continue;
       if (typeof value !== "string" || !value.trim()) throw new Error(`Result ${question.id} ${field} must be non-empty text when supplied; otherwise omit it.`);
@@ -193,9 +247,12 @@ export async function handleExamGrade(
     current.updatedAt = current.gradedAt;
   });
   const graded = mutation.book.exams.find((item) => item.id === examId)!;
+  const scholarScored = scores.size
+    ? ` Scholar scored ${scores.size} multiple-choice item(s) from the frozen key${overridden.length ? `; the grader's differing verdict for ${overridden.join(", ")} was not applied` : ""}.`
+    : "";
   return toolResult(
     "exam_grade",
-    `${graded.title} graded: ${graded.earnedPoints}/${graded.maxPoints} (${graded.percent}%). ${mutation.projectionStatus === "pending" ? "The grade is saved; the Obsidian note update is pending. Reopen this exam to retry projection without re-grading." : "The report and answer key are now in Obsidian."}`,
+    `${graded.title} graded: ${graded.earnedPoints}/${graded.maxPoints} (${graded.percent}%).${scholarScored} ${mutation.projectionStatus === "pending" ? "The grade is saved; the Obsidian note update is pending. Reopen this exam to retry projection without re-grading." : "The report and answer key are now in Obsidian."}`,
     { bookId: book.id },
   );
 }

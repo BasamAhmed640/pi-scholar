@@ -224,12 +224,17 @@ export const ScholarParams = Type.Object({
   ])),
   difficulty: Type.Optional(Type.String()),
   examId: Type.Optional(Type.String()),
+  // The 16-item ceiling is enforced by validateExamQuestions, whose rejection names the
+  // recommended length; a schema maxItems would replace it with a generic error.
   questions: Type.Optional(Type.Array(ExamQuestionSchema, {
     minItems: 1,
-    description: "Build at least one question according to concept coverage, with multiple distinct probes for important concepts when useful. There is no fixed question-count cap; avoid redundant questions.",
+    description: "The complete form, chosen by concept coverage: about two short items per scoped subsection (normally 4–12), never more than 16. Use multiple distinct probes for important concepts; avoid redundant questions.",
   })),
-  // Runtime validation requires exactly one result per frozen question.
-  itemResults: Type.Optional(Type.Array(ExamItemResultSchema, { minItems: 1 })),
+  // Runtime validation requires one unique result for every item that needs judgment;
+  // Scholar scores clean multiple-choice answers from the frozen key.
+  itemResults: Type.Optional(Type.Array(ExamItemResultSchema, {
+    description: "One result per written (open-response) question. Scholar scores multiple-choice answers from the frozen key; a result for one is optional and can add feedback but never changes its score. Omit or send [] when every item is multiple choice.",
+  })),
 });
 
 export type ToolDetails = {
