@@ -87,6 +87,8 @@ export type ReviewerRunOptions = {
   modelRegistry: Pick<ExtensionContext["modelRegistry"], "complete"> & Partial<Pick<ExtensionContext["modelRegistry"], "getProvider" | "getApiKeyAndHeaders">>;
   /** Pi maps this to each model's supported reasoning level and native options. */
   thinkingLevel?: ExtensionContext["thinkingLevel"];
+  /** Host session for provider routing, separate from isolated reviewer resources. */
+  sessionId?: string;
   /** Vault directory for scope identification; never used to discover resources. */
   cwd: string;
   prompt: string;
@@ -128,6 +130,14 @@ function providerFailure(error: unknown): string {
   if (/timeout|timed out/i.test(message)) return "provider timeout";
   if (/context.*(?:length|limit|exceed)|maximum context/i.test(message)) return "provider context limit";
   return "provider failure (details withheld)";
+}
+
+// Registry and direct provider side-calls bypass Pi's normal attribution hook.
+function openCodeSessionHeaders(model: ReviewerRunOptions["model"], sessionId: string): Record<string, string> | undefined {
+  let isOpenCode = model.provider === "opencode" || model.provider === "opencode-go";
+  try { isOpenCode ||= new URL(String(model.baseUrl ?? "")).hostname === "opencode.ai"; }
+  catch { /* Custom providers may omit a URL. */ }
+  return isOpenCode ? { "x-opencode-session": sessionId, "x-opencode-client": "pi" } : undefined;
 }
 
 function limitError(message: string): never {
@@ -222,6 +232,8 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
   const signal = controller.signal;
   // An in-memory transport identity only: no Pi session file is created.
   const requestSessionId = randomUUID();
+  const routingSessionId = options.sessionId || requestSessionId;
+  const sessionHeaders = openCodeSessionHeaders(options.model, routingSessionId);
   const started = Date.now();
   // Timers cannot run while the OS suspends the process. Recheck wall time at
   // every async boundary so buffered results cannot win the race on resume.
@@ -306,7 +318,10 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
       try {
         // These isolated verdicts do not need a persistent socket or continuation
         // cache. Use Pi's portable HTTP stream option where the provider supports it.
-        const requestOptions = { signal, maxTokens, timeoutMs: limits.timeoutMs, maxRetries: 0, sessionId: requestSessionId, transport: "sse" as const };
+        const requestOptions = {
+          signal, maxTokens, timeoutMs: limits.timeoutMs, maxRetries: 0, sessionId: requestSessionId, transport: "sse" as const,
+          ...(sessionHeaders ? { transformHeaders: (headers: Record<string, string>) => ({ ...headers, ...sessionHeaders }) } : {}),
+        };
         if (thinkingLevel === undefined) {
           let stallTimer: NodeJS.Timeout | undefined;
           const stallPromise = new Promise<never>((_, reject) => {
@@ -335,8 +350,11 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
           checkActive();
           if (!auth.ok) throw new Error("The active registry could not authenticate the review model.");
           const requestModel = auth.baseUrl ? { ...options.model, baseUrl: auth.baseUrl } : options.model;
+          const requestHeaders = openCodeSessionHeaders(requestModel, routingSessionId);
           const stream = provider.streamSimple(requestModel, context, {
-            ...requestOptions, apiKey: auth.apiKey, headers: auth.headers, env: auth.env,
+            ...requestOptions, apiKey: auth.apiKey,
+            headers: requestHeaders ? { ...auth.headers, ...requestHeaders } : auth.headers,
+            env: auth.env,
             reasoning: thinkingLevel === "off" ? undefined : thinkingLevel,
           });
           let stallTimer: NodeJS.Timeout | undefined;

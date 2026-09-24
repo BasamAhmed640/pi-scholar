@@ -8,7 +8,7 @@ none requires another to be completed first.
 
 ```bash
 npm ci --ignore-scripts     # uses the committed npm-shrinkwrap.json
-npm test                    # 57 verifiers; currently all pass
+npm test                    # 58 verifiers; currently all pass
 npm run test:list           # list checks without loading Pi
 npm run test:preflight      # confirm Pi SDK + test deps import
 npm run pack:check          # preview the npm archive file list

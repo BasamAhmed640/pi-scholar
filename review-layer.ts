@@ -352,6 +352,7 @@ export async function reviewOne(
       role: effectiveRole,
       model,
       modelRegistry: ctx.modelRegistry,
+      sessionId: ctx.sessionManager?.getSessionId?.(),
       thinkingLevel: reviewThinkingLevel,
       cwd: config.obsidianRoot,
       signal,
