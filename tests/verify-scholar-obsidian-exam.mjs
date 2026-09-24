@@ -187,7 +187,8 @@ try {
   await check("paper renders single choice, select-all, open math, blank markers and no key", async () => {
     const h = await harness("render"); const exam = h.book.exams[0];
     const text = examAnswerNoteText(h.config, h.book, exam);
-    assert.match(text, /^answer_format: checkboxes-v1$/m); assert.match(text, /select all/i); assert.match(text, /Click the checkboxes/);
+    assert.match(text, /^answer_format: checkboxes-v1$/m); assert.match(text, /select all/i);
+    assert.match(text, /\*\*How to answer\*\*/); assert.match(text, /\*\*Choose\*\* — tick one box/);
     assert.equal((text.match(/^> - \[ \] .*<!-- scholar:choice:\d+ -->$/gm) || []).length, 6);
     assert.doesNotMatch(text, /^- \[[xX]\]/m);
     assert.ok(text.includes(exam.questions[2].prompt));

@@ -451,6 +451,8 @@ export type ChoiceScore = {
   selected: string[];
   /** Frozen option values the key requires, as an exact set. */
   key: string[];
+  /** The submitted text did not unambiguously name frozen options. */
+  unrecognized?: boolean;
 };
 
 /** A blank never earns credit and is not evidence of a misconception. */
@@ -466,8 +468,7 @@ function frozenChoiceKey(question: ExamQuestion): string[] | undefined {
  * Read a submitted choice as frozen option values: [] when blank, undefined when
  * the text is not unambiguously a set of options. A checkbox paper stores the
  * ticked values joined by ", "; an older typed paper may hold "b", "B" or a
- * sentence. Only an exact (or unambiguous case-folded) option value counts, so a
- * sentence goes to the grader instead of Scholar guessing at it.
+ * sentence. Only an exact (or unambiguous case-folded) option value counts.
  */
 export function submittedChoiceValues(question: ExamQuestion, response: unknown): string[] | undefined {
   const values = (question.options || []).map((option) => option.value);
@@ -498,13 +499,14 @@ export function submittedChoiceValues(question: ExamQuestion, response: unknown)
 
 /**
  * Deterministic multiple-choice scoring: an exact set match earns full points,
- * a blank is unanswered and anything else is incorrect. Undefined when the frozen
- * key or the submitted text cannot be read mechanically, leaving that item to the grader.
+ * a blank is unanswered and anything else is incorrect. An unrecognized answer
+ * earns zero deterministically; only a corrupt frozen key makes scoring impossible.
  */
 export function scoreChoiceItem(question: ExamQuestion, response: unknown): ChoiceScore | undefined {
   const key = frozenChoiceKey(question);
   const selected = key ? submittedChoiceValues(question, response) : undefined;
-  if (!key || !selected) return undefined;
+  if (!key) return undefined;
+  if (!selected) return { outcome: "incorrect", earnedPoints: 0, selected: [], key, unrecognized: true };
   if (!selected.length) return { outcome: "unanswered", earnedPoints: 0, selected, key };
   const exact = selected.length === key.length && key.every((value) => selected.includes(value));
   return { outcome: exact ? "correct" : "incorrect", earnedPoints: exact ? question.maxPoints : 0, selected, key };
@@ -516,7 +518,8 @@ export function scholarChoiceScores(exam: ScholarExam): Map<string, ChoiceScore>
   for (const question of exam.questions) {
     if (question.format !== "multiple-choice") continue;
     const score = scoreChoiceItem(question, exam.rawResponses.find((item) => item.questionId === question.id)?.response);
-    if (score) scores.set(question.id, score);
+    if (!score) throw new Error(`Exam ${exam.id} has an invalid frozen answer key for ${question.id}; grading cannot continue.`);
+    scores.set(question.id, score);
   }
   return scores;
 }
@@ -544,6 +547,7 @@ export function choiceFeedback(question: ExamQuestion, score: ChoiceScore): stri
   if (score.outcome === "unanswered") return UNANSWERED_FEEDBACK;
   const explanation = question.explanation.trim();
   if (score.outcome === "correct") return `Correct. ${explanation}`;
+  if (score.unrecognized) return `Incorrect — the submitted answer did not match a listed choice. ${explanation}`;
   const wrong = score.selected.filter((value) => !score.key.includes(value));
   const missed = score.key.filter((value) => !score.selected.includes(value));
   const diagnosed = wrong.flatMap((value) => {
@@ -564,8 +568,7 @@ function packetPoints(points: number): string {
 
 /**
  * The submitted form as the grader sees it. Scholar has already scored every clean
- * multiple-choice answer, so the grader judges only written responses (and any
- * choice typed on an older paper that is not a clean option value).
+ * multiple-choice answer, so the grader judges only written responses.
  */
 export function gradingPacket(exam: ScholarExam): string {
   const scores = scholarChoiceScores(exam);
@@ -577,24 +580,21 @@ export function gradingPacket(exam: ScholarExam): string {
       const score = scores.get(question.id);
       if (!score) continue;
       lines.push(`- ${question.id}: ${score.outcome} · ${packetPoints(score.earnedPoints)}/${packetPoints(question.maxPoints)}`
-        + (score.outcome === "incorrect" ? ` (selected ${score.selected.join(", ")}; key ${score.key.join(", ")})` : ""));
+        + (score.unrecognized ? " (answer did not match a listed choice)"
+          : score.outcome === "incorrect" ? ` (selected ${score.selected.join(", ")}; key ${score.key.join(", ")})` : ""));
     }
   }
   if (judged.length) {
     lines.push("", `GRADE ${judged.length === exam.questions.length ? "EVERY ITEM" : "THESE ITEMS"} against the frozen contract:`);
     for (const question of judged) {
       const response = exam.rawResponses.find((item) => item.questionId === question.id)?.response || "";
-      lines.push("", `QUESTION ${question.id}${question.format === "multiple-choice" ? " (multiple choice; the response is not a clean option value, so judge it against the key)" : ""}`,
+      lines.push("", `QUESTION ${question.id}`,
         question.prompt, `LEARNER RESPONSE:\n${Array.isArray(response) ? response.join(", ") : response || "(blank)"}`);
-      if (question.format === "multiple-choice") {
-        lines.push(`CORRECT VALUE(S): ${coerceAnswerValues(question.correctAnswer).join(", ")}`);
-      } else {
-        lines.push("RUBRIC:", ...(question.rubric || []).map((criterion) => `- ${criterion.id}: ${criterion.points} point(s) — ${criterion.criterion}; evidence: ${criterion.requiredEvidence.join("; ")}`));
-      }
+      lines.push("RUBRIC:", ...(question.rubric || []).map((criterion) => `- ${criterion.id}: ${criterion.points} point(s) — ${criterion.criterion}; evidence: ${criterion.requiredEvidence.join("; ")}`));
       lines.push(`MAX POINTS: ${question.maxPoints}`, `GOLD EXPLANATION: ${question.explanation}`);
     }
     lines.push("", `Call scholar action=exam_grade with exactly one result for each of: ${judged.map((question) => question.id).join(", ")}.`
-      + (scores.size ? " Omit the Scholar-scored items; a result for one can only add feedback and never changes its score." : "")
+      + (scores.size ? " Omit the Scholar-scored items; any result sent for one is ignored." : "")
       + " Feedback must be diagnostic and nonverbatim; never copy the learner response into feedback.");
   } else {
     lines.push("", "Every item was scored by Scholar. Call scholar action=exam_grade with no itemResults to record the grade.");

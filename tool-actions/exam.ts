@@ -118,28 +118,14 @@ export async function handleExamPresent(
 const ADVISORY_FIELDS = ["diagnosticSummary", "firstDecisiveError", "correctReasoning", "transferableLesson"] as const;
 
 /**
- * A multiple-choice item Scholar scored from the frozen key. A grader's result is
- * optional: when it agrees, its wording is kept; when it disagrees, only its note
- * survives, labelled, and its verdict and diagnosis are dropped. The score is never
- * the grader's.
+ * A multiple-choice item Scholar scored from the frozen key. Older model turns may
+ * still send a result, but neither its score nor its feedback can replace Scholar's.
  */
 function scholarScoredResult(question: ExamQuestion, score: ChoiceScore, supplied: Record<string, unknown> | undefined): { result: ExamItemResult; overridden: boolean } {
   const base = { questionId: question.id, outcome: score.outcome, earnedPoints: score.earnedPoints, maxPoints: question.maxPoints };
   const agrees = Boolean(supplied) && supplied!.outcome === score.outcome && typeof supplied!.earnedPoints === "number"
     && Math.abs(supplied!.earnedPoints - score.earnedPoints) <= 1e-7 * Math.max(1, question.maxPoints);
-  // Absence is not evidence of a misconception: a blank keeps its fixed note, whatever a grader wrote.
-  if (score.outcome === "unanswered") return { result: { ...base, feedback: UNANSWERED_FEEDBACK }, overridden: Boolean(supplied) && !agrees };
-  const note = typeof supplied?.feedback === "string" ? supplied.feedback.trim() : "";
-  if (!supplied || !note) return { result: { ...base, feedback: choiceFeedback(question, score) }, overridden: Boolean(supplied) && !agrees };
-  if (!agrees) {
-    return { result: { ...base, feedback: `Scored from the frozen answer key as ${score.outcome}; the grader's differing verdict was not applied. Grader's note: ${note}` }, overridden: true };
-  }
-  const result: ExamItemResult = { ...base, feedback: note };
-  for (const field of ADVISORY_FIELDS) {
-    const value = supplied[field];
-    if (typeof value === "string" && value.trim()) result[field] = value.trim();
-  }
-  return { result, overridden: false };
+  return { result: { ...base, feedback: choiceFeedback(question, score) }, overridden: Boolean(supplied) && !agrees };
 }
 
 export async function handleExamGrade(
@@ -171,9 +157,8 @@ export async function handleExamGrade(
   const unknown = supplied.filter((item) => typeof item.questionId !== "string" || !known.has(item.questionId)).map((item) => idName(item.questionId));
   const missing = exam.questions.filter((question) => !scores.has(question.id) && !counts.has(question.id));
   if (missing.length || unknown.length) {
-    const unreadableChoice = missing.some((question) => question.format === "multiple-choice");
     throw new Error([
-      ...(missing.length ? [`Missing result for ${missing.map((question) => question.id).join(", ")}. exam_grade requires exactly one unique result for every item that needs judgment: each written response${unreadableChoice ? " and each multiple-choice answer that is not a clean option value" : ""}. Scholar scores clean multiple-choice answers from the frozen key.`] : []),
+      ...(missing.length ? [`Missing result for ${missing.map((question) => question.id).join(", ")}. exam_grade requires exactly one unique result for every written response. Scholar scores multiple-choice answers from the frozen key.`] : []),
       ...(unknown.length ? [`itemResults name no frozen question: ${unknown.join(", ")}.`] : []),
     ].join(" "));
   }

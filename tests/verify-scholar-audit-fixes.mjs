@@ -144,11 +144,18 @@ check("BUG-06 a missing result names the question instead of a TypeError",
   breakdownMessage || "no error");
 
 // ======================================== BUG-07: non-finite exam scores ====
+// Written answers still rely on a grader's numeric score. Multiple-choice scores
+// now come from Scholar's frozen answer key and ignore model-supplied numbers.
+const writtenQuestion = {
+  id: "q1", sectionIds: ["c1s1"], claim: "c", requiredEvidence: ["e"], dimensions: ["d"],
+  format: "open", prompt: "Explain the model.", explanation: "The model follows from the source.",
+  rubric: [{ id: "r1", criterion: "Explains the model", requiredEvidence: ["e"], points: 2 }], maxPoints: 2,
+};
 const submitted = {
   ...book,
   exams: [{
-    ...book.exams[0], status: "submitted", questions: [question], maxPoints: 2,
-    rawResponses: [{ questionId: "q1", response: "a" }],
+    ...book.exams[0], status: "submitted", questions: [writtenQuestion], maxPoints: 2,
+    rawResponses: [{ questionId: "q1", response: "A written explanation" }],
   }],
 };
 for (const [label, earned] of [["NaN", Number.NaN], ["Infinity", Number.POSITIVE_INFINITY]]) {

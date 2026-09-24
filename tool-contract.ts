@@ -233,7 +233,7 @@ export const ScholarParams = Type.Object({
   // Runtime validation requires one unique result for every item that needs judgment;
   // Scholar scores clean multiple-choice answers from the frozen key.
   itemResults: Type.Optional(Type.Array(ExamItemResultSchema, {
-    description: "One result per written (open-response) question. Scholar scores multiple-choice answers from the frozen key; a result for one is optional and can add feedback but never changes its score. Omit or send [] when every item is multiple choice.",
+    description: "One result per written (open-response) question. Scholar scores multiple-choice answers from the frozen key; any result sent for one is ignored. Omit or send [] when every item is multiple choice.",
   })),
 });
 

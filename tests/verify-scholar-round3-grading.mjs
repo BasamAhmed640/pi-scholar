@@ -18,6 +18,7 @@ const jiti = createJiti(import.meta.url, { moduleCache: false, alias: { ...sdkAl
 const extension = dirname(process.env.PI_SCHOLAR_EXTENSION || packagedExtensionPath);
 const mod = (path) => jiti.import(join(extension, path));
 const { handleExamGrade } = await mod("tool-actions/exam.ts");
+const { gradingPacket, scoreChoiceItem } = await mod("exam.ts");
 const { createScholarToolController } = await mod("tool-controller.ts");
 const { ScholarRuntimeSession } = await mod("runtime-session.ts");
 const { isScholarBook, scholarBookIssues } = await mod("state-schema.ts");
@@ -47,6 +48,17 @@ function fixture() {
   };
 }
 const correct = (fields = {}) => ({ questionId: "q1", outcome: "correct", earnedPoints: 2, maxPoints: 2, feedback: " Explains the relation. ", ...fields });
+function mcFixture(response, correctAnswer = "b") {
+  const book = fixture();
+  const exam = book.exams[0];
+  exam.questions = [{ id: "q1", sectionIds: ["s1"], dimensions: ["model selection"], claim: "Chooses the model",
+    requiredEvidence: ["recognizes propagation"], format: "multiple-choice", prompt: "Which model applies?",
+    options: [{ value: "a", label: "Lumped", misconception: "ignores propagation" },
+      { value: "b", label: "Transmission line" }, { value: "c", label: "Distributed RC" }],
+    correctAnswer, explanation: "The propagation delay requires a transmission-line model.", maxPoints: 2 }];
+  exam.rawResponses = [{ questionId: "q1", response }];
+  return book;
+}
 const toolResult = (action, summary, details = {}) => ({ content: [{ type: "text", text: summary }], details: { action, summary, ...details } });
 
 function harness(initial = fixture()) {
@@ -135,6 +147,44 @@ try {
     const h = harness();
     await h.grade([correct({ maxPoints: 2 + Number.EPSILON * 2 })]);
     assert.equal(h.stored.exams[0].itemResults[0].maxPoints, 2);
+  });
+  for (const [name, response, outcome, points] of [
+    ["correct choice", "B", "correct", 2],
+    ["wrong choice", "a", "incorrect", 0],
+    ["blank choice", "", "unanswered", 0],
+    ["unrecognized legacy answer", "Maybe b?", "incorrect", 0],
+  ]) {
+    await check(`Scholar grades ${name} from the frozen key without a model result`, async () => {
+      const h = harness(mcFixture(response));
+      assert.match(gradingPacket(h.stored.exams[0]), /no itemResults/);
+      await h.grade([]);
+      const result = h.stored.exams[0].itemResults[0];
+      assert.equal(result.outcome, outcome);
+      assert.equal(result.earnedPoints, points);
+      assert.equal(h.stored.exams[0].percent, points / 2 * 100);
+      assert.equal(h.mutations, 1);
+      if (name === "unrecognized legacy answer") assert.match(result.feedback, /did not match a listed choice/);
+    });
+  }
+  await check("a model verdict and feedback cannot replace Scholar's multiple-choice grade", async () => {
+    const h = harness(mcFixture("a"));
+    await h.grade([correct({ feedback: "The learner is completely right." })]);
+    const result = h.stored.exams[0].itemResults[0];
+    assert.equal(result.outcome, "incorrect");
+    assert.equal(result.earnedPoints, 0);
+    assert.match(result.feedback, /ignores propagation/);
+    assert.doesNotMatch(result.feedback, /completely right/);
+  });
+  await check("select-all choice scoring requires the exact frozen set", () => {
+    const question = mcFixture("b, c", ["b", "c"]).exams[0].questions[0];
+    assert.equal(scoreChoiceItem(question, "b, c").outcome, "correct");
+    assert.equal(scoreChoiceItem(question, "b").outcome, "incorrect");
+    assert.equal(scoreChoiceItem(question, "a, b, c").outcome, "incorrect");
+  });
+  await check("a corrupt frozen choice key stops grading before mutation", async () => {
+    const h = harness(mcFixture("b", "missing"));
+    await assert.rejects(() => h.grade([]), /invalid frozen answer key/);
+    assert.equal(h.mutations, 0);
   });
   await check("controller returns actionable retry, not error, and accepts correction", async () => {
     const h = harness();
