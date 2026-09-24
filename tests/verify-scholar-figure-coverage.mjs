@@ -142,7 +142,10 @@ try {
         ...snapshots.map(snapshot => ({ id: `figure-${snapshot.id}`, kind: "figure", description: "Walk through the source diagram's directed connections", sourcePages: [snapshot.page],
           objective: "Explain the physical model", lessonId: "physical-model", evidence: figureExplanation, snapshotId: snapshot.id }))],
       lesson: { id: "physical-model", title: "Following causes through a model", markdown: ["### Following causes through a model", explanation,
+        "[[scholar-diagram:causal-path]]",
         ...snapshots.map(snapshot => `[[scholar-figure:${snapshot.id}]]`), figureExplanation].join("\n\n"),
+        diagrams: [{ id: "causal-path", title: "Causal path", kind: "flowchart", mermaid: "flowchart TD\nInput[Design input] --> Output[Measured behavior]",
+          takeaway: "Trace each design input toward the observed result.", sourcePages: [sourcePages[0]] }],
         objectives: ["Explain the physical model"], keyPoints: ["The model connects physical causes to observable behavior."], sourcePages },
       lessonComplete: true, ...(figureReviews ? { figureReviews } : {}) };
   };

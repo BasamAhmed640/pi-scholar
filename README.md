@@ -48,6 +48,27 @@ different surfaces.
 
 ## Installation
 
+### Reliable, visual study flow (0.8.0)
+
+Learn saves a short set of lesson units with a Mermaid diagram in every new
+section. Each source system, workflow, or sequence has its own diagram tied to
+explanatory text and source pages. Five mastery questions can be prepared in one
+turn; each answer is saved before the next question opens, and feedback appears
+without another model turn. Pending sets resume after interruption.
+
+Lesson review runs while teaching continues. At delivery, Scholar waits at most
+45 seconds for the current review, allows one repair round, and then accepts a
+lesson that passes its deterministic coverage gates even if review fails. Exam
+form review has a 60-second wait. Question review is one 30-second, fail-open
+check for a Learn mastery set or open assessment, not a wait before each item.
+
+New exams normally contain 4–12 items, with a hard maximum of 16. Multiple
+choice answers are scored by code against the frozen key; only written answers
+need model grading. Tutor starts with a short probe, maps a learning path, then
+teaches and checks one step at a time. Tutor may consult bounded HTTPS sources
+for fact checking, clearly labeled as external material in its note. PDF content
+remains the basis for graded Tutor questions.
+
 ### Independent review restored (0.7.1)
 
 Learn lesson and Tutor explanation revisions are audited once, as they are saved, while the author continues working; proposed questions are inspected before they are shown, and the Exam form before it freezes. Each audit uses the current Pi model at a fixed low reviewer reasoning level.
@@ -492,7 +513,7 @@ progress and reconciles qualifying unfinished sections. Answers, grades, teachin
 receipts, and exam records are preserved; no credit is inferred from question text.
 The repaired state persists with the next ordinary save.
 
-The last unanswered Learn or Tutor question resumes before new questions. Its
+The last unanswered Learn or Tutor question set resumes before new questions. Its
 prompt and choices are read from the actual note. Same-note details preserve the
 choice order and grading contract before the picker opens. Esc, unavailable UI,
 or ending Pi leaves it pending; submission resolves it once. An older cancelled
@@ -525,12 +546,11 @@ hidden answer markers intact. Older text-entry papers still work without convers
 Save your edits, then run `/scholar exam "exam-001" submit` in Pi.
 Both named submission and `/scholar exam submit` show a confirmation with the
 answered/blank count. Changed files require a fresh confirmation.
-New exams contain at least one question, with no fixed question-count cap for
-generation or grading. Choose the length for concept coverage, using distinct
-probes for important concepts rather than redundant questions. Existing frozen
-exams keep their original questions. Model context/output limits and the 1 MiB
-answer-paper safety limit still apply; removing the count cap does not guarantee
-that an arbitrarily large exam can be generated in one turn.
+New exams contain at least one question and at most 16; 4–12 is the normal
+target. Choose the length for concept coverage, using distinct probes for
+important concepts rather than redundant questions. Existing frozen exams keep
+their original questions. Model context/output limits and the 1 MiB answer-paper
+safety limit still apply.
 
 Question-engine standards are enforced mechanically when a form is frozen, so a
 weak exam cannot be saved: at least three genuinely plausible options per

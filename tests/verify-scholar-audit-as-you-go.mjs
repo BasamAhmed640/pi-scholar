@@ -170,10 +170,13 @@ function harness(caseId, mode = "learn", waitOverrides = {}) {
   };
 }
 
-const lessonInput = id => ({ id, title: "Travel time from a constant speed", markdown: lessonMarkdown,
+const withDiagram = markdown => `${markdown}\n\n[[scholar-diagram:time-path]]`;
+const lessonInput = id => ({ id, title: "Travel time from a constant speed", markdown: withDiagram(lessonMarkdown),
+  diagrams: [{ id: "time-path", title: "Travel-time relation", kind: "flowchart",
+    mermaid: "flowchart TD\nLength[Path length] --> Time[Travel time]", takeaway: "At fixed speed, a longer path takes more time.", sourcePages: [1] }],
   objectives: [objective], keyPoints: [keyPoint], sourcePages: [1] });
 const objectiveGap = { action: "notes", synthesis: "An unreviewed recap that must not persist.",
-  lesson: { ...lessonInput("second-explanation"), markdown: lessonMarkdown.replace("A model connects", "A different model connects") },
+  lesson: { ...lessonInput("second-explanation"), markdown: withDiagram(lessonMarkdown.replace("A model connects", "A different model connects")) },
   coverageUpdates: [{ id: "unknown-item", evidence: "A model connects an input to an observable result." }] };
 const textOf = result => result.content.map(item => item.type === "text" ? item.text : "").join("\n");
 const keysIn = text => [...new Set([...text.matchAll(/\[F-([0-9a-f]{12})\]/g)].map(match => match[1]))];
@@ -370,7 +373,7 @@ await check("a used lesson repair round never waits for a new revision's audit",
   assert.equal(first.details.tone, "review", textOf(first));
   h.hold();
   const oldHash = lesson.lessonHash(h.section.transcript[0].markdown);
-  const revised = { ...lessonInput("fixture-explanation"), markdown: `${lessonMarkdown}\n\nAt a fixed speed, the length changes while the speed stays constant.`,
+  const revised = { ...lessonInput("fixture-explanation"), markdown: withDiagram(`${lessonMarkdown}\n\nAt a fixed speed, the length changes while the speed stays constant.`),
     expectedContentHash: oldHash };
   const save = await h.execute({ action: "notes", lesson: revised });
   assert.ok(!["review", "error", "retry"].includes(save.details.tone), textOf(save));
@@ -395,7 +398,7 @@ await check("a tool result with nothing to deliver performs no delivery book loa
 
   h.auto(() => blocking);
   await h.execute({ action: "notes", lesson: { ...lessonInput("second-explanation"),
-    markdown: lessonMarkdown.replace("A model connects", "A different model connects") } });
+    markdown: withDiagram(lessonMarkdown.replace("A model connects", "A different model connects")) } });
   await h.wait(() => h.reviews().length === 4);
   const before = h.bookLoads();
   const next = await h.execute({ action: "read", startPage: 1, endPage: 1 });

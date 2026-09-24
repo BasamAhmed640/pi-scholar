@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lessonHash, lessonCoverageIssues, commitLesson, learnReviewHash, lessonReady, lessonReviewUnits, tutorReviewUnits, type LessonReviewUnit } from "./lesson.ts";
+import { lessonHash, lessonCoverageIssues, lessonDiagramIssues, commitLesson, learnReviewHash, lessonReady, lessonReviewUnits, tutorReviewUnits, type LessonReviewUnit } from "./lesson.ts";
 import { planLessonUnitPackets, reviewCheckpoint, reviewLearnQuestion, type LessonReviewRole } from "./learn-review.ts";
 import { reviewerModelName, runReviewPass, planExamReviewPackets, planTutorExplanationPacket, reviewTargetQuestion, currentReviewSnapshots, type ReviewPacket, type ReviewPacketRole } from "./review-layer.ts";
 import { computeFindingKey, isFindingResponse, pruneReviewReceipts, reviewUnitIssues, unitBlockingFindings, unitReviewFailures, type ReviewBatchPass, type ReviewFailure, type ReviewFinding, type ReviewReceipt, type ReviewRole, type UnitReviewFinding } from "./learn-quality.ts";
@@ -1033,7 +1033,7 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
             const section = requireLearnSection(draft);
             const activation = session.state;
             const generation = transientGeneration;
-            const issues = lessonCoverageIssues(section, draft.source.fingerprint.sha256);
+            const issues = [...lessonCoverageIssues(section, draft.source.fingerprint.sha256), ...lessonDiagramIssues(section, draft.source.fingerprint.sha256)];
             if (issues.length) {
               const rejected = (prereviewRejections.get(section.id) || 0) + 1;
               prereviewRejections.set(section.id, rejected);
@@ -1083,7 +1083,7 @@ export function createScholarToolController(ports: ScholarToolControllerPorts): 
               // author needs a repair path, not a review result nobody produced.
               const discarded = units.filter(unit => discardedAudits.get(`${state.id}\u0000${unit.key}`) === unit.revision
                 && !unitAudited(receipts, unit, commitSourceHash)).map(unit => unit.key);
-              const gaps = lessonCoverageIssues(owner, commitSourceHash);
+              const gaps = [...lessonCoverageIssues(owner, commitSourceHash), ...lessonDiagramIssues(owner, commitSourceHash)];
               const roundUsed = Boolean(quality?.responses?.length) || usedRounds.has(roundKey);
               const blockForRepair = findings.length > 0 && !roundUsed;
               if (!gaps.length && !drifted.length && !blockForRepair) {

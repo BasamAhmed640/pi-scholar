@@ -677,7 +677,7 @@ try {
   const sourceView = await scholarTool.execute("input-lock-source-view", { action: "view", page: 1 }, undefined, undefined, readySelected.ctx);
   assert.equal(sourceView.details?.action, "view", JSON.stringify(sourceView.content));
 
-  const lessonMarkdown = "### Editor ownership during a Scholar turn\n\nScholar owns the editor while its response is running. Typed input waits in the locked editor until the turn settles, then returns to the ordinary editor.";
+  const lessonMarkdown = "### Editor ownership during a Scholar turn\n\nScholar owns the editor while its response is running. Typed input waits in the locked editor until the turn settles, then returns to the ordinary editor.\n\n[[scholar-diagram:editor-flow]]";
   const notesResult = await scholarTool.execute("input-lock-lesson", {
     action: "notes",
     sectionId: "chapter-001-section-001",
@@ -695,6 +695,8 @@ try {
     lesson: { id: "editor-ownership-explanation", title: "Editor ownership during a Scholar turn",
       objectives: ["Explain editor ownership during a Scholar turn"],
       keyPoints: ["The locked editor keeps typed input from interrupting a Scholar response."], sourcePages: [1],
+      diagrams: [{ id: "editor-flow", title: "Editor handoff", kind: "flowchart", mermaid: "flowchart TD\nScholar[Scholar turn] --> Locked[Locked editor] --> Ordinary[Ordinary editor]",
+        takeaway: "Input returns to the ordinary editor after the Scholar turn settles.", sourcePages: [1] }],
       markdown: lessonMarkdown },
     lessonComplete: true,
   }, undefined, undefined, readySelected.ctx);

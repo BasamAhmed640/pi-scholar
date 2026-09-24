@@ -72,7 +72,9 @@ const input = (id = "unit", withDiagram = true) => ({ id, title: "Feedback", obj
 let { section, book } = fixture();
 lesson.saveLesson(section, book, input());
 assert.deepEqual(section.transcript[0].lesson.diagramIds, ["feedback"]);
-assert.deepEqual(lesson.lessonDiagramIssues(section), []);
+assert.deepEqual(lesson.lessonDiagramIssues(section, sourceHash), []);
+assert.equal(lesson.lessonDiagramIssues(section, "b".repeat(64)).length, 1,
+  "a diagram from a prior source cannot satisfy a new-source commit");
 assert.equal(lesson.isLessonReceipt(section.transcript[0].lesson), true);
 assert.deepEqual(readTranscript(transcriptBlock(section.transcript))[0].lesson.diagramIds, ["feedback"], "visible-note round trips retain optional diagram receipts");
 const old = section.transcript[0].markdown.match(/^> \[!scholar-diagram\][^\n]*(?:\n>[^\n]*)*/m)[0];
@@ -85,7 +87,7 @@ assert.throws(() => lesson.patchLesson(section, book, { id: "unit", expectedCont
   calloutEdits: [{ oldText: section.transcript[0].markdown.match(/^> \[!scholar-diagram\][^\n]*(?:\n>[^\n]*)*/m)[0], diagram: makeDiagram("other") }] }), /preserve the ID/);
 const legacy = fixture();
 lesson.saveLesson(legacy.section, legacy.book, input("legacy", false));
-assert.equal(lesson.lessonDiagramIssues(legacy.section).length, 1);
+assert.equal(lesson.lessonDiagramIssues(legacy.section, sourceHash).length, 1);
 console.log("[PASS] saved receipts bind diagram IDs and same-ID callout repairs; the new quota remains a separate commit precheck");
 
 const coverageBase = { id: "system", kind: "system", description: "Feedback system", sourcePages: [1],

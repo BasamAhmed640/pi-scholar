@@ -61,7 +61,7 @@ const lessonMarkdown = [
   "Use the relation on the cited source page to predict which output changes when the input changes.",
 ].join("\n");
 
-function fixture(caseId) {
+function fixture(caseId, withDiagram = true) {
   const libraryRoot = join(root, `${caseId}-library`);
   const sourcePath = join(libraryRoot, "travel-time.pdf");
   mkdirSync(libraryRoot, { recursive: true });
@@ -88,12 +88,16 @@ function fixture(caseId) {
     currentSectionId: "s1", exams: [], tutorSessions: [], noteDirectory: "Simple Learn fixture", createdAt: now, updatedAt: now,
   };
   // The section starts uncommitted: only the review crew may approve it.
-  saveFixtureLesson(lesson, book, section, { commit: false, markdown: lessonMarkdown });
+  saveFixtureLesson(lesson, book, section, { commit: false,
+    markdown: withDiagram ? `${lessonMarkdown}\n\n[[scholar-diagram:time-relation]]` : lessonMarkdown,
+    ...(withDiagram ? { diagrams: [{ id: "time-relation", title: "Travel time at fixed speed", kind: "flowchart",
+      mermaid: "flowchart TD\nLength[Path length] --> Time[Travel time]",
+      takeaway: "At fixed speed, a longer path takes more time.", sourcePages: [1] }] } : {}) });
   return book;
 }
 
-function harness(caseId, decide = () => ({ status: "pass", findings: [] })) {
-  const book = fixture(caseId);
+function harness(caseId, decide = () => ({ status: "pass", findings: [] }), withDiagram = true) {
+  const book = fixture(caseId, withDiagram);
   const session = new ScholarRuntimeSession();
   session.activate(book.id, "learn", "s1");
   let definition, nextCall = 0;
@@ -130,6 +134,14 @@ async function check(name, test) {
   try { await test(); passed++; console.log(`[PASS] ${name}`); }
   catch (error) { failed++; console.error(`[FAIL] ${name}: ${error.stack || error.message}`); }
 }
+
+await check("new Learn delivery rejects a missing diagram before review", async () => {
+  const h = harness("diagram-gate", () => ({ status: "pass", findings: [] }), false);
+  const result = await h.execute({ action: "notes", lessonComplete: true });
+  assert.equal(result.details.tone, "retry");
+  assert.match(result.content[0].text, /at least one relevant Mermaid diagram/);
+  assert.equal(h.section.lessonCommit, undefined);
+});
 
 await check("lessonComplete commits after every saved unit's source and teaching audits", async () => {
   const h = harness("commit");

@@ -8,7 +8,7 @@ none requires another to be completed first.
 
 ```bash
 npm ci --ignore-scripts     # uses the committed npm-shrinkwrap.json
-npm test                    # 58 verifiers; currently all pass
+npm test                    # run every packaged verifier
 npm run test:list           # list checks without loading Pi
 npm run test:preflight      # confirm Pi SDK + test deps import
 npm run pack:check          # preview the npm archive file list
@@ -31,6 +31,14 @@ will bury real defects in noise.
 - **Approval is hash-bound.** The hash covers lesson, coverage, recap,
   assessment plan, and figure metadata. Any content change invalidates approval
   — that is intended, not a bug to route around.
+- **Legacy notes keep their status.** Apply the new diagram quota only when the
+  controller commits a new Learn lesson. Never put it in readiness, replay,
+  migration, or completion calculations for old sections.
+- **Quiz sets persist each answer before advancing.** An answer is recorded by
+  the awaited quiz host; event hooks are only idempotent backstops. Every item
+  in a set has its own stable attempt ID and shares a set ID.
+- **Exam multiple choice grades are deterministic.** Compare the frozen key to
+  the submitted options in code; the model judges written responses only.
 - Audit-as-you-go; one audit pass per saved unit revision; no re-review of unchanged work. Delivery remains controller-owned and hash-bound.
 - **Modes are isolated.** They share the PDF and its validated outline, never
   each other's learner history. A Tutor answer must not move Learn progress;
@@ -63,8 +71,8 @@ will bury real defects in noise.
 |---|---|
 | Entry / commands | `index.ts`, `commands.ts`, `command-syntax.ts`, `modes.ts` |
 | Teach | `policies.ts` (engine contracts), `lesson.ts`, `lesson-figures.ts` |
-| Question | `quiz.ts`, `quiz-contract.ts`, `exam.ts`, `exam-paper.ts` |
-| Presentation | `render/`, `scholar.css`, `equation-presentation.ts` |
+| Question | `quiz.ts`, `quiz-host.ts`, `quiz-contract.ts`, `exam.ts`, `exam-paper.ts` |
+| Presentation | `render/`, `scholar.css`, `equation-presentation.ts`, `diagram-presentation.ts` |
 | Review | `review-layer.ts`, `review-runtime.ts`, `learn-review.ts`, `learn-quality.ts` |
 | Contract / state | `tool-controller.ts`, `tool-contract.ts`, `state-schema.ts`, `runtime-coordinator.ts` |
 | Obsidian | `obsidian.ts`, `obsidian-paths.ts`, `note-records.ts`, `note-storage.ts` |

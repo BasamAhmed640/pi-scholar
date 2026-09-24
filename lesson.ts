@@ -348,8 +348,8 @@ export function lessonCoverageIssues(section: ScholarSection, sourceHash?: strin
 }
 
 /** New Learn preparations need a diagram; legacy committed sections are not re-gated. */
-export function lessonDiagramIssues(section: ScholarSection): string[] {
-  return validLessonEntries(section).some(entry => {
+export function lessonDiagramIssues(section: ScholarSection, sourceHash: string): string[] {
+  return validLessonEntries(section, sourceHash).some(entry => {
     const ids = entry.lesson?.diagramIds || [];
     return ids.length > 0 && (entry.markdown.match(/^> \[!scholar-diagram\] Diagram · /gm) || []).length === ids.length;
   })
