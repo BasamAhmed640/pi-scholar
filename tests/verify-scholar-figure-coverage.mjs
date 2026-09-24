@@ -72,11 +72,13 @@ try {
   // The production writer serializes its mutations; the audit's receipt/checkpoint writes run
   // beside authoring, so this fixture must too. An unqueued writer races on the book revision.
   let writeChain = Promise.resolve();
+  let writes = 0;
   const mutateBook = (bookId, mutate) => {
     const run = writeChain.then(async () => {
       const book = await load(), revision = book.revision;
       const result = await mutate(book);
       await storage.saveBookState(config, book, revision);
+      writes++;
       return { book: await load(), result };
     });
     writeChain = run.then(() => undefined, () => undefined);
@@ -196,6 +198,22 @@ try {
     assert.match(result.content[0].text, /View this active Learn page/);
     successful(await execute({ action: "view", page: 1 }));
     successful(await execute({ action: "view", page: 2 }));
+  });
+  await check("a multi-page view renders each page and saves all receipts in one mutation", async () => {
+    await mutateBook(initial.id, state => {
+      for (const page of active(state).figureCoverage.pages) delete page.viewed;
+    });
+    const before = writes;
+    const result = await execute({ action: "view", startPage: 1, endPage: 2 });
+    successful(result);
+    assert.equal(result.content.filter(item => item.type === "image").length, 2);
+    assert.match(result.content.find(item => item.type === "text" && item.text.startsWith("PDF page 1:"))?.text || "", /\d+x\d+ intrinsic pixels/);
+    assert.match(result.content.find(item => item.type === "text" && item.text.startsWith("PDF page 2:"))?.text || "", /\d+x\d+ intrinsic pixels/);
+    assert.equal(writes - before, 1, "the range has one durable Learn receipt mutation");
+    assert.deepEqual(active(await load()).figureCoverage.pages.filter(page => page.viewed).map(page => page.page), [1, 2]);
+    const oversized = await execute({ action: "view", startPage: 1, endPage: 5 });
+    assert.equal(oversized.details.tone, "retry");
+    assert.match(oversized.content[0].text, /at most four pages/);
   });
   await check("a known source figure cannot be omitted from a reviewed page", async () => {
     const result = await execute(notes([noFigures(1), noFigures(2)]));

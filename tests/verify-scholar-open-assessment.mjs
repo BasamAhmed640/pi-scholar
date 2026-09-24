@@ -166,10 +166,8 @@ gate.capture(book, session, "", "interactive", photos); gate.clear();
 gate.beginTurn(book, session, "", photos);
 await assert.rejects(evaluate(), /no learner response/);
 
-// Preparing an open question runs exactly one assessment review; a changes verdict
-// refuses the question before the learner sees it. A saved Tutor explanation is
-// reviewed once first, which is the production order that creates the session's
-// review record.
+// Tutor open questions use deterministic gates without a model review. A saved
+// Tutor explanation is still audited beside authoring.
 {
   const folder = await mkdtemp(join(tmpdir(), "scholar-open-assessment-"));
   try {
@@ -220,21 +218,21 @@ await assert.rejects(evaluate(), /no learner response/);
 
     const approved = await prepareQuestion("question-approved", question);
     assert.ok(!["review", "error", "retry"].includes(approved.details.tone), approved.content[0].text);
-    assert.equal(requests.filter(item => item === "assessment-review").length, 1, "preparing a question runs exactly one assessment review");
+    assert.equal(requests.filter(item => item === "assessment-review").length, 0, "Tutor questions have no pre-presentation model review");
     assert.equal(target().attempts.length, 1);
     assert.equal(target().attempts[0].outcome, "pending");
 
     const refused = await prepareQuestion("question-refused", "How does the delay change when the path length doubles?");
     assert.ok(["review", "error", "retry"].includes(refused.details.tone), refused.content[0].text);
-    assert.match(refused.content[0].text, /Repair the proposed question/);
-    assert.equal(requests.filter(item => item === "assessment-review").length, 2, "each question is reviewed once");
-    assert.deepEqual(shapes, [{ tools: 0, messages: 2 }, { tools: 0, messages: 2 }], "a question review is one prepared request with no tool loop");
+    assert.match(refused.content[0].text, /pending|unanswered|already shown/i);
+    assert.equal(requests.filter(item => item === "assessment-review").length, 0, "a refused replacement also invokes no reviewer");
+    assert.deepEqual(shapes, []);
     assert.equal(target().attempts.length, 1, "a refused question is never shown to the learner");
   } finally {
     await rm(folder, { recursive: true, force: true });
   }
 }
-console.log("[PASS] a saved Tutor explanation is reviewed once, preparing a question runs exactly one assessment review, and a changes verdict refuses it");
+console.log("[PASS] a saved Tutor explanation is reviewed once; Tutor open questions use deterministic gates without a model reviewer");
 
 // While a Learn section's lesson is still being prepared, a brand-new question is
 // refused with the shared preparation message, but the learner is not trapped: an

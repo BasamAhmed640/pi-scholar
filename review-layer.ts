@@ -73,7 +73,7 @@ export function currentReviewSnapshots(section: import("./types.ts").ScholarSect
   return (section.snapshots || []).filter(snapshot => ids.has(snapshot.id));
 }
 
-export const REVIEW_CONCURRENCY = 12;
+export const REVIEW_CONCURRENCY = 4;
 /** Reviewers never inherit the learner's reasoning level: an audit is deliberately a
  * shallow, fast second pass over evidence, not a second attempt at the lesson. */
 export const REVIEWER_THINKING_LEVEL = "low" as const;
@@ -83,7 +83,7 @@ export const REVIEW_INSTRUCTIONS: Record<ReviewRole, string> = {
   source: `Compare the ENTIRE scoped source against the lesson and its sourceCoverage checklist. Independently identify missing essential content even if the author omitted it from the checklist. Check definitions, derivations, boundary conditions, assumptions, worked examples and counterexamples. Check the actual saved explanation, not objective labels. Reject misleading generalizations and recap inaccuracies. Cite exact source pages and the missing or incorrect passage. Complete source reading is required before a pass. Distinguish the section's actual explanations from exercises assigned to the reader and prerequisites covered earlier; do not require solutions to every exercise or rederivation of earlier chapters. Check any added worked application for correctness and attribution. Report at most six blocking findings, the most consequential first; a short list of real defects is worth more than an exhaustive one.`,
   teaching: `Evaluate the lesson as instruction for an intelligent adult learning this material, not a compressed summary for an expert. Require unfamiliar technical terms and symbols to be explained at first meaningful use; motivation, intermediate reasoning and assumptions at difficult steps; examples or figure walkthroughs where they carry the explanation. Reject a wall of facts, unexplained jumps, unhelpful analogies or a gallery replacing explanation. Trace the hardest transitions yourself: can a learner obtain the next equation from the stated components, signs, substitutions and assumptions? For each blocking finding name the exact passage and missing connection and give a concrete repair, not "add detail". A named figure or term is not an explanation. Distinguish a brief prerequisite reminder from re-teaching whole earlier chapters; exercise solutions and optional enrichment are not mandatory. Check physical-meaning sentences, unchanged quantities and limiting cases, not just formulas. Do not demand a word count, an analogy per topic or arbitrary boxes. Review the objectiveChecks plan: require reasoning/calculation where the source teaches it, and reject all-four-checks-per-objective busywork when not justified. Report at most six blocking findings, the most consequential first; a short list of real defects is worth more than an exhaustive one.`,
   visual: `Inspect every saved crop listed below against the source text and figure inventory you were given. Check complete arrows, axis labels, units, signs, legends, geometry and limiting behavior. Compare each caption and adjacent explanation against what the image actually shows; work out simple sign or limit checks when relevant. Central equations must appear in expanded native Key equation callouts with definitions, assumptions and meaning; intermediate algebra may remain outside boxes. Reject raw/broken LaTeX, inconsistent vector notation, incorrect equations and decorative or misleading diagrams. Judge each crop on the evidence you have: you cannot see the full page, so report a suspected crop edge as advice unless the crop itself hides required content. Do not claim to inspect the Obsidian application: you see its saved Markdown and image assets. Report at most six blocking findings, the most consequential first; a short list of real defects is worth more than an exhaustive one.`,
-  assessment: `Review this frozen proposed question BEFORE the learner sees it. Check the source and taught lesson, focused grounding, appropriate check kind, unambiguous wording, unique correct answer (or exact multi-select set), calculation/units, fair distractors and a sufficient grading rubric. Inspect every option description and prompt/context for answer cues; a unique explanatory hint on the correct option is a defect. Diagnostic questions may probe prerequisites before teaching, but cannot claim mastery. Practice on a completed section must not add earned-progress requirements. Reject unexplained new terminology and unsupported demands. Never alter the grading key; return concrete repairs to the author. Report at most six blocking findings, the most consequential first; a short list of real defects is worth more than an exhaustive one.`,
+  assessment: `Review the frozen proposed question or question set BEFORE the learner sees it. For a set, identify each defective item by its question number in the finding target. Check the source and taught lesson, focused grounding, one learning objective per item, appropriate check kind, unambiguous wording, unique correct answer (or exact multi-select set), calculation/units, fair misconception distractors and useful explanatory feedback or rubric. Inspect every option description and prompt/context for answer cues; a unique explanatory hint on the correct option is a defect. Diagnostic questions may probe prerequisites before teaching, but cannot claim mastery. Practice on a completed section must not add earned-progress requirements. Reject unexplained new terminology and unsupported demands. Never alter the grading key; return concrete repairs to the author. Report at most six blocking findings, the most consequential first; a short list of real defects is worth more than an exhaustive one.`,
 };
 
 export function blocking(issue: string, target = "review evidence"): ReviewerVerdict {
@@ -344,7 +344,7 @@ export async function reviewOne(
       figures: crops,
       figureInventory: section.figureCoverage,
     } : {}),
-    ...(question ? { proposedQuestion: question.value } : {}),
+    ...(question ? Array.isArray(question.value) ? { proposedQuestions: question.value } : { proposedQuestion: question.value } : {}),
   };
 
   try {
@@ -514,7 +514,7 @@ export async function runReviewPass(
         );
         continue;
       }
-      let result = await reviewOne(
+      const result = await reviewOne(
         {
           ...options,
           packet: item,
@@ -525,20 +525,6 @@ export async function runReviewPass(
         },
         item.role,
       );
-      // L2: retry failed packet once within the same pass
-      if (result.failure && !options.signal?.aborted) {
-        result = await reviewOne(
-          {
-            ...options,
-            packet: item,
-            assignment: item,
-            onProgress: (event) => {
-              if (event.stage !== "complete") report({ ...event, batch: finished, batches: packets.length });
-            },
-          },
-          item.role,
-        );
-      }
       const pass = result.status === "pass" && !result.failure ? { key, findings: result.findings } : undefined;
       settle(item.role, pass ? { ...result, batches: [pass] } : result, pass);
     }
@@ -631,17 +617,7 @@ export async function reviewTargetQuestion(
     // crops); it cannot pull adjacent pages, so one request replaces a 2-3 call tool loop.
     prepared: true,
   };
-  let result = await reviewOne(reviewOpts, "assessment", { value, sourcePages });
-  if (result.failure) {
-    result = await reviewOne(reviewOpts, "assessment", { value, sourcePages });
-  }
-  if (result.failure) {
-    throw new Error(`Question review incomplete (${result.failure.code}). Preserve the proposed question and resume its review: ${result.failure.message}`);
-  }
-  if (result.status !== "pass") {
-    throw new Error(`Repair the proposed question before showing it: ${result.findings.map((finding) => `${finding.target}: ${finding.issue} Repair: ${finding.repair}`).join("\n")}`);
-  }
-  return (current) => {
+  const verify = (current: ScholarSection | TutorSession) => {
     if (isSection) {
       const curSec = current as ScholarSection;
       if (!curSec.learnQuality || learnReviewHash(curSec) !== hash) {
@@ -649,5 +625,12 @@ export async function reviewTargetQuestion(
       }
     }
   };
+  const result = await reviewOne(reviewOpts, "assessment", { value, sourcePages });
+  // A reviewer execution failure is advisory. The deterministic question and
+  // grounding gates still run before anything is persisted or shown.
+  if (result.failure) return verify;
+  if (result.status !== "pass") {
+    throw new Error(`Repair the proposed question set before showing it: ${result.findings.map((finding) => `${finding.target}: ${finding.issue} Repair: ${finding.repair}`).join("\n")}`);
+  }
+  return verify;
 }
-

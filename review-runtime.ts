@@ -47,8 +47,44 @@ export type ReviewerLimits = {
   timeoutMs: number;
 };
 
-export const REVIEW_STALL_MS = 180_000;
-export const REVIEW_BACKSTOP_MS = 45 * 60_000;
+export const REVIEW_STALL_MS = 60_000;
+export const REVIEW_BACKSTOP_MS = 90_000;
+export const MAX_CONCURRENT_REVIEW_REQUESTS = 4;
+let activeReviewRequests = 0;
+const waitingReviewRequests: Array<(release: () => void) => void> = [];
+
+function releaseReviewSlot(): () => void {
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const next = waitingReviewRequests.shift();
+    if (next) next(releaseReviewSlot());
+    else activeReviewRequests--;
+  };
+}
+
+/** Shared across all modes and controller instances, including background unit audits. */
+async function reviewRequestSlot(signal: AbortSignal): Promise<() => void> {
+  if (signal.aborted) errorFromAbort(signal);
+  if (activeReviewRequests < MAX_CONCURRENT_REVIEW_REQUESTS) {
+    activeReviewRequests++;
+    return releaseReviewSlot();
+  }
+  const release = await new Promise<() => void>((resolve, reject) => {
+      const ready = (release: () => void) => { signal.removeEventListener("abort", cancelled); resolve(release); };
+      const cancelled = () => {
+        const index = waitingReviewRequests.indexOf(ready);
+        if (index >= 0) waitingReviewRequests.splice(index, 1);
+        reject(new ReviewerRunError("cancelled", "Scholar review was cancelled while waiting for a reviewer slot."));
+      };
+      waitingReviewRequests.push(ready);
+      signal.addEventListener("abort", cancelled, { once: true });
+      if (signal.aborted) cancelled();
+    });
+  if (signal.aborted) { release(); errorFromAbort(signal); }
+  return release;
+}
 /** Output allowance added on top of the verdict budget while a reviewer reasons at any level. */
 export const REVIEWER_REASONING_HEADROOM = 4_096;
 
@@ -322,6 +358,8 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
           signal, maxTokens, timeoutMs: limits.timeoutMs, maxRetries: 0, sessionId: requestSessionId, transport: "sse" as const,
           ...(sessionHeaders ? { transformHeaders: (headers: Record<string, string>) => ({ ...headers, ...sessionHeaders }) } : {}),
         };
+        const releaseSlot = await reviewRequestSlot(signal);
+        try {
         if (thinkingLevel === undefined) {
           let stallTimer: NodeJS.Timeout | undefined;
           const stallPromise = new Promise<never>((_, reject) => {
@@ -401,6 +439,9 @@ export async function runReviewer(options: ReviewerRunOptions): Promise<Reviewer
           } finally {
             if (stallTimer) clearTimeout(stallTimer);
           }
+        }
+        } finally {
+          releaseSlot();
         }
       } catch (error) {
         if (signal.aborted) errorFromAbort(signal);

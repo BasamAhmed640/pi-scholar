@@ -9,7 +9,7 @@ const jiti = createJiti(import.meta.url, {
   moduleCache: false,
   alias: sdkAliases,
 });
-const { runReviewer, ReviewerRunError, DEFAULT_REVIEWER_LIMITS, REVIEWER_REASONING_HEADROOM, REVIEW_TRUNCATION_RETRY_MESSAGE } = await jiti.import(join(dirname(extensionPath), "review-runtime.ts"));
+const { runReviewer, ReviewerRunError, DEFAULT_REVIEWER_LIMITS, MAX_CONCURRENT_REVIEW_REQUESTS, REVIEWER_REASONING_HEADROOM, REVIEW_TRUNCATION_RETRY_MESSAGE } = await jiti.import(join(dirname(extensionPath), "review-runtime.ts"));
 const { Type } = await import(pathToFileURL(resolvePiDependency("typebox")).href);
 // Use the actual SDK facade: its complete() delegates to the active runtime.
 // The injected runtime below avoids any account/model request or auth file.
@@ -359,6 +359,36 @@ await check("Parallel review contexts never share messages or tool state", async
   assert.equal(snapshots[1].messages[0].content, "Only teaching draft B");
   assert.equal(snapshots[0].tools.length, 1);
   assert.equal(snapshots[1].tools.length, 0);
+});
+
+await check("reviewer requests share one process-wide four-slot semaphore", async () => {
+  let active = 0, peak = 0, started = 0;
+  const held = [];
+  const registry = new ModelRegistry({ complete: async () => {
+    active++; started++; peak = Math.max(peak, active);
+    return new Promise(resolve => held.push(() => { active--; resolve(message()); }));
+  } });
+  const tasks = Array.from({ length: 9 }, (_, index) => runReviewer(options(undefined, {
+    modelRegistry: registry, prompt: `Review independent unit ${index}.`,
+  })));
+  const until = async predicate => {
+    const start = Date.now();
+    while (!predicate()) {
+      if (Date.now() - start > 2_000) throw new Error("Reviewer semaphore did not advance");
+      await new Promise(resolve => setTimeout(resolve, 2));
+    }
+  };
+  await until(() => started === MAX_CONCURRENT_REVIEW_REQUESTS);
+  assert.equal(active, 4);
+  assert.equal(held.length, 4);
+  for (let wave = 0; wave < 3; wave++) {
+    const release = held.splice(0);
+    release.forEach(done => done());
+    if (started < 9) await until(() => held.length > 0);
+  }
+  await Promise.all(tasks);
+  assert.equal(started, 9);
+  assert.equal(peak, MAX_CONCURRENT_REVIEW_REQUESTS);
 });
 
 await check("Invalid configuration and accounting fail before misleading completion", async () => {

@@ -702,7 +702,7 @@ try {
   await prove(
     "the saved lesson is the section's only teaching record",
     async () => {
-      assert.match(notesText, /Full lesson committed after source, teaching and visual review/);
+      assert.match(notesText, /Full lesson committed after deterministic coverage checks/);
       const savedSection = (await readFixtureBook(bookFiles[0])).chapters[0].sections[0];
       const lessonEntry = savedSection.transcript.find((entry) => entry.lesson);
       assert.ok(lessonEntry, "the explicit lesson write is the section's assistant record");

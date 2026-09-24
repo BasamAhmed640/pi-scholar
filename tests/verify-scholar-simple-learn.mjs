@@ -26,6 +26,7 @@ const loadModule = name => jiti.import(join(dirname(extensionPath), name));
 const lesson = await loadModule("lesson.ts");
 const domain = await loadModule("domain.ts");
 const { createScholarToolController } = await loadModule("tool-controller.ts");
+const { renderSection } = await loadModule("render/section.ts");
 const { reviewCheckpoint } = await loadModule("learn-review.ts");
 const { ScholarRuntimeSession } = await loadModule("runtime-session.ts");
 
@@ -155,7 +156,7 @@ await check("lessonComplete commits after every saved unit's source and teaching
   assert.ok(current.every(receipt => receipt.status === "pass" && receipt.sourceHash === currentSourceHash && receipt.failure === undefined));
   assert.equal(section.learnQuality.reviews.some(receipt => receipt.sourceHash === "b".repeat(64)), false, "a foreign-source receipt is gone");
   assert.equal(reviewCheckpoint(revision, sourceHash, { model: { id: "simple-learn", provider: "fixture" } }, "source", []).failure.code, "cancelled");
-  assert.match(result.content[0].text, /Full lesson committed after source, teaching and visual review/);
+  assert.match(result.content[0].text, /Full lesson committed after deterministic coverage checks/);
   assert.ok(section.lessonCommit, "the reviewed lesson is committed");
   assert.ok(lesson.lessonReady(section, sourceHash), "the commit satisfies the Learn delivery gate");
   assert.deepEqual(section.lessonCommit.entryIds, [section.transcript[0].id]);
@@ -179,10 +180,26 @@ await check("a blocking finding pauses the commit until the author answers, then
   const second = await h.execute({ action: "notes", lessonComplete: true,
     findingResponses: keys.map(key => ({ key, action: "fixed", note: "Qualified the proportional claim." })) });
   assert.ok(!["review", "error", "retry"].includes(second.details.tone), second.content[0].text);
-  assert.match(second.content[0].text, /Full lesson committed after source, teaching and visual review/);
+  assert.match(second.content[0].text, /Full lesson committed after deterministic coverage checks/);
   assert.equal(h.requests.length, requestsBeforeAnswer, "an answered resubmission checks responses instead of re-running the audits");
   assert.ok(h.section.lessonCommit, "the answered lesson commits");
   assert.ok(keys.every(key => (h.section.learnQuality.responses || []).some(response => response.key === key)), "every author response is stored");
+});
+
+await check("one repair round is the most a reviewer can request", async () => {
+  const h = harness("one-round", () => ({ status: "changes", findings: [{ severity: "blocking", target: "lesson-boundary / travel time", sourcePages: [1],
+    issue: "The proportional claim is not qualified.", repair: "State that the speed stays fixed." }] }));
+  const first = await h.execute({ action: "notes", lessonComplete: true });
+  assert.equal(first.details.tone, "review", first.content[0].text);
+  assert.equal(h.section.lessonCommit, undefined);
+  const requests = h.requests.length;
+  const second = await h.execute({ action: "notes", lessonComplete: true });
+  assert.ok(!["review", "error", "retry"].includes(second.details.tone), second.content[0].text);
+  assert.equal(h.requests.length, requests, "the unchanged revision was not re-audited");
+  assert.ok(lesson.lessonReady(h.section, h.book.source.fingerprint.sha256), "open review findings cannot demand another round");
+  const note = renderSection({ obsidianRoot: join(root, "one-round-vault") }, h.book, h.book.chapters[0], h.section);
+  assert.match(note, /> \[!warning\]- Reviewer notes/);
+  assert.match(note, /The proportional claim is not qualified/);
 });
 
 await check("five resolved short questions, including a cancelled one, complete the section", async () => {
