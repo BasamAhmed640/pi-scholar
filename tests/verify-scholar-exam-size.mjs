@@ -187,15 +187,15 @@ await check("legacy large-form grading rejects missing or duplicated written res
   }
 });
 
-await check("draft kickoff and policy choose useful coverage without a fixed quota", () => {
+await check("draft kickoff and policy guide concise coverage within the form cap", () => {
   const book = fixture(), kickoff = kickoffMessage(book, "exam", book.exams[0]);
   const instructions = examInstructions(book, book.exams[0]);
   for (const text of [kickoff, instructions]) {
-    assert.match(text, /no fixed question-count cap/);
-    assert.doesNotMatch(text, /1[–-]50|50 is a ceiling|too large for 50|stop at 20/);
+    assert.match(text, /4–12/);
+    assert.match(text, /16/);
   }
-  assert.match(kickoff, /as few or as many as are useful/);
-  assert.match(kickoff, /multiple distinct probes for important concepts/);
+  assert.match(kickoff, /covering every subsection and several cognitive dimensions/);
+  assert.match(instructions, /distinct problems that check understanding more than once/);
 });
 
 console.log(`\nScholar exam-size summary: ${passed} passed, ${failed} failed.`);

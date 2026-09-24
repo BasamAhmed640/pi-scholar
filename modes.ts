@@ -24,6 +24,8 @@ export type ModeCapabilities = {
   citesLearnObjectives: boolean;
   /** May select freely licensed web images as optional presentation aids. */
   usesWebImages: boolean;
+  /** May check external facts with bounded public HTTPS reads. */
+  usesWebResearch: boolean;
   /** May retain exact PDF figures in its own section, exam, or tutor record. */
   capturesSourceFigures: boolean;
   /** Materializes a section note on disk while it is the active target. */
@@ -38,6 +40,7 @@ export const MODE_CAPABILITIES: Readonly<Record<ScholarMode, Readonly<ModeCapabi
     interactiveQuestions: true,
     citesLearnObjectives: true,
     usesWebImages: false,
+    usesWebResearch: false,
     capturesSourceFigures: true,
     materializesSections: true,
   }),
@@ -48,6 +51,7 @@ export const MODE_CAPABILITIES: Readonly<Record<ScholarMode, Readonly<ModeCapabi
     interactiveQuestions: false,
     citesLearnObjectives: false,
     usesWebImages: true,
+    usesWebResearch: false,
     capturesSourceFigures: true,
     materializesSections: false,
   }),
@@ -58,6 +62,7 @@ export const MODE_CAPABILITIES: Readonly<Record<ScholarMode, Readonly<ModeCapabi
     interactiveQuestions: true,
     citesLearnObjectives: false,
     usesWebImages: true,
+    usesWebResearch: true,
     capturesSourceFigures: true,
     materializesSections: false,
   }),

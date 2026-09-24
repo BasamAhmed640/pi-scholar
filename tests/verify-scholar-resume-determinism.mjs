@@ -69,7 +69,7 @@ function fixture(config, exams) {
 }
 
 let sequence = 0;
-async function harness(label, exams) {
+async function harness(label, exams, allowCreation = false) {
   const folder = join(root, `${++sequence}-${label}`);
   const config = { schemaVersion: 3, libraryRoot: join(folder, "library"), obsidianRoot: join(folder, "vault"), stateRoot: join(folder, "bootstrap"), updatedAt: timestamp };
   await Promise.all([mkdir(config.libraryRoot, { recursive: true }), mkdir(config.obsidianRoot, { recursive: true })]);
@@ -97,7 +97,13 @@ async function harness(label, exams) {
     getScholarTurnRun: () => undefined,
     getNavigationRun: () => undefined,
     renderAll: async () => { calls.renders += 1; },
-    mutateBook: async () => { mutations.push(true); throw new Error("no exam may be created by this command"); },
+    mutateBook: async (_id, update) => {
+      if (!allowCreation) { mutations.push(true); throw new Error("no exam may be created by this command"); }
+      const state = structuredClone(book);
+      const result = await update(state);
+      mutations.push(state);
+      return { book: state, result };
+    },
     activateBook: async (activated, _ctx, mode, recordId) => { activations.push({ bookId: activated.id, mode, recordId }); },
     startScholarModeTurn: async (_activated, mode, target) => { turns.push({ mode, id: target.id }); },
     toolController: {
@@ -206,15 +212,36 @@ try {
 
   // ----------------------------------------------- 4. nothing to resume ------
   {
-    const h = await harness("nothing-to-resume", []);
+    const h = await harness("nothing-to-resume", [], true);
     await handleScholarCommand("exam", h.ctx, h.coordinator);
-    check("no unfinished exam produces a noninteractive result",
-      /No unfinished exam to resume/.test(h.lastNotice()) && h.notices.length === 1, h.lastNotice().split("\n")[0]);
-    check("  ...naming the creation syntax and guidance",
-      h.lastNotice().includes('/scholar exam "<scope>"') && /Accepted formats:/.test(h.lastNotice()), "syntax and formats offered");
-    check("  ...and creating no exam",
-      h.mutations.length === 0 && h.selects.length === 0 && h.inputs.length === 0 && await h.storedExamIds() === "none",
-      await h.storedExamIds());
+    check("no unfinished exam starts a default chapter exam without prompting",
+      h.mutations.length === 1 && h.selects.length === 0 && h.inputs.length === 0,
+      `${h.mutations.length} mutation(s), ${h.selects.length} select(s), ${h.inputs.length} input(s)`);
+    check("  ...naming the chapter it selected",
+      h.notices.some(item => /Bare Exam selected chapter 1/.test(item.message)), h.notices.map(item => item.message).join(" | "));
+    check("  ...and activating the new frozen target",
+      h.mutations[0]?.exams?.[0]?.scope.description === "chapter 1"
+      && h.activations.at(-1)?.recordId === "exam-001" && h.turns.at(-1)?.id === "exam-001",
+      h.activations.at(-1)?.recordId || "nothing activated");
+  }
+  {
+    const h = await harness("bare-learn", [], true);
+    await handleScholarCommand("learn", h.ctx, h.coordinator);
+    check("bare Learn selects and starts its section without a prompt",
+      h.inputs.length === 0 && h.selects.length === 0 && h.turns.at(-1)?.mode === "learn" && h.turns.at(-1)?.id === "s1",
+      `${h.inputs.length} input(s), ${h.selects.length} select(s), ${h.turns.at(-1)?.id || "no turn"}`);
+    check("  ...and tells the learner which section was selected",
+      h.notices.some(item => /Bare Learn selected.*1\.1/.test(item.message)), h.notices.map(item => item.message).join(" | "));
+  }
+  {
+    const h = await harness("bare-tutor", [], true);
+    await handleScholarCommand("tutor", h.ctx, h.coordinator);
+    check("bare Tutor creates a scoped session without a prompt",
+      h.inputs.length === 0 && h.selects.length === 0 && h.mutations[0]?.tutorSessions?.[0]?.scope?.sectionIds?.[0] === "s1"
+        && h.turns.at(-1)?.mode === "tutor",
+      `${h.inputs.length} input(s), ${h.selects.length} select(s), ${h.turns.at(-1)?.id || "no turn"}`);
+    check("  ...and tells the learner which section was selected",
+      h.notices.some(item => /Bare Tutor selected.*1\.1/.test(item.message)), h.notices.map(item => item.message).join(" | "));
   }
 
   // ------------------------------------------------- 5. load failures --------

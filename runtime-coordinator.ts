@@ -29,6 +29,7 @@ import { renderScholarWorkspace, safeNoteSegment } from "./obsidian.ts";
 import { isProvisionalOutline } from "./outline-validation.ts";
 import { registerScholarQuiz } from "./quiz.ts";
 import { createScholarQuizHost } from "./quiz-host.ts";
+import { registerScholarWeb } from "./tutor-web.ts";
 import {
   reconcileScholarRuntimeTarget,
   ScholarRuntimeSession,
@@ -112,11 +113,11 @@ export function kickoffMessage(
     const pending = unansweredQuestionMessage(section.attempts);
     if (pending) return pending;
     if (section.status === "complete") return `Reopen ${sectionLabel(book, section)} for practice only. It is already complete. Acknowledge its earned completion and offer fresh optional practice; do not restart teaching or repeat completion checks. All new questions must have purpose=practice.`;
-    return `Begin or resume Learn at ${sectionLabel(book, section)} (PDF pages ${section.startPage}-${section.endPage}). ${sectionProgressMessage(section)} Teach only uncovered material from the source, persist its coverage, and run only outstanding required checks.`;
+    return `Begin or resume Learn at ${sectionLabel(book, section)} (PDF pages ${section.startPage}-${section.endPage}). ${sectionProgressMessage(section)} Prepare only missing source evidence, save 2–4 lesson units per notes call with relevant diagrams and exact coverage, then commit once. After commit, ask the remaining mastery MCQs in one scholar_quiz questions[] set. Do not ask the learner to choose a path during loading.`;
   }
   if (mode === "exam") {
     const exam = target as ScholarExam;
-    if (exam.status === "draft") return `Build a frozen, source-grounded exam for ${exam.scope.description}. Read the selected source ranges, then choose at least one question from the concepts and evidence the scope requires: use as few or as many as are useful, and multiple distinct probes for important concepts. There is no fixed question-count cap; avoid redundant questions and make any sampling limits explicit. Construct the complete form and scoring contract, then call scholar action=exam_build. Do not teach or reveal feedback.`;
+    if (exam.status === "draft") return `Build a frozen, source-grounded exam for ${exam.scope.description}. Read the selected source ranges; aim for about two concise items per subsection, normally 4–12 overall, covering every subsection and several cognitive dimensions. The validator caps the form at 16. Construct the complete form and scoring contract in one build, then call scholar action=exam_build. Do not teach or reveal feedback.`;
     if (exam.status === "active") return `Reopen the exact frozen exam ${exam.title} with scholar action=exam_present, then end this turn. The learner answers in Obsidian and explicitly submits in Pi. Do not regenerate, reorder, teach, hint, or grade before submission.`;
     if (exam.status === "submitted") return `Resume grading the saved submission for ${exam.title}. Call scholar action=exam_present to retrieve the frozen questions, submitted responses, keys and rubrics, then call scholar action=exam_grade. Do not read edited answer-paper text or use Learn or Tutor evidence.`;
     return `Summarize the already graded exam ${exam.title} from its derived report. Do not change its form or score.`;
@@ -125,7 +126,11 @@ export function kickoffMessage(
     const tutor = target as TutorSession;
     const pending = unansweredQuestionMessage(tutor.attempts);
     if (pending) return pending;
-    return `Begin or resume ${tutor.title} for ${tutor.scope.description}. Diagnose the requested gap, teach it from the selected PDF source, persist a concise tutor synthesis, and use fresh practice only when helpful.`;
+    const hasPath = tutor.transcript.some(entry => entry.lesson?.title === "Learning path");
+    const hasProbe = tutor.attempts.some(attempt => attempt.grounding?.purpose === "diagnostic");
+    if (!hasPath && !hasProbe) return `Begin ${tutor.title} for ${tutor.scope.description} with one scholar_quiz questions[] probe of at most three source-declared prerequisite MCQs. Do not ask a setup question. Use the result to find the learner's edge.`;
+    if (!hasPath) return `Resume ${tutor.title} after its saved diagnostic probe. Save a Learning path unit with a 3–7-node Mermaid flowchart TD, then teach one next node from the PDF and lock it in with a 1–3-item quiz set.`;
+    return `Resume ${tutor.title} from its saved Learning path. Teach only the next unresolved node, save the explanation, and lock it in with a 1–3-item scholar_quiz set. A miss calls for a prerequisite or a different explanation before advancing.`;
   }
   return `The book is selected and its outline is ready. Wait for an explicit /scholar learn, /scholar exam, or /scholar tutor command.`;
 }
@@ -172,6 +177,7 @@ export class ScholarRuntimeCoordinator {
   }
   public runtimeSession = new ScholarRuntimeSession();
   public quizRegistered = false;
+  public webRegistered = false;
   private scholarToolRegistered = false;
   public setupRun: RunHandle | undefined;
   public scholarTurnRun: RunHandle | undefined;
@@ -280,7 +286,7 @@ export class ScholarRuntimeCoordinator {
 
   /** Isolate active tools by removing host tools (bash, read, write, edit) during Scholar mode, restoring them on exit. */
   private syncActiveTools(): void {
-    if (!this.scholarToolRegistered && !this.quizRegistered) return;
+    if (!this.scholarToolRegistered && !this.quizRegistered && !this.webRegistered) return;
     const current = this.pi.getActiveTools();
     const modeActive = Boolean(this.runtimeSession.active && this.runtimeSession.mode);
     const HOST_TOOLS = new Set(["bash", "read", "write", "edit"]);
@@ -294,12 +300,14 @@ export class ScholarRuntimeCoordinator {
         (name) =>
           !HOST_TOOLS.has(name)
           && !(this.scholarToolRegistered && name === "scholar")
-          && !(this.quizRegistered && name === "scholar_quiz"),
+          && !(this.quizRegistered && name === "scholar_quiz")
+          && !(this.webRegistered && name === "scholar_web"),
       );
       if (this.scholarToolRegistered) next.push("scholar");
       if (this.quizRegistered && modeCan(this.runtimeSession.mode, "interactiveQuestions")) {
         next.push("scholar_quiz");
       }
+      if (this.webRegistered && modeCan(this.runtimeSession.mode, "usesWebResearch")) next.push("scholar_web");
       if (current.length !== next.length || current.some((name) => !next.includes(name))) {
         this.pi.setActiveTools(next);
       }
@@ -307,7 +315,8 @@ export class ScholarRuntimeCoordinator {
       const remaining = current.filter(
         (name) =>
           !(this.scholarToolRegistered && name === "scholar")
-          && !(this.quizRegistered && name === "scholar_quiz"),
+          && !(this.quizRegistered && name === "scholar_quiz")
+          && !(this.webRegistered && name === "scholar_web"),
       );
       let next: string[];
       if (this.savedHostTools !== undefined) {
@@ -489,6 +498,15 @@ export class ScholarRuntimeCoordinator {
         onLoaded: () => this.loading.finish(this.isPending() ? "paused" : "ready", this.isPending() ? "Question saved · notes still need syncing" : "Questions ready · timer stopped before your answer"),
       }));
       this.quizRegistered = true;
+    }
+    if (modeCan(mode, "usesWebResearch") && !this.webRegistered) {
+      registerScholarWeb(this.pi, async () => {
+        if (!this.runtimeSession.active || this.runtimeSession.mode !== "tutor" || !this.runtimeSession.bookId) return false;
+        const active = await loadBookState(this.activeConfig, this.runtimeSession.bookId);
+        return Boolean(active && this.ownsActiveAuthority(active)
+          && active.tutorSessions.some(item => item.id === this.runtimeSession.recordId && item.status === "active"));
+      });
+      this.webRegistered = true;
     }
     this.syncActiveTools();
     this.persistSessionPointer(book);

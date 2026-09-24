@@ -120,7 +120,7 @@ async function harness(label, options = {}) {
   await writeFile(book.source.absolutePath, pdfFixture());
   book.source.fingerprint.mtimeMs = (await stat(book.source.absolutePath)).mtimeMs;
   await storage.createBookState(config, book);
-  const notices = [], confirmations = [], sent = [], branch = [], tools = new Map(), locks = new Set();
+  const notices = [], confirmations = [], selections = [], sent = [], branch = [], tools = new Map(), locks = new Set();
   let activeTools = [];
   const pi = { getActiveTools: () => [...activeTools], setActiveTools: (names) => { activeTools = [...names]; }, registerTool: (definition) => tools.set(definition.name, definition),
     appendEntry: (customType, data) => branch.push({ type: "custom", id: `entry-${branch.length}`, customType, data }),
@@ -146,7 +146,7 @@ async function harness(label, options = {}) {
     ui: { notify: (message, level) => notices.push({ message, level }), setStatus() {}, setWorkingMessage() {},
       editor: async () => { throw new Error("terminal exam editor must never be opened"); },
       input: async () => { throw new Error("submission must not fall through to scope input"); },
-      select: async (_title, options) => options[0],
+      select: async (_title, options) => { selections.push(options); return options[0]; },
       confirm: async (title, message) => { confirmations.push({ title, message, locks: locks.size }); return false; },
     } };
   coordinator.toolController = createScholarToolController({ pi, session: coordinator.runtimeSession, getConfig: () => coordinator.getConfig(),
@@ -173,7 +173,7 @@ async function harness(label, options = {}) {
     await fresh.activateBook(await current(), context);
     return fresh;
   };
-  return { book, config, coordinator, context, current, notices, confirmations, sent, tools, branch, locks, paperPath, show, submit, confirm, fill, finishTurn,
+  return { book, config, coordinator, context, current, notices, confirmations, selections, sent, tools, branch, locks, paperPath, show, submit, confirm, fill, finishTurn,
     restart,
     command: (args) => handleScholarCommand(args, context, coordinator),
     execute: (args) => tools.get("scholar").execute("exam-acceptance", args, undefined, undefined, context),
@@ -416,6 +416,7 @@ try {
       const h = await harness("cancel"); const filled = await h.fill({ q1: "b" }); const before = await h.current();
       await h.command(command);
       assert.equal(h.confirmations.length, 1, JSON.stringify(h.notices));
+      assert.equal(h.selections.length, 0, "one eligible exam must go straight to confirmation");
       const confirmation = h.confirmations[0]; const text = `${confirmation.title}\n${confirmation.message}`;
       assert.match(text, /Exam 01/); assert.match(text, /1\s*\/\s*3|1 of 3|1 answered.*3|3 questions.*1 answered/i); assert.match(text, /q2/); assert.match(text, /q3/);
       assert.match(text, /Submitting is final/); assert.match(text, /Blank answers receive 0 points/); assert.ok(confirmation.locks > 0);

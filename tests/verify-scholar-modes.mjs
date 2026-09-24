@@ -35,7 +35,7 @@ const check = (name, ok, detail) => {
 };
 
 // ------------------------------------------------------------ table shape --
-const CAPABILITIES = ["interactiveTeaching", "interactiveQuestions", "citesLearnObjectives", "usesWebImages", "materializesSections"];
+const CAPABILITIES = ["interactiveTeaching", "interactiveQuestions", "citesLearnObjectives", "usesWebImages", "usesWebResearch", "materializesSections"];
 check("every mode declares every capability",
   SCHOLAR_MODES.every((mode) => CAPABILITIES.every((cap) => typeof MODE_CAPABILITIES[mode][cap] === "boolean")),
   SCHOLAR_MODES.join(", "));
@@ -47,6 +47,9 @@ check("isScholarMode accepts exactly the declared modes",
     && !isScholarMode("review") && !isScholarMode("toString") && !isScholarMode(undefined) && !isScholarMode(7),
   `${SCHOLAR_MODES.length} modes; prototype keys and unknown names refused`);
 check("modeCan tolerates no active mode", modeCan(undefined, "assesses") === false, "returns false, does not throw");
+check("Tutor alone can use bounded web research",
+  SCHOLAR_MODES.every((mode) => MODE_CAPABILITIES[mode].usesWebResearch === (mode === "tutor")),
+  "Learn and Exam remain PDF-only");
 
 // -------------------------------------------- the table matches behaviour --
 // Exam intentionally does not teach: policies.ts must reflect that, and does so
