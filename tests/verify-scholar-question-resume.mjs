@@ -16,6 +16,7 @@ const mod = (file) => jiti.import(join(dirname(extensionPath), file));
 const { default: install } = await mod("index.ts");
 const storage = await mod("storage.ts");
 const domain = await mod("domain.ts");
+const { createScholarQuizHost } = await mod("quiz-host.ts");
 const { createBookService } = await mod("book-service.ts");
 const { renderScholarWorkspace, sectionNotePath, tutorNotePath } = await mod("obsidian.ts");
 const { recoverTranscriptTarget } = await mod("transcript-recovery.ts");
@@ -95,7 +96,7 @@ async function host(mode) {
     }
     return output;
   }
-  return { fire, call, execute, sent, ctx };
+  return { fire, call, execute, sent, ctx, tools };
 }
 try {
   await Promise.all([mkdir(config.libraryRoot), mkdir(config.obsidianRoot), mkdir(config.stateRoot)]);
@@ -150,6 +151,118 @@ try {
     pass(`${mode}: Esc and unavailable UI preserve one question; a fresh session resumes exact choices, order and key without leaking answers`);
   }
 
+  const setHost = await host("learn");
+  const setQuestions = [1, 2, 3].map((number) => ({
+    question: `Set question ${number}: which mechanism predicts the outcome?`, kind: "conceptual", grounding,
+    options: [{ value: "a", label: `Mechanism A ${number}`, misconception: "Confuses the assumption with the mechanism" },
+      { value: "b", label: `Mechanism B ${number}` },
+      { value: "c", label: `Mechanism C ${number}`, misconception: "Reverses the causal direction" }],
+    correctAnswer: "b", explanation: `PRIVATE_SET_EXPLANATION_${number}`, shuffle: false,
+  }));
+  assert.ok(!(await setHost.call("three-set", { questions: setQuestions })).some((item) => item?.block));
+  let setState = await read();
+  const originalSet = target(setState, "learn").attempts.filter((item) => item.toolCallId === "three-set");
+  assert.deepEqual(originalSet.map((item) => item.id), ["quiz-three-set", "quiz-three-set-2", "quiz-three-set-3"]);
+  assert.ok(originalSet.every((item) => item.outcome === "pending" && item.quizSet?.size === 3 && item.quiz));
+  let selections = 0;
+  const signal = new AbortController().signal;
+  const rpc = { hasUI: true, mode: "rpc", ui: {
+    custom() { throw new Error("RPC must not open a custom picker"); },
+    select: async (_title, choices, options) => { assert.equal(options.signal, signal); return ++selections <= 2 ? choices[0] : undefined; },
+    notify() {},
+  } };
+  const setTool = setHost.tools.get("scholar_quiz");
+  const partial = await setTool.execute("three-set", { questions: setQuestions }, signal, undefined, rpc);
+  assert.equal(partial.details.status, "cancelled");
+  assert.equal(partial.details.itemResults.length, 2);
+  assert.ok(!JSON.stringify(partial).includes("PRIVATE_SET_EXPLANATION_3"));
+  setState = await read();
+  const partialSet = target(setState, "learn").attempts.filter((item) => item.toolCallId === "three-set");
+  assert.deepEqual(partialSet.map((item) => item.outcome), ["review", "review", "pending"]);
+  assert.equal(domain.unansweredQuestion(target(setState, "learn").attempts).id, "quiz-three-set-3");
+  const resumeHost = await host("learn");
+  assert.ok(!(await resumeHost.call("three-resume", { resumeAttemptId: "quiz-three-set-3" })).some((item) => item?.block));
+  const resumedSet = target(await read(), "learn").attempts.filter((item) => item.toolCallId === "three-set");
+  assert.ok(resumedSet[2].resumeToolCallIds.includes("three-resume"));
+  const resumed = await resumeHost.tools.get("scholar_quiz").execute("three-resume", { resumeAttemptId: "quiz-three-set-3" }, signal, undefined,
+    { hasUI: true, mode: "rpc", ui: { custom() { throw new Error("RPC custom picker opened"); }, select: async (_title, choices) => choices[1], notify() {} } });
+  assert.equal(resumed.details.status, "answered");
+  assert.deepEqual(target(await read(), "learn").attempts.filter((item) => item.toolCallId === "three-set").map((item) => item.outcome), ["review", "review", "pass"]);
+  await resumeHost.fire("tool_result", { toolName: "scholar_quiz", toolCallId: "three-resume", details: resumed.details });
+  assert.equal(target(await read(), "learn").attempts.filter((item) => item.toolCallId === "three-set").length, 3);
+  pass("one call freezes a three-item set; RPC selection saves each answer before tool_result; restart resumes only the remaining item");
+
+  const tuiHost = await host("tutor");
+  const tuiQuestions = setQuestions.slice(0, 2).map((item, index) => ({ ...item, question: `Tutor feedback question ${index + 1}?` }));
+  assert.ok(!(await tuiHost.call("tui-set", { questions: tuiQuestions })).some((item) => item?.block));
+  const panels = [];
+  const tuiResult = await tuiHost.tools.get("scholar_quiz").execute("tui-set", { questions: tuiQuestions }, signal, undefined,
+    { hasUI: true, mode: "tui", ui: { custom: async (factory) => new Promise((done) => {
+      const component = factory({ requestRender() {} }, { fg: (_role, value) => value, bold: (value) => value }, {}, done);
+      const view = component.render(100).join("\n");
+      panels.push(view);
+      component.handleInput("\r");
+    }), notify() {} } });
+  assert.equal(tuiResult.details.status, "answered");
+  assert.equal(panels.length, 4, "each choice is followed by a feedback panel");
+  assert.ok(!panels[0].includes("PRIVATE_SET_EXPLANATION_1"));
+  assert.ok(panels[1].includes("PRIVATE_SET_EXPLANATION_1"));
+  assert.ok(panels[3].includes("PRIVATE_SET_EXPLANATION_2"));
+  assert.deepEqual(target(await read(), "tutor").attempts.filter((item) => item.toolCallId === "tui-set").map((item) => item.outcome), ["review", "review"]);
+  pass("TUI set shows feedback inside the quiz flow after each durable answer");
+
+  const multiInput = { ...setQuestions[0], question: "Which two mechanisms apply together?", multiSelect: true,
+    correctAnswer: ["a", "b"], options: [{ label: "A", value: "a" }, { label: "B", value: "b" },
+      { label: "C", value: "c", misconception: "Adds an unrelated mechanism" }] };
+  assert.ok(!(await tuiHost.call("rpc-multi", { questions: [multiInput] })).some((item) => item?.block));
+  let inputSignal;
+  const multiResult = await tuiHost.tools.get("scholar_quiz").execute("rpc-multi", { questions: [multiInput] }, signal, undefined,
+    { hasUI: true, mode: "rpc", ui: { input: async (_title, _placeholder, options) => { inputSignal = options.signal; return "1,2"; }, notify() {} } });
+  assert.equal(inputSignal, signal);
+  assert.equal(multiResult.details.correct, true);
+  assert.equal(target(await read(), "tutor").attempts.find((item) => item.toolCallId === "rpc-multi").outcome, "pass");
+  pass("RPC multi-select input accepts numbered choices with the abort signal and grades the frozen key");
+
+  const pausedHost = await host("tutor");
+  assert.ok(!(await pausedHost.call("whole-pause", { questions: tuiQuestions })).some((item) => item?.block));
+  const pausedBeforeFirst = await pausedHost.tools.get("scholar_quiz").execute("whole-pause", { questions: tuiQuestions }, signal, undefined,
+    { hasUI: true, mode: "rpc", ui: { select: async () => undefined, notify() {} } });
+  assert.equal(pausedBeforeFirst.details.itemResults.length, 0);
+  const pendingPair = target(await read(), "tutor").attempts.filter((item) => item.toolCallId === "whole-pause");
+  assert.deepEqual(pendingPair.map((item) => item.outcome), ["pending", "pending"]);
+  const pairedResume = await host("tutor");
+  assert.ok(!(await pairedResume.call("whole-resume", { resumeAttemptId: pendingPair[0].id })).some((item) => item?.block));
+  const withDelivery = target(await read(), "tutor").attempts.filter((item) => item.toolCallId === "whole-pause");
+  assert.ok(withDelivery.every((item) => item.resumeToolCallIds.includes("whole-resume")));
+  const finishedPair = await pairedResume.tools.get("scholar_quiz").execute("whole-resume", { resumeAttemptId: pendingPair[0].id }, signal, undefined,
+    { hasUI: true, mode: "rpc", ui: { select: async (_title, choices) => choices[0], notify() {} } });
+  assert.equal(finishedPair.details.itemResults.length, 2);
+  assert.ok(target(await read(), "tutor").attempts.filter((item) => item.toolCallId === "whole-pause").every((item) => item.outcome === "review"));
+  pass("resuming a paused set appends one delivery ID to every still-pending item");
+
+  const retryBook = structuredClone(await read());
+  const retryQuiz = structuredClone(target(retryBook, "tutor").attempts.find((item) => item.toolCallId === "tui-set").quiz);
+  target(retryBook, "tutor").attempts.push({ id: "quiz-retry-save", toolCallId: "retry-save",
+    quizSet: { id: "retry-save", index: 1, size: 1 }, kind: "conceptual", format: "multiple-choice",
+    question: retryQuiz.question, quiz: retryQuiz, options: retryQuiz.options.map((option) => option.label),
+    mode: retryQuiz.mode, grounding, outcome: "pending", createdAt: now });
+  let writeAttempts = 0;
+  const retryHost = createScholarQuizHost({
+    active: () => ({ bookId: retryBook.id, mode: "tutor", recordId: "t1" }),
+    loadBook: async () => structuredClone(retryBook), ownsBook: () => true,
+    mutateBook: async (_bookId, mutate) => { if (++writeAttempts === 1) throw new Error("transient save failure"); return { result: mutate(retryBook) }; },
+  });
+  const keyIndex = retryQuiz.options.findIndex((option) => retryQuiz.correctValues.includes(option.value));
+  const retryDetails = { status: "answered", question: retryQuiz.question, mode: retryQuiz.mode,
+    options: retryQuiz.options.map((option, index) => ({ index: index + 1, label: option.label })),
+    answers: [{ index: keyIndex + 1, label: retryQuiz.options[keyIndex].label, value: retryQuiz.options[keyIndex].value }],
+    dontKnow: false, correct: true, correctIndices: [keyIndex + 1], explanation: retryQuiz.explanation };
+  assert.equal(await retryHost.record("retry-save", "quiz-retry-save", retryDetails), "saved");
+  assert.equal(writeAttempts, 2);
+  assert.equal(target(retryBook, "tutor").attempts.at(-1).outcome, "pass");
+  assert.equal(await retryHost.record("retry-save", "quiz-retry-save", retryDetails), "gone");
+  pass("a transient save failure reloads and retries once; a duplicate event cannot rewrite the finalized answer");
+
   const h = await host("learn");
   const input = { question: "Question saved just before a process exits?", kind: "conceptual", grounding, options: [{ value: "yes", label: "Yes" }, { value: "no", label: "No", misconception: "Assumes persisted data vanishes with a process" }], correctAnswer: "yes", explanation: "The original key is preserved.", shuffle: false };
   await h.call("crash-before-ui", input); // No execute or result event: simulate process termination.
@@ -163,10 +276,10 @@ try {
     { id: "cancel", type: "message", message: { role: "toolResult", toolName: "scholar_quiz", toolCallId: "crash-before-ui", details: { status: "cancelled" } } },
     { id: "answer", type: "message", message: { role: "toolResult", toolName: "scholar_quiz", toolCallId: "crash-resume", ...output } }];
   await recoverTranscriptTarget({ target: recoveryTarget, branch, loadBook: read, mutateBook: service.mutateBook, isAutomatic: true });
-  assert.equal(target(await read(), "learn").attempts.at(-1).outcome, "pending");
+  assert.equal(target(await read(), "learn").attempts.at(-1).outcome, "pass", "the awaited quiz host saves before tool_result or history recovery");
   await restart.fire("tool_result", { toolName: "scholar_quiz", toolCallId: "crash-resume", ...output });
   assert.equal(target(await read(), "learn").attempts.at(-1).outcome, "pass");
-  pass("crash before UI preserves the form; history cannot override the note; a live answer resolves it");
+  pass("crash before UI preserves the form; an answer is durable before tool_result and history cannot override the note");
 
   const session = new ScholarRuntimeSession(); session.activate(book.id, "learn", "s1");
   const prepared = await handleAssess(await read(), session, "open-first", { outcome: "pending", kind: "conceptual", question: "Explain the original mechanism in your own words.", grounding, ...openContract },
@@ -186,7 +299,7 @@ try {
   const racer = await host("learn");
   const countBefore = target(await read(), "learn").attempts.length;
   const races = await Promise.all([racer.call("race-a", input), racer.call("race-b", input)]);
-  assert.equal(races.filter((results) => results.some((item) => item?.block)).length, 1);
+  assert.equal(races.filter((results) => results.some((item) => item?.block)).length, 1, JSON.stringify(races));
   assert.equal(target(await read(), "learn").attempts.length, countBefore + 1);
   pass("concurrent question requests cannot leave two pending attempts");
   const completePractice = await read();

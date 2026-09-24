@@ -22,6 +22,7 @@ import {
   type ScholarQuizResultDetails as QuizResultDetails,
   type FrozenScholarQuiz,
 } from "./quiz-contract.ts";
+import type { ScholarQuizHost } from "./quiz-host.ts";
 
 interface DisplayOption extends QuizOption {
   id: string;
@@ -86,8 +87,9 @@ const NewScholarQuizParams = Type.Object({
 // resumes need only the saved ID, without regenerating private answer fields.
 const ScholarQuizParams = Type.Object({
   ...Type.Partial(NewScholarQuizParams).properties,
+  questions: Type.Optional(Type.Array(NewScholarQuizParams, { minItems: 1, maxItems: 5, description: "One set of 1–5 graded questions." })),
   resumeAttemptId: Type.Optional(Type.String({ description: "Reopen this saved unanswered question. Supply no replacement question or answer key." })),
-}, { description: "Supply only resumeAttemptId to resume. For a new question, question, grounding, options, correctAnswer, and explanation are required." });
+}, { description: "Supply only resumeAttemptId to resume; questions for a set; or one legacy question." });
 
 function isManualUncertainty(label: string, value: string): boolean {
   if (value === DONT_KNOW_VALUE || value === SUBMIT_VALUE) return true;
@@ -269,9 +271,8 @@ async function askChoice(
         answers: dontKnow ? [] : answers(),
       });
       const canSubmit = () => dontKnow || selected.size > 0;
-      // Feedback is rendered from the completed tool result. Resolve the
-      // custom UI as soon as the answer is accepted so it cannot keep the
-      // tool call (and its Working indicator) open for an acknowledgement.
+      // Close the choice overlay once the answer is accepted. The awaited
+      // host save runs before the next feedback overlay or question opens.
       const submitResponse = () => done(response());
 
       const chooseSingle = (item: DisplayOption) => {
@@ -395,6 +396,47 @@ async function askChoice(
   ) as Promise<QuizResponse | null>;
 }
 
+async function askFallback(ctx: any, question: string, context: string | undefined,
+  options: QuizOption[], mode: QuizMode, signal?: AbortSignal): Promise<QuizResponse | null> {
+  const labels = options.map((option, index) => `${index + 1}. ${option.label}`);
+  if (mode === "single-select") {
+    if (typeof ctx.ui.select !== "function") throw new Error("This Pi host has no question selector.");
+    const selected = await ctx.ui.select(`${question}${context ? `\n${context}` : ""}`, [...labels, DONT_KNOW_LABEL], { signal });
+    if (selected === undefined || selected === null) return null;
+    if (selected === DONT_KNOW_LABEL) return { dontKnow: true, answers: [] };
+    const index = labels.indexOf(selected);
+    if (index < 0) return null;
+    return { dontKnow: false, answers: [{ index: index + 1, label: options[index]!.label, value: options[index]!.value }] };
+  }
+  if (typeof ctx.ui.input !== "function") throw new Error("This Pi host has no answer input.");
+  const raw = await ctx.ui.input(`${question}${context ? `\n${context}` : ""}\n${labels.join("\n")}\nEnter numbers, e.g. 1,3; 0 = I don't know`, "", { signal });
+  if (raw === undefined || raw === null) return null;
+  if (raw.trim() === "0") return { dontKnow: true, answers: [] };
+  const indices = [...new Set(raw.split(",").map((part: string) => Number(part.trim())))].sort((a, b) => a - b);
+  if (!indices.length || indices.some((index) => !Number.isInteger(index) || index < 1 || index > options.length)) {
+    ctx.ui.notify?.("Invalid answer numbers; the question remains pending.", "warning");
+    return null;
+  }
+  return { dontKnow: false, answers: indices.map((index) => ({ index, label: options[index - 1]!.label, value: options[index - 1]!.value })) };
+}
+
+async function showSetFeedback(ctx: any, result: ReturnType<typeof answeredResult>, position: number, total: number): Promise<boolean> {
+  if (typeof ctx.ui.custom !== "function") return true;
+  const details = result.details;
+  const verdict = details.dontKnow ? "Knowledge gap identified" : details.correct ? "✓ Correct" : "✗ Needs review";
+  const correct = details.correctIndices.map((index) => optionReference(
+    details.options.map((item) => ({ label: item.label, value: item.label })), index)).join(", ");
+  const message = `Question ${position} of ${total} · ${verdict}\nCorrect: ${correct}\n${details.explanation}\n\nEnter: ${position === total ? "finish" : "next question"} · Esc: pause`;
+  return await ctx.ui.custom((tui: any, theme: any, _keys: any, done: (value: boolean) => void) => ({
+    render(width: number) { return message.split("\n").flatMap((line) => wrapTextWithAnsi(theme.fg("text", line), Math.max(1, width))); },
+    handleInput(data: string) {
+      if (matchesKey(data, Key.enter)) done(true);
+      else if (matchesKey(data, Key.escape)) done(false);
+      else tui.requestRender();
+    },
+  })) !== false;
+}
+
 const SHARED_UI_LOCK_KEY = "__piSharedUiLock";
 
 function getSharedUiLock(): { withLock<T>(operation: () => T | Promise<T>): Promise<T> } {
@@ -505,14 +547,14 @@ export function prepareScholarQuiz(params: any, displayedLabels?: string[]): Fro
   return { question, ...(context ? { context } : {}), mode, options, correctValues: resolved.indices.map((index) => options[index - 1]!.value), explanation };
 }
 
-export function registerScholarQuiz(pi: ExtensionAPI, loadSaved?: (toolCallId: string) => Promise<FrozenScholarQuiz | undefined>): void {
+export function registerScholarQuiz(pi: ExtensionAPI, host?: ScholarQuizHost | ((toolCallId: string) => Promise<FrozenScholarQuiz | undefined>)): void {
   pi.registerTool({
     name: SCHOLAR_QUIZ_TOOL_NAME,
     label: "Scholar quiz",
     description:
-      "Ask one source-bound graded Scholar question, collect a single- or multi-select answer, then reveal immediate feedback. Options are shuffled by default and a distinct I don't know choice is added automatically.",
+      "Ask one set of 1–5 source-bound graded Scholar questions and reveal feedback after each answer. Options are shuffled by default and I don't know is added automatically.",
     promptSnippet:
-      "Use scholar_quiz for Scholar's graded multiple-choice checks. Supply stable option values, the correct value(s), and a post-answer explanation.",
+      "Use one scholar_quiz call with questions[] for a full set. Each item needs stable option values, the correct value(s), and an explanation.",
     promptGuidelines: [
       "If a question is unanswered, call scholar_quiz with only its resumeAttemptId. Closing the dialog or ending a session pauses it; never replace it or reveal its answer before submission.",
       "Set kind to the check being assessed (conceptual, application, computation, or discrimination). Read the saved progress in the result: stop when complete; follow-up questions are practice only.",
@@ -530,56 +572,96 @@ export function registerScholarQuiz(pi: ExtensionAPI, loadSaved?: (toolCallId: s
     parameters: ScholarQuizParams,
 
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      let frozen: FrozenScholarQuiz;
+      let items: Array<{ attemptId: string; quiz: FrozenScholarQuiz }>;
+      const savedHost = host && typeof host !== "function" ? host : undefined;
       try {
-        const saved = await loadSaved?.(toolCallId);
-        if ("resumeAttemptId" in params && !saved) throw new Error("The saved question is unavailable in the active Scholar record.");
-        frozen = saved || prepareScholarQuiz(params);
+        if (savedHost) {
+          items = await savedHost.load(toolCallId);
+          if (!items.length) throw new Error("The saved question set is unavailable in the active Scholar record.");
+        } else {
+          const saved = typeof host === "function" ? await host(toolCallId) : undefined;
+          if ("resumeAttemptId" in params && !saved) throw new Error("The saved question is unavailable in the active Scholar record.");
+          items = [{ attemptId: `quiz-${toolCallId}`, quiz: saved || prepareScholarQuiz(params) }];
+        }
       } catch (error) {
         return unavailableResult(
           typeof params.question === "string" ? params.question : "Saved question", "single-select",
           error instanceof Error ? error.message : String(error),
         );
       }
-      const { question, context, explanation, options, mode } = frozen;
-      const resolved = resolveCorrect(frozen.correctValues, options, mode);
-      if (signal?.aborted) return cancelledResult(question, mode, context);
+      const first = items[0]!.quiz;
+      if (signal?.aborted) return cancelledResult(first.question, first.mode, first.context);
       if (!ctx.hasUI) {
-        return unavailableResult(question, mode, "scholar_quiz requires interactive mode UI", context);
+        return unavailableResult(first.question, first.mode, "scholar_quiz requires interactive mode UI", first.context);
       }
-
-      // This pre-answer update deliberately contains neither the key nor the
-      // explanation. It only exposes the true post-shuffle display order.
-      onUpdate?.({
-        content: [{ type: "text", text: "Awaiting learner response..." }],
-        details: { options: toScholarQuizDisplayedOptions(options) } satisfies QuizProgressDetails,
-      });
-
       return getSharedUiLock().withLock(async () => {
-        if (signal?.aborted) return cancelledResult(question, mode, context);
-        const response = await askChoice(
-          ctx,
-          question,
-          context,
-          options,
-          mode,
-        );
-        if (!response) return cancelledResult(question, mode, context);
-        return answeredResult(question, context, mode, options, response, resolved.indices, explanation);
+        const answered: Array<QuizResultDetails & { attemptId: string }> = [];
+        const content: Array<{ type: "text"; text: string }> = [];
+        let paused = false;
+        for (const [offset, item] of items.entries()) {
+          const { question, context, explanation, options, mode } = item.quiz;
+          if (signal?.aborted) { paused = true; break; }
+          const resolved = resolveCorrect(item.quiz.correctValues, options, mode);
+          onUpdate?.({
+            content: [{ type: "text", text: `Awaiting learner response · question ${offset + 1} of ${items.length}...` }],
+            details: { attemptId: item.attemptId, options: toScholarQuizDisplayedOptions(options) } satisfies QuizProgressDetails,
+          });
+          const tui = ctx.mode === undefined ? typeof ctx.ui.custom === "function" : ctx.mode === "tui";
+          let response: QuizResponse | null;
+          try {
+            response = tui && typeof ctx.ui.custom === "function"
+              ? await askChoice(ctx, `Question ${offset + 1} of ${items.length} · ${question}`, context, options, mode)
+              : await askFallback(ctx, question, context, options, mode, signal);
+          } catch (error) {
+            return unavailableResult(question, mode, error instanceof Error ? error.message : String(error), context);
+          }
+          if (!response) { paused = true; break; }
+          const result = answeredResult(question, context, mode, options, response, resolved.indices, explanation);
+          if (savedHost) {
+            try {
+              const outcome = await savedHost.record(toolCallId, item.attemptId, result.details);
+              if (outcome !== "saved") { paused = true; break; }
+            } catch (error) {
+              ctx.ui.notify?.(error instanceof Error ? error.message : String(error), "warning");
+              paused = true;
+              break;
+            }
+          }
+          answered.push({ ...result.details, attemptId: item.attemptId });
+          content.push(...result.content);
+          if (!tui) ctx.ui.notify?.(`${result.details.dontKnow ? "Knowledge gap identified" : result.details.correct ? "Correct" : "Needs review"}. Correct: ${resolved.indices.map((index) => optionReference(options, index)).join(", ")}. ${explanation}`, "info");
+          else if ((items.length > 1 || Array.isArray(params.questions))
+            && !(await showSetFeedback(ctx, result, offset + 1, items.length))) {
+            paused = offset < items.length - 1;
+            break;
+          }
+        }
+        if (items.length === 1 && answered.length === 1) return { content, details: answered[0] };
+        const status = paused ? "cancelled" : "answered";
+        const message = paused ? "Question set paused. Saved answers are retained; resume the remaining questions." : "Question set complete.";
+        return {
+          content: [...content, { type: "text" as const, text: message }],
+          details: { status, question: first.question, context: first.context, mode: first.mode, message, itemResults: answered } satisfies QuizResultDetails,
+        };
       });
     },
 
     renderCall(args, theme) {
-      const count = "options" in args && Array.isArray(args.options) ? args.options.length : 0;
+      const count = "questions" in args && Array.isArray(args.questions) ? args.questions.length : 1;
       let text = theme.fg("toolTitle", theme.bold("Scholar quiz"));
       text += theme.fg("muted", "resumeAttemptId" in args ? " · resuming saved question" : " · validating grounding");
       if ("multiSelect" in args && args.multiSelect) text += theme.fg("dim", " [multi-select]");
-      if (count > 0) text += theme.fg("dim", ` (${count} ${count === 1 ? "option" : "options"})`);
+      if (count > 1) text += theme.fg("dim", ` (${count} questions)`);
       return new Text(text, 0, 0);
     },
 
     renderResult(result, _options, theme) {
       const details = result.details as QuizResultDetails | undefined;
+      if (details?.itemResults) {
+        const lines = details.itemResults.map((item, index) => `Question ${index + 1}: ${item.dontKnow ? "I don't know" : item.correct ? "Correct" : "Needs review"}\n${item.explanation || ""}`);
+        if (details.status === "cancelled") lines.push(details.message || "Question set paused.");
+        return new Text(lines.join("\n\n"), 0, 0);
+      }
       if (!details || !["answered", "cancelled", "unavailable"].includes(details.status)) {
         const message = result.content.find((item) => item.type === "text")?.text || "Scholar quiz unavailable";
         return new Text(theme.fg("warning", message), 0, 0);

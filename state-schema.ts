@@ -143,12 +143,18 @@ function isAttempt(value: unknown): value is AssessmentAttempt {
   if (!hasOnlyKeys(
     value,
     ["id", "kind", "format", "question", "outcome", "createdAt"],
-    ["toolCallId", "resumeToolCallIds", "quiz", "options", "mode", "note", "difficulty", "grounding", "answerSummary", "correctAnswer", "feedback", "openAssessment", "submission", "evaluation"],
+    ["toolCallId", "resumeToolCallIds", "quizSet", "quiz", "options", "mode", "note", "difficulty", "grounding", "answerSummary", "correctAnswer", "feedback", "openAssessment", "submission", "evaluation"],
   )) return false;
   const common = (
     isStableId(value.id) &&
     (value.toolCallId === undefined || isNonEmptyString(value.toolCallId)) &&
     (value.resumeToolCallIds === undefined || isStringArray(value.resumeToolCallIds, { nonEmpty: true, unique: true })) &&
+    (value.quizSet === undefined || (value.format === "multiple-choice" && value.quiz !== undefined && isRecord(value.quizSet)
+      && hasOnlyKeys(value.quizSet, ["id", "index", "size"], [])
+      && isNonEmptyString(value.quizSet.id) && value.quizSet.id === value.toolCallId
+      && isNonNegativeInteger(value.quizSet.index) && value.quizSet.index >= 1
+      && isNonNegativeInteger(value.quizSet.size) && value.quizSet.size >= 1 && value.quizSet.size <= 5
+      && value.quizSet.index <= value.quizSet.size)) &&
     (value.quiz === undefined || (value.format === "multiple-choice" && isFrozenScholarQuiz(value.quiz)
       && value.quiz.question === value.question && value.quiz.mode === value.mode
       && JSON.stringify(value.options) === JSON.stringify(value.quiz.options.map((option) => option.label)))) &&

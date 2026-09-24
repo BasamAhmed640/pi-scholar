@@ -8,14 +8,15 @@ import { getScholarArgumentCompletions } from "./command-syntax.ts";
 import { handleScholarCommand } from "./commands.ts";
 import {
   appendTranscript,
+  answeredQuickQuestions,
+  applyQuizAnswer,
   assertShortQuestion,
-  findQuizAttempt,
+  findQuizSet,
   findSection,
-  findTutorQuizAttempt,
   messageTranscriptEntry,
   learnQuestionGrounding,
   quizKind,
-  recomputeProgress,
+  QUICK_QUESTIONS,
   sectionProgressMessage,
   unansweredQuestion,
   unansweredQuestionMessage,
@@ -28,7 +29,7 @@ import { assertLearnFigureCoverage } from "./figure-coverage.ts";
 import {
   parseScholarQuizDetails,
   parseScholarQuizInput,
-  scholarQuizCorrectAnswer,
+  scholarQuizInputItems,
   SCHOLAR_QUIZ_TOOL_NAME,
 } from "./quiz-contract.ts";
 import { createScholarInputLockController } from "./input-lock.ts";
@@ -298,8 +299,16 @@ export default function scholarExtension(pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
     if (!coordinator.hasConfiguredLibrary() || !coordinator.runtimeSession.active || !coordinator.runtimeSession.bookId || event.toolName !== SCHOLAR_QUIZ_TOOL_NAME) return;
     if (!modeCan(coordinator.runtimeSession.mode, "interactiveQuestions")) return;
+    let rawItems: unknown[];
+    try { rawItems = scholarQuizInputItems(event.input); }
+    catch (error) { return { block: true, reason: error instanceof Error ? error.message : String(error) }; }
     const input = parseScholarQuizInput(event.input);
-    if (input.question === undefined && !input.resumeAttemptId) return;
+    const inputs = rawItems.map(parseScholarQuizInput);
+    if (!inputs.length && !input.resumeAttemptId) return;
+    if (input.resumeAttemptId && (typeof event.input !== "object" || event.input === null
+      || Object.keys(event.input).some((key) => key !== "resumeAttemptId"))) {
+      return { block: true, reason: "Supply only resumeAttemptId to reopen the frozen pending set." };
+    }
     const book = await loadBookState(coordinator.getConfig(), coordinator.runtimeSession.bookId);
     if (!book || !coordinator.ownsActiveAuthority(book)) {
       return { block: true, reason: "Scholar blocked this quiz because the active book no longer exists in the selected Obsidian vault." };
@@ -317,22 +326,26 @@ export default function scholarExtension(pi: ExtensionAPI) {
           if (!coordinator.ownsActiveAuthority(state)) throw new Error("The active Scholar book changed.");
           const target = coordinator.runtimeSession.mode === "learn" ? findSection(state, coordinator.runtimeSession.recordId)
             : state.tutorSessions.find((item) => item.id === coordinator.runtimeSession.recordId && item.status === "active");
-          const attempt = target && unansweredQuestion(target.attempts);
-          if (!attempt || attempt.id !== input.resumeAttemptId || !attempt.quiz) throw new Error("Resume the unanswered multiple-choice question in the active record; answered questions cannot be regraded.");
-          if (coordinator.runtimeSession.mode === "learn") {
-            const current = findSection(state, target!.id)!;
-            attempt.grounding = learnQuestionGrounding(current, attempt.grounding!);
-            assertQuestionGrounding(attempt.grounding, state, { mode: "learn", section: current }, { resume: true });
-          } else {
-            assertQuestionGrounding(attempt.grounding, state, { mode: "tutor", tutor: state.tutorSessions.find((item) => item.id === target!.id)! }, { resume: true });
+          const first = target && unansweredQuestion(target.attempts);
+          if (!first || first.id !== input.resumeAttemptId || !first.quiz) throw new Error("Resume the first unanswered multiple-choice question in the active record; answered questions cannot be regraded.");
+          const pending = first.quizSet
+            ? target!.attempts.filter((attempt) => attempt.quizSet?.id === first.quizSet!.id && attempt.outcome === "pending")
+            : [first];
+          const prior = findQuizSet(state, coordinator.runtimeSession.mode as "learn" | "tutor", target!.id, event.toolCallId);
+          if (prior && prior.attempts.some((attempt) => !pending.includes(attempt))) throw new Error("Quiz delivery ID is already in use.");
+          for (const attempt of pending) {
+            if (!attempt.quiz) throw new Error("A pending quiz item has no saved form.");
+            if (coordinator.runtimeSession.mode === "learn") {
+              const current = findSection(state, target!.id)!;
+              attempt.grounding = learnQuestionGrounding(current, attempt.grounding!);
+              assertQuestionGrounding(attempt.grounding, state, { mode: "learn", section: current }, { resume: true });
+            } else {
+              assertQuestionGrounding(attempt.grounding, state, { mode: "tutor", tutor: state.tutorSessions.find((item) => item.id === target!.id)! }, { resume: true });
+            }
+            if (attempt.toolCallId !== event.toolCallId && !attempt.resumeToolCallIds?.includes(event.toolCallId)) {
+              (attempt.resumeToolCallIds ||= []).push(event.toolCallId);
+            }
           }
-          const prior = coordinator.runtimeSession.mode === "learn" ? findQuizAttempt(state, target!.id, event.toolCallId)
-            : findTutorQuizAttempt(state, target!.id, event.toolCallId);
-          if (prior && prior.attempt.id !== attempt.id) throw new Error("Quiz delivery ID is already in use.");
-          if (attempt.toolCallId !== event.toolCallId && !attempt.resumeToolCallIds?.includes(event.toolCallId)) {
-            (attempt.resumeToolCallIds ||= []).push(event.toolCallId);
-          }
-          attempt.outcome = "pending";
         });
         return;
       } catch (error) { return { block: true, reason: error instanceof Error ? error.message : String(error) }; }
@@ -340,16 +353,22 @@ export default function scholarExtension(pi: ExtensionAPI) {
     try {
       const pending = unansweredQuestion(section?.attempts || tutor?.attempts || []);
       if (pending && pending.toolCallId !== event.toolCallId) throw new Error(unansweredQuestionMessage([pending]));
-      assertShortQuestion(input.question);
-      if (coordinator.runtimeSession.mode === "learn") {
-        if (!section) throw new Error("Scholar blocked this question before presentation: no Learn section is active.");
-        if (input.grounding) input.grounding = learnQuestionGrounding(section, input.grounding);
-        assertQuestionGrounding(input.grounding, book, { mode: "learn", section });
-        if (input.grounding.purpose === "mastery" && input.grounding.basis.filter(basis => basis.kind === "objective").length !== 1) throw new Error("A mastery multiple-choice question must assess one focused objective. Use separate probes or an open multi-step question for multiple competencies.");
-        if (input.grounding.purpose !== "diagnostic") await assertLearnFigureCoverage(coordinator.getConfig(), book, section);
-      } else {
-        if (!tutor || tutor.status !== "active") throw new Error("Scholar blocked this question before presentation: no Tutor session is active.");
-        assertQuestionGrounding(input.grounding, book, { mode: "tutor", tutor });
+      for (const item of inputs) {
+        assertShortQuestion(item.question);
+        if (coordinator.runtimeSession.mode === "learn") {
+          if (!section) throw new Error("Scholar blocked this question before presentation: no Learn section is active.");
+          if (item.grounding) item.grounding = learnQuestionGrounding(section, item.grounding);
+          assertQuestionGrounding(item.grounding, book, { mode: "learn", section });
+          if (item.grounding.purpose === "mastery" && item.grounding.basis.filter(basis => basis.kind === "objective").length !== 1) throw new Error("A mastery multiple-choice question must assess one focused objective. Use separate probes or an open multi-step question for multiple competencies.");
+        } else {
+          if (!tutor || tutor.status !== "active") throw new Error("Scholar blocked this question before presentation: no Tutor session is active.");
+          assertQuestionGrounding(item.grounding, book, { mode: "tutor", tutor });
+        }
+      }
+      if (section) {
+        if (inputs.some((item) => item.grounding?.purpose === "mastery")
+          && inputs.length > Math.max(0, QUICK_QUESTIONS - answeredQuickQuestions(section))) throw new Error("This mastery set exceeds the remaining five-question allowance for this Learn section.");
+        if (inputs.some((item) => item.grounding?.purpose !== "diagnostic")) await assertLearnFigureCoverage(coordinator.getConfig(), book, section);
       }
     } catch (error) {
       return { block: true, reason: error instanceof Error ? error.message : String(error) };
@@ -357,10 +376,13 @@ export default function scholarExtension(pi: ExtensionAPI) {
     try {
       // Invalid forms still receive the quiz tool's field-level error. Only a
       // validated form can be shown or become a resumable unanswered question.
-      const frozen = prepareScholarQuiz(event.input);
+      const frozen = rawItems.map((item) => prepareScholarQuiz(item));
       const targetRecord = coordinator.runtimeSession.mode === "learn" ? section : tutor;
-      const verifyReview = targetRecord && frozen && !targetRecord.attempts.some(item => item.toolCallId === event.toolCallId)
-        ? await toolController.reviewQuestion(book, targetRecord, { quiz: frozen, grounding: input.grounding, kind: input.kind, difficulty: input.difficulty }, input.grounding!.sourcePages, ctx)
+      const needsReview = !!section && inputs.some((item) => item.grounding?.purpose === "mastery");
+      const verifyReview = targetRecord && needsReview && !targetRecord.attempts.some(item => item.toolCallId === event.toolCallId)
+        ? await toolController.reviewQuestion(book, targetRecord,
+          frozen.map((quiz, index) => ({ quiz, grounding: inputs[index]!.grounding, kind: inputs[index]!.kind, difficulty: inputs[index]!.difficulty })),
+          [...new Set(inputs.flatMap((item) => item.grounding?.sourcePages || []))], ctx)
         : undefined;
       await coordinator.mutateBook(coordinator.runtimeSession.bookId, async (targetBook) => {
         if (!coordinator.ownsActiveAuthority(targetBook)) throw new Error("Scholar blocked this question because the active book authority changed.");
@@ -368,34 +390,40 @@ export default function scholarExtension(pi: ExtensionAPI) {
         const currentTutor = coordinator.runtimeSession.mode === "tutor" ? targetBook.tutorSessions.find((item) => item.id === coordinator.runtimeSession.recordId) : undefined;
         if (coordinator.runtimeSession.mode === "learn") {
           if (!currentSection) throw new Error("Scholar blocked this question before presentation: no Learn section is active.");
-          verifyReview?.(currentSection);
-          if (input.grounding) input.grounding = learnQuestionGrounding(currentSection, input.grounding);
-          assertQuestionGrounding(input.grounding, targetBook, { mode: "learn", section: currentSection });
-          if (input.grounding.purpose === "mastery" && input.grounding.basis.filter(basis => basis.kind === "objective").length !== 1) throw new Error("A mastery multiple-choice question must assess one focused objective.");
-          if (input.grounding.purpose !== "diagnostic") await assertLearnFigureCoverage(coordinator.getConfig(), targetBook, currentSection);
+          for (const item of inputs) {
+            if (item.grounding) item.grounding = learnQuestionGrounding(currentSection, item.grounding);
+            assertQuestionGrounding(item.grounding, targetBook, { mode: "learn", section: currentSection });
+            if (item.grounding.purpose === "mastery" && item.grounding.basis.filter(basis => basis.kind === "objective").length !== 1) throw new Error("A mastery multiple-choice question must assess one focused objective.");
+          }
+          if (inputs.some((item) => item.grounding?.purpose === "mastery")
+            && inputs.length > Math.max(0, QUICK_QUESTIONS - answeredQuickQuestions(currentSection))) throw new Error("This mastery set exceeds the remaining five-question allowance for this Learn section.");
+          if (inputs.some((item) => item.grounding?.purpose !== "diagnostic")) await assertLearnFigureCoverage(coordinator.getConfig(), targetBook, currentSection);
           verifyReview?.(currentSection);
         } else {
           if (!currentTutor || currentTutor.status !== "active") throw new Error("Scholar blocked this question before presentation: no Tutor session is active.");
-          verifyReview?.(currentTutor);
-          assertQuestionGrounding(input.grounding, targetBook, { mode: "tutor", tutor: currentTutor });
+          for (const item of inputs) assertQuestionGrounding(item.grounding, targetBook, { mode: "tutor", tutor: currentTutor });
         }
         const attempts = currentSection?.attempts || currentTutor?.attempts;
-        if (!attempts || attempts.some((item) => item.toolCallId === event.toolCallId)) return;
+        if (!attempts) throw new Error("The Scholar question target disappeared.");
+        const ids = inputs.map((_, index) => `quiz-${event.toolCallId}${index ? `-${index + 1}` : ""}`);
+        if (attempts.some((item) => item.toolCallId === event.toolCallId)) {
+          if (ids.every((id) => attempts.some((item) => item.id === id && item.toolCallId === event.toolCallId))) return;
+          throw new Error("Quiz delivery ID is already in use.");
+        }
+        if (ids.some((id) => attempts.some((item) => item.id === id))) throw new Error("Quiz attempt ID is already in use.");
         const pending = unansweredQuestion(attempts);
         if (pending) throw new Error(unansweredQuestionMessage([pending]));
-        attempts.push({
-          id: `quiz-${event.toolCallId}`,
-          toolCallId: event.toolCallId,
-          kind: input.grounding!.purpose === "diagnostic" ? "quiz" : quizKind(input.details, input.difficulty, currentSection, input.kind),
-          format: "multiple-choice",
-          question: frozen?.question || input.question!,
-          ...(frozen ? { quiz: frozen, options: frozen.options.map((option) => option.label) } : {}),
-          mode: input.multiSelect === true ? "multi-select" : "single-select",
-          ...(typeof input.difficulty === "string" ? { difficulty: input.difficulty } : {}),
-          grounding: input.grounding!,
-          outcome: "pending",
+        attempts.push(...frozen.map((quiz, index) => ({
+          id: ids[index]!, toolCallId: event.toolCallId,
+          quizSet: { id: event.toolCallId, index: index + 1, size: frozen.length },
+          kind: inputs[index]!.grounding!.purpose === "diagnostic" ? "quiz" : quizKind(inputs[index]!.details, inputs[index]!.difficulty, currentSection, inputs[index]!.kind),
+          format: "multiple-choice" as const,
+          question: quiz.question, quiz, options: quiz.options.map((option) => option.label),
+          mode: quiz.mode,
+          ...(typeof inputs[index]!.difficulty === "string" ? { difficulty: inputs[index]!.difficulty } : {}),
+          grounding: inputs[index]!.grounding!, outcome: "pending" as const,
           createdAt: new Date().toISOString(),
-        });
+        })));
         if (currentSection) {
           if (currentSection.status === "not-started") currentSection.status = "learning";
           currentSection.updatedAt = new Date().toISOString();
@@ -416,20 +444,20 @@ export default function scholarExtension(pi: ExtensionAPI) {
     const options = details.options.map((option) => option.label);
     await coordinator.mutateBook(coordinator.runtimeSession.bookId, (book) => {
       if (!coordinator.ownsActiveAuthority(book)) throw new Error("The active book authority changed while saving this quiz.");
-      const found = coordinator.runtimeSession.mode === "learn"
-        ? findQuizAttempt(book, coordinator.runtimeSession.recordId, event.toolCallId)
-        : findTutorQuizAttempt(book, coordinator.runtimeSession.recordId, event.toolCallId);
-      if (!found || found.attempt.outcome !== "pending") return;
-      found.attempt.options = options;
-      const transcript = "section" in found ? found.section.transcript : found.tutor.transcript;
+      const found = findQuizSet(book, coordinator.runtimeSession.mode as "learn" | "tutor", coordinator.runtimeSession.recordId, event.toolCallId);
+      const attempt = found?.attempts.find((item) => item.id === details.attemptId)
+        || found?.attempts.find((item) => item.outcome === "pending");
+      if (!found || !attempt || attempt.outcome !== "pending") return;
+      if (attempt.quiz && JSON.stringify(options) !== JSON.stringify(attempt.quiz.options.map((item) => item.label))) return;
+      attempt.options = options;
+      const transcript = found.record.transcript;
       appendTranscript(transcript, {
-        id: `quiz-question-${found.attempt.toolCallId || event.toolCallId}`,
+        id: `quiz-question-${attempt.id.slice("quiz-".length)}`,
         kind: "question",
-        markdown: [`**${found.attempt.question}**`, "", ...options.map((option, index) => `${index + 1}. ${option}`)].join("\n"),
+        markdown: [`**${attempt.question}**`, "", ...options.map((option, index) => `${index + 1}. ${option}`)].join("\n"),
         createdAt: new Date().toISOString(),
       });
-      if ("section" in found) found.section.updatedAt = new Date().toISOString();
-      else found.tutor.updatedAt = new Date().toISOString();
+      found.record.updatedAt = new Date().toISOString();
     });
   });
 
@@ -440,47 +468,20 @@ export default function scholarExtension(pi: ExtensionAPI) {
     const details = parseScholarQuizDetails(event.details);
     const mutation = await coordinator.mutateBook(coordinator.runtimeSession.bookId, (book) => {
       if (!coordinator.ownsActiveAuthority(book)) throw new Error("The active book authority changed while saving this quiz.");
-      const found = coordinator.runtimeSession.mode === "learn"
-        ? findQuizAttempt(book, coordinator.runtimeSession.recordId, event.toolCallId)
-        : findTutorQuizAttempt(book, coordinator.runtimeSession.recordId, event.toolCallId);
-      // Recovery and live delivery may race. A finalized answer is immutable;
-      // repeated or late tool events must not change the recorded outcome.
-      if (!found || found.attempt.outcome !== "pending") return;
-      const attempt = found.attempt;
-      if (attempt.quiz && (details.status !== "answered" || (event as { isError?: unknown }).isError === true)) {
-        // Esc, a closed terminal, or unavailable UI leaves the same question
-        // pending. No answer or result transcript exists until submission.
-        return;
+      const found = findQuizSet(book, coordinator.runtimeSession.mode as "learn" | "tutor", coordinator.runtimeSession.recordId, event.toolCallId);
+      if (!found) return;
+      const results = details.itemResults?.length ? details.itemResults : [details];
+      for (const result of results) {
+        const attempt = result.attemptId
+          ? found.attempts.find((item) => item.id === result.attemptId)
+          : found.attempts.length === 1 ? found.attempts[0] : undefined;
+        if (attempt) applyQuizAnswer(book, found.record, attempt, result, (event as { isError?: unknown }).isError === true);
       }
-      if (details.options) attempt.options = details.options.map((option) => option.label);
-      attempt.outcome = details.status === "cancelled" ? "cancelled"
-        : details.status === "unavailable" || (event as { isError?: unknown }).isError === true ? "unavailable"
-        : details.dontKnow === true ? "unsure"
-        : details.correct === true ? "pass" : "review";
-      if (details.mode === "single-select" || details.mode === "multi-select") attempt.mode = details.mode;
-      const answered = details.status === "answered" && attempt.outcome !== "unavailable";
-      attempt.correctAnswer = answered ? scholarQuizCorrectAnswer(details, attempt.options) : undefined;
-      const feedback: string[] = [];
-      if (answered && typeof details.explanation === "string" && details.explanation.trim()) feedback.push(details.explanation.trim());
-      if (attempt.outcome === "unavailable" && typeof details.message === "string" && details.message.trim()) feedback.push(details.message.trim());
-      attempt.feedback = feedback.join(" ") || undefined;
-      const transcript = "section" in found ? found.section.transcript : found.tutor.transcript;
-      appendTranscript(transcript, {
-        id: `quiz-result-${attempt.toolCallId || event.toolCallId}`,
-        kind: "result",
-        markdown: `**Outcome:** ${attempt.outcome === "pass" ? "Correct" : attempt.outcome === "unsure" ? "Knowledge gap identified" : attempt.outcome === "review" ? "Needs review" : attempt.outcome}. ${attempt.correctAnswer ? `Correct answer: ${attempt.correctAnswer}. ` : ""}${attempt.feedback || ""}`.trim(),
-        createdAt: new Date().toISOString(),
-      });
-      if ("section" in found) recomputeProgress(book, found.section);
-      else found.tutor.updatedAt = new Date().toISOString();
     });
     const section = coordinator.runtimeSession.mode === "learn"
       ? findSection(mutation.book, coordinator.runtimeSession.recordId) : undefined;
-    const delivered = coordinator.runtimeSession.mode === "learn"
-      ? findQuizAttempt(mutation.book, coordinator.runtimeSession.recordId, event.toolCallId)
-      : findTutorQuizAttempt(mutation.book, coordinator.runtimeSession.recordId, event.toolCallId);
-    const paused = delivered?.attempt.quiz && delivered.attempt.outcome === "pending"
-      && (details.status !== "answered" || (event as { isError?: unknown }).isError === true);
+    const delivered = findQuizSet(mutation.book, coordinator.runtimeSession.mode as "learn" | "tutor", coordinator.runtimeSession.recordId, event.toolCallId);
+    const paused = !!delivered?.attempts.some((attempt) => attempt.outcome === "pending");
     const pauseMessage = "The unanswered question is saved. End this turn and wait for the learner to reopen Scholar or explicitly continue. Do not reopen the picker or create another question now.";
     if (section) {
       await coordinator.setStatus(ctx);

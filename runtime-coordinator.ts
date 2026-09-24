@@ -8,12 +8,9 @@ import type {
 import { createBookService, type MutationOutcome } from "./book-service.ts";
 import {
   appendTranscript,
-  findQuizAttempt,
   findSection,
-  findTutorQuizAttempt,
   messageTranscriptEntry,
   quoted,
-  recomputeProgress,
   sectionLabel,
   sectionProgressMessage,
   unansweredQuestionMessage,
@@ -31,12 +28,7 @@ import { modeCan } from "./modes.ts";
 import { renderScholarWorkspace, safeNoteSegment } from "./obsidian.ts";
 import { isProvisionalOutline } from "./outline-validation.ts";
 import { registerScholarQuiz } from "./quiz.ts";
-import {
-  parseScholarQuizDetails,
-  parseScholarQuizInput,
-  scholarQuizCorrectAnswer,
-  SCHOLAR_QUIZ_TOOL_NAME,
-} from "./quiz-contract.ts";
+import { createScholarQuizHost } from "./quiz-host.ts";
 import {
   reconcileScholarRuntimeTarget,
   ScholarRuntimeSession,
@@ -487,16 +479,15 @@ export class ScholarRuntimeCoordinator {
       this.scholarToolRegistered = true;
     }
     if (modeCan(mode, "interactiveQuestions") && !this.quizRegistered) {
-      registerScholarQuiz(this.pi, async (toolCallId) => {
-        if (!this.runtimeSession.active || !this.runtimeSession.bookId || !modeCan(this.runtimeSession.mode, "interactiveQuestions")) throw new Error("Open Scholar Learn or Tutor first.");
-        const active = await loadBookState(this.activeConfig, this.runtimeSession.bookId);
-        if (!active || !this.ownsActiveAuthority(active)) throw new Error("The active Scholar book changed.");
-        const found = this.runtimeSession.mode === "learn" ? findQuizAttempt(active, this.runtimeSession.recordId, toolCallId)
-          : findTutorQuizAttempt(active, this.runtimeSession.recordId, toolCallId);
-        if (!found || found.attempt.outcome !== "pending") throw new Error("This quiz was not approved or has already been answered.");
-        this.loading.finish(this.isPending() ? "paused" : "ready", this.isPending() ? "Question saved · notes still need syncing" : "Question ready · timer stopped before your answer");
-        return found.attempt.quiz ? structuredClone(found.attempt.quiz) : undefined;
-      });
+      registerScholarQuiz(this.pi, createScholarQuizHost({
+        active: () => this.runtimeSession.active && this.runtimeSession.bookId
+          && modeCan(this.runtimeSession.mode, "interactiveQuestions") && this.runtimeSession.recordId
+          ? { bookId: this.runtimeSession.bookId, mode: this.runtimeSession.mode as "learn" | "tutor", recordId: this.runtimeSession.recordId } : undefined,
+        loadBook: (bookId) => loadBookState(this.activeConfig, bookId),
+        mutateBook: this.mutateBook,
+        ownsBook: (book) => this.ownsActiveAuthority(book),
+        onLoaded: () => this.loading.finish(this.isPending() ? "paused" : "ready", this.isPending() ? "Question saved · notes still need syncing" : "Questions ready · timer stopped before your answer"),
+      }));
       this.quizRegistered = true;
     }
     this.syncActiveTools();

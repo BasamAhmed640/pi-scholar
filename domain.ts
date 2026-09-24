@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { scopedPageRanges, type PageRange } from "./page-scope.ts";
 import { isProvisionalOutline } from "./outline-validation.ts";
 import { questionCountsTowardCompletion } from "./question-grounding.ts";
-import { answerShapeIssues } from "./quiz-contract.ts";
+import { answerShapeIssues, scholarQuizCorrectAnswer, type ObservedScholarQuizDetails } from "./quiz-contract.ts";
 import { lessonReady, isObjectiveChecks, lessonObjectiveHash } from "./lesson.ts";
 import {
   allSections,
@@ -58,7 +58,15 @@ export function firstIncomplete(book: ScholarBook): ScholarSection | undefined {
 
 export function unansweredQuestion(attempts: AssessmentAttempt[]): AssessmentAttempt | undefined {
   const last = attempts.at(-1);
-  return last?.outcome === "pending" && last.question?.trim() ? last : undefined;
+  if (last?.outcome !== "pending" || !last.question?.trim()) return undefined;
+  if (!last.quizSet) return last;
+  let first = last;
+  for (let index = attempts.length - 2; index >= 0; index -= 1) {
+    const prior = attempts[index]!;
+    if (prior.outcome !== "pending" || prior.quizSet?.id !== last.quizSet.id) break;
+    first = prior;
+  }
+  return first;
 }
 
 export function unansweredQuestionMessage(attempts: AssessmentAttempt[]): string | undefined {
@@ -269,7 +277,7 @@ export function quizKind(details: unknown, difficulty: unknown, section?: Schola
 
 export function findQuizAttempt(book: ScholarBook, sectionId: string | undefined, toolCallId: string): { section: ScholarSection; attempt: AssessmentAttempt } | undefined {
   const section = findSection(book, sectionId);
-  const attempt = section && [...section.attempts].reverse().find((item) => item.toolCallId === toolCallId || item.resumeToolCallIds?.includes(toolCallId));
+  const attempt = section && section.attempts.find((item) => item.toolCallId === toolCallId || item.resumeToolCallIds?.includes(toolCallId));
   return section && attempt ? { section, attempt } : undefined;
 }
 
@@ -277,6 +285,55 @@ export function findTutorQuizAttempt(book: ScholarBook, tutorId: string | undefi
   const tutor = book.tutorSessions.find((item) => item.id === tutorId);
   const attempt = tutor?.attempts.find((item) => item.toolCallId === toolCallId || item.resumeToolCallIds?.includes(toolCallId));
   return tutor && attempt ? { tutor, attempt } : undefined;
+}
+
+export function findQuizSet(book: ScholarBook, mode: "learn" | "tutor", recordId: string | undefined, toolCallId: string):
+  { record: ScholarSection | TutorSession; attempts: AssessmentAttempt[] } | undefined {
+  const record = mode === "learn" ? findSection(book, recordId) : book.tutorSessions.find((item) => item.id === recordId);
+  const matches = record?.attempts.filter((item) => item.format === "multiple-choice"
+    && (item.toolCallId === toolCallId || item.resumeToolCallIds?.includes(toolCallId)));
+  return record && matches?.length ? { record, attempts: matches } : undefined;
+}
+
+/** The shared, idempotent answer writer used by the awaited quiz host and Pi's result backstop. */
+export function applyQuizAnswer(book: ScholarBook, record: ScholarSection | TutorSession,
+  attempt: AssessmentAttempt, details: ObservedScholarQuizDetails, isError = false): boolean {
+  if (attempt.outcome !== "pending" || details.status !== "answered" || isError) return false;
+  if (attempt.quiz) {
+    const quiz = attempt.quiz;
+    if (details.question !== quiz.question || details.mode !== quiz.mode) return false;
+    const submittedOptions = details.options?.map((item) => item.label);
+    if (submittedOptions && JSON.stringify(submittedOptions) !== JSON.stringify(quiz.options.map((item) => item.label))) return false;
+    if (!details.dontKnow) {
+      if (!details.answers?.length || details.answers.some((answer) =>
+        quiz.options[answer.index - 1]?.value !== answer.value || quiz.options[answer.index - 1]?.label !== answer.label)) return false;
+    }
+    const chosen = details.dontKnow ? [] : details.answers!.map((answer) => answer.value).sort();
+    const correct = !details.dontKnow && JSON.stringify(chosen) === JSON.stringify([...quiz.correctValues].sort());
+    attempt.outcome = details.dontKnow ? "unsure" : correct ? "pass" : "review";
+    attempt.options = quiz.options.map((option) => option.label);
+    attempt.mode = quiz.mode;
+    attempt.correctAnswer = quiz.correctValues.map((value) => {
+      const index = quiz.options.findIndex((item) => item.value === value);
+      return `${index + 1}. ${quiz.options[index]!.label}`;
+    }).join(", ");
+    attempt.feedback = quiz.explanation;
+  } else {
+    if (details.options) attempt.options = details.options.map((option) => option.label);
+    attempt.outcome = details.dontKnow ? "unsure" : details.correct ? "pass" : "review";
+    if (details.mode) attempt.mode = details.mode;
+    attempt.correctAnswer = scholarQuizCorrectAnswer(details, attempt.options);
+    attempt.feedback = details.explanation?.trim() || undefined;
+  }
+  appendTranscript(record.transcript, {
+    id: `quiz-result-${attempt.id.slice("quiz-".length)}`,
+    kind: "result",
+    markdown: `**Outcome:** ${attempt.outcome === "pass" ? "Correct" : attempt.outcome === "unsure" ? "Knowledge gap identified" : "Needs review"}. ${attempt.correctAnswer ? `Correct answer: ${attempt.correctAnswer}. ` : ""}${attempt.feedback || ""}`.trim(),
+    createdAt: new Date().toISOString(),
+  });
+  if ("objectives" in record) recomputeProgress(book, record);
+  else record.updatedAt = new Date().toISOString();
+  return true;
 }
 
 export function progressSummary(book: ScholarBook): string {

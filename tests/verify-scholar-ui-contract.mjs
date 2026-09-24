@@ -480,22 +480,15 @@ try {
       && demandingAttempt?.grounding?.competency.includes("scaled and width-constrained"),
     `${demandingQuiz?.reason || "allowed"}; ${demandingAttempt?.question || "no attempt"}`,
   );
-  for (const handler of extension.handlers.get("tool_execution_update") || []) {
-    await handler({
-      toolName: "scholar_quiz",
-      toolCallId: "quiz-demanding-transfer-ui-contract",
-      partialResult: {
-        details: {
-          options: demandingQuizInput.options.map((option, index) => ({ index: index + 1, label: option.label })),
-        },
-      },
-    }, context);
-  }
+  const demandingResult = await extension.tools.get("scholar_quiz").definition.execute(
+    "quiz-demanding-transfer-ui-contract", demandingQuizInput, undefined, undefined,
+    { hasUI: true, mode: "rpc", ui: { select: async (_title, choices) => choices[0], notify() {} } },
+  );
   for (const handler of extension.handlers.get("tool_result") || []) {
     await handler({
       toolName: "scholar_quiz",
       toolCallId: "quiz-demanding-transfer-ui-contract",
-      details: { status: "answered", correct: false, question: demandingQuizInput.question, mode: "single-select" },
+      details: demandingResult.details,
     }, context);
   }
 

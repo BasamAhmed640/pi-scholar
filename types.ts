@@ -67,6 +67,8 @@ export type AssessmentAttempt = {
   toolCallId?: string;
   /** Additional deliveries of the same unanswered question, never new attempts. */
   resumeToolCallIds?: string[];
+  /** Identity and position of a quiz set; absent on saved 0.7 questions. */
+  quizSet?: { id: string; index: number; size: number };
   /** Frozen same-note form, including the original display order and grading key. */
   quiz?: import("./quiz-contract.ts").FrozenScholarQuiz;
   kind: AssessmentKind;
