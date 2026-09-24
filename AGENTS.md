@@ -14,10 +14,16 @@ npm run test:preflight      # confirm Pi SDK + test deps import
 npm run pack:check          # preview the npm archive file list
 ```
 
-`npm test` is the only evidence that counts. It generates synthetic PDFs and
+`npm test` is the required deterministic gate. It generates synthetic PDFs and
 disposable vaults, so it needs no real book or vault — but it does need
 **Poppler on PATH**: `pdfinfo`, `pdftotext`, `pdftoppm`. A run reporting
 "blocked" prerequisites is not a pass.
+
+For a release, also run the real Pi RPC workflow in an isolated library and
+vault: `node tests/e2e/run.mjs --scenario full --extension . --keep`. The
+`plumbing` scenario makes no model calls. Run the owner-vault regression on a
+copy with `node tests/e2e/real-vault-check.mjs --vault <vault-path> --extension .`.
+The full workflow costs model calls and is intentionally outside `npm test`.
 
 There is **no `tsconfig.json` and no typecheck step.** The language server
 (`tsc --lsp`) still reports type errors per file. If you add a config, do not

@@ -847,6 +847,15 @@ patch, or stub the Pi SDK. Full verification includes actual PDF extraction and
 cropping, loader/UI integration, vault authority, projection, exam contracts,
 question grounding, and durable history behavior.
 
+For a release, `node tests/e2e/run.mjs --scenario full --extension . --keep`
+drives the real Pi RPC host and selected model through setup, Learn, Tutor,
+Obsidian exam submission and grading, restart, interruption, and deletion in
+a disposable library and vault. `--scenario plumbing` checks the RPC setup
+without model calls. `node tests/e2e/real-vault-check.mjs --vault <vault-path>
+--extension .` checks a byte copy of an existing vault without changing it.
+These checks are separate from `npm test` because the full scenario costs model
+calls and a real vault must stay out of the repository.
+
 SDK discovery uses normal Node module search paths, standard Node installation
 prefixes, and `npm root --global`. For managed or unusual installations, set
 `PI_SCHOLAR_PI_PACKAGE` to the `@earendil-works/pi-coding-agent` directory that
