@@ -4,6 +4,15 @@ One Pi extension. `index.ts` is the entry point (`package.json` → `pi.extensio
 Learn, Exam, and Tutor are **independent entry points for the same selected PDF book**;
 none requires another to be completed first.
 
+## Owner's standing priorities (ranked)
+
+reliability (must just work) > speed > content quality > looks.
+
+- Never block generation to ask a question. Resume/reopen must load or fail loudly, never prompt.
+- Prefer five short terminal-answerable questions over one long one. No forever-loops — bound every review.
+- Exams are answered and submitted as forms in Obsidian.
+- Test the real end-to-end flow, not just unit paths.
+
 ## Verify before claiming done
 
 ```bash
